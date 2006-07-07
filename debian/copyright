@@ -1,0 +1,179 @@
+This package was debianized by Mario Iseli <admin@marioiseli.com> on
+Sat, 08 Jul 2006 01:02:41 +0200.
+
+It was downloaded from <http://www.lilotux.net/~mikael/mcabber/>
+
+Copyright Holders: Mikael Berthe <bmikael@lists.lilotux.net>
+		   Konstantin Klyagin <konst@konst.org.ua>
+		   Peter Deutsch <ghost@aladdin.com>
+		   Panos Tsirigotis <panos@alumni.cs.colorado.edu>
+		   The Jabber Team http://jabber.org/
+		   Tha Apache Group
+		   Thomas Muldowney
+		   Ryan Eatmon
+		   Robert Norris
+		   Jeremie Miller
+		   Daniel Borca
+		   James Clark
+		   Free Software Foundation, Inc.
+		   Massachusetts Institute of Technology
+		   See also: /usr/share/doc/mcabber/AUTHORS
+
+License (for the files written by Mikael Berthe)
+
+   Copyright (C) 2005-2006 Mikael Berthe <bmikael@lists.lilotux.net>
+
+   This package is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 2 of the License, or
+   (at your option) any later version.
+
+   This package is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this package; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+
+   Mikael Berthe has added an exception to the license which allows linking
+   with OpenSSL.
+
+On Debian systems, the complete text of the GNU General
+Public License can be found in `/usr/share/common-licenses/GPL'.
+
+License (everything not mentioned below):
+
+   Copyright (C) 2002-1005 Konstantin Klyagin <konst@konst.org.ua>
+   Copyright (C) 1989,1991 Free Software Foundation, Inc.
+   Copyright (C) 1991 by the Massachusetts Institute of Technology
+   Copyright (C) 1998-1999 The Jabber Team http://jabber.org/
+   Copyright (C) 1998-2002 Jeremie Miller
+   Copyright (C) 2002 Thomas Muldowney
+   Copyright (C) 2002 Ryan Eatmon
+   Copyright (C) 2002 Robert Norris
+
+   This package is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 2 of the License, or
+   (at your option) any later version.
+
+   This package is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this package; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+
+On Debian systems, the complete text of the GNU General
+Public License can be found in `/usr/share/common-licenses/GPL'.
+
+License (for connwrap/md5.c and connwrap/md5.h):
+
+   Copyright (C) 1999 Peter Deutsch <ghost@aladdin.com>
+
+   This software is provided 'as-is', without any express or implied
+   warranty.  In no event will the authors be held liable for any damages
+   arising from the use of this software.
+
+   Permission is granted to anyone to use this software for any purpose,
+   including commercial applications, and to alter it and redistribute it
+   freely, subject to the following restrictions:
+
+   1. The origin of this software must not be misrepresented; you must not
+      claim that you wrote the original software. If you use this software
+      in a product, an acknowledgment in the product documentation would be
+      appreciated but is not required.
+   2. Altered source versions must be plainly marked as such, and must not be
+      misrepresented as being the original software.
+   3. This notice may not be removed or altered from any source distribution.
+
+License (for libjabber/asciitab.h, libjabber/hashtable.c,
+   libjabber/hashtable.h, libjabber/iasciitab.h, libjabber/latin1tab.h,
+   libjabber/sha.c libjabber/utf8tab.h libjabber/xmldef.h,
+   libjabber/xmlparse.c, libjabber/xmlparse.h, libjabber/xmlrole.c,
+   libjabber/xmlrole.h, libjabber/xmltok.c, libjabber/xmltok.h,
+   libjabber/xmltok_impl_c.h and libjabber/xmltok_impl.h):
+
+   Copyright (C) 1998, 1999 James Clark
+
+   The contents of this file are subject to the Mozilla Public License
+   Version 1.1 (the "License"); you may not use this file except in
+   compliance with the License. You may obtain a copy of the License at
+   http://www.mozilla.org/MPL/
+
+   Software distributed under the License is distributed on an "AS IS"
+   basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
+   License for the specific language governing rights and limitations
+   under the License.
+
+   The Original Code is expat.
+
+   Contributor(s):
+
+   Alternatively, the contents of this file may be used under the terms
+   of the GNU General Public License (the "GPL"), in which case the
+   provisions of the GPL are applicable instead of those above.  If you
+   wish to allow use of your version of this file only under the terms of
+   the GPL and not to allow others to use your version of this file under
+   the MPL, indicate your decision by deleting the provisions above and
+   replace them with the notice and other provisions required by the
+   GPL. If you do not delete the provisions above, a recipient may use
+   your version of this file under either the MPL or the GPL.
+
+License (for libjabber/snprintf.h):
+
+   Copyright (C) 1995-1998 The Apache Group.  All rights reserved.
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions
+   are met:
+
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+ 
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in
+      the documentation and/or other materials provided with the
+      distribution.
+  
+   3. All advertising materials mentioning features or use of this
+      software must display the following acknowledgment:
+      "This product includes software developed by the Apache Group
+      for use in the Apache HTTP server project (http://www.apache.org/)."
+  
+   4. The names "Apache Server" and "Apache Group" must not be used to
+      endorse or promote products derived from this software without
+      prior written permission.
+  
+   5. Redistributions of any form whatsoever must retain the following
+      acknowledgment:
+      "This product includes software developed by the Apache Group
+      for use in the Apache HTTP server project (http://www.apache.org/)."
+  
+   THIS SOFTWARE IS PROVIDED BY THE APACHE GROUP ``AS IS'' AND ANY
+   EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+   PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE APACHE GROUP OR
+   ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+   NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+   LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+   HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+   STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+   OF THE POSSIBILITY OF SUCH DAMAGE.
+
+   This software consists of voluntary contributions made by many
+   individuals on behalf of the Apache Group and was originally based
+   on public domain software written at the National Center for
+   Supercomputing Applications, University of Illinois, Urbana-Champaign.
+   For more information on the Apache Group and the Apache HTTP server
+   project, please see <http://www.apache.org/>.
+  
+   This code is based on, and used with the permission of, the
+   SIO stdio-replacement strx_* functions by Panos Tsirigotis
+   <panos@alumni.cs.colorado.edu> for xinetd.
