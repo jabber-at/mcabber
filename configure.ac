@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.7.8],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.8.0],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -26,8 +26,31 @@ if test "x$GCC" = "xyes"; then
 fi
 
 # Checks for libraries.
-AC_CHECK_LIB([ncurses], [initscr], , AC_MSG_ERROR([NCURSES library needed]))
-AC_CHECK_LIB([panel], [new_panel])
+
+AC_CHECK_FUNC(initscr,,
+[
+    cf_ncurses="ncurses"
+    for lib in ncursesw ncurses
+    do
+        AC_CHECK_LIB($lib, waddnwstr, [cf_ncurses="$lib"; break])
+    done
+    AC_CHECK_LIB($cf_ncurses, initscr,
+        [LIBS="$LIBS -l$cf_ncurses"
+         if test "$cf_ncurses" = ncursesw; then
+            AC_CHECK_HEADERS([ncursesw/ncurses.h ncursesw/panel.h],,
+                             AC_MSG_ERROR([Missing header file]))
+         else
+             AC_CHECK_HEADERS([ncurses/ncurses.h ncurses/panel.h],,
+                 [AC_CHECK_HEADERS([ncurses.h panel.h],,
+                                   AC_MSG_ERROR([Missing header file]))])
+         fi
+        ],
+        [CF_CURSES_LIBS])
+])
+
+AC_CHECK_LIB([panelw], [new_panel],,
+             AC_CHECK_LIB([panel], [new_panel])
+            )
 
 AC_CHECK_DECLS([strptime],,,
 [#define _GNU_SOURCE
@@ -37,9 +60,8 @@ AC_CHECK_DECLS([strptime],,,
 AC_HEADER_STDC
 AC_CHECK_HEADERS([arpa/inet.h fcntl.h locale.h netdb.h netinet/in.h stddef.h \
                   stdlib.h string.h strings.h sys/socket.h sys/time.h \
-                  syslog.h termios.h unistd.h getopt.h])
-AC_CHECK_HEADERS([ncurses.h panel.h getopt.h], ,
-                 AC_MSG_ERROR([Missing header file]))
+                  syslog.h termios.h unistd.h getopt.h wchar.h wctype.h])
+AC_CHECK_HEADERS([getopt.h], , AC_MSG_ERROR([Missing header file]))
 AC_VAR_TIMEZONE_EXTERNALS
 
 # Checks for typedefs, structures, and compiler characteristics.
@@ -144,6 +166,9 @@ AM_CONDITIONAL(HGCSET, test x$hgcset = xyes)
 if test "${hgcset}" = "yes"; then
     AC_DEFINE(ENABLE_HGCSET, 1, [Use Mercurial changeset])
 fi
+
+# We need _GNU_SOURCE for strptime() and strcasestr()
+CFLAGS="$CFLAGS -D_GNU_SOURCE"
 
 AC_CONFIG_FILES([connwrap/Makefile
                  libjabber/Makefile

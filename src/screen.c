@@ -23,14 +23,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ncurses.h>
-#include <panel.h>
 #include <time.h>
 #include <ctype.h>
 #include <locale.h>
 #include <langinfo.h>
+#include <config.h>
 
 #include "screen.h"
+#include "utf8.h"
 #include "hbuf.h"
 #include "commands.h"
 #include "compl.h"
@@ -83,6 +83,7 @@ int update_roster;
 int utf8_mode = 0;
 static bool Autoaway;
 static bool Curses;
+static time_t LastActivity;
 
 static char       inputLine[INPUTLINE_LENGTH+1];
 static char      *ptr_inputline;
@@ -368,7 +369,6 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
       wprintw(logWnd,
               "\n%s*Error: cannot convert string to locale.", strtimestamp);
       update_panels();
-      doupdate();
       g_free(buffer);
       g_free(btext);
       return;
@@ -383,7 +383,6 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
     if (Curses) {
       wprintw(logWnd, "\n%s", buffer_locale);
       update_panels();
-      doupdate();
       scr_WriteInWindow(NULL, buf_specialwindow, timestamp,
                         HBB_PREFIX_SPECIAL, FALSE);
     } else {
@@ -479,7 +478,7 @@ static winbuf *scr_SearchWindow(const char *winId, int special)
   return NULL;
 }
 
-bool scr_BuddyBufferExists(const char *jid)
+int scr_BuddyBufferExists(const char *jid)
 {
   return (scr_SearchWindow(jid, FALSE) != NULL);
 }
@@ -733,7 +732,6 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
     scr_UpdateWindow(win_entry);
     top_panel(inputPanel);
     update_panels();
-    doupdate();
   } else if (!(prefix_flags & HBB_PREFIX_NOFLAG)) {
     setmsgflg = TRUE;
   }
@@ -758,7 +756,6 @@ void scr_UpdateMainStatus(int forceupdate)
   if (forceupdate) {
     top_panel(inputPanel);
     update_panels();
-    doupdate();
   }
   g_free(sm);
 }
@@ -873,8 +870,11 @@ void scr_DrawMainWindow(unsigned int fullinit)
     // Wrap existing status buffer lines
     hbuf_rebuild(&statushbuf, maxX - Roster_Width - PREFIX_WIDTH);
 
+#ifndef UNICODE
     if (utf8_mode)
-      scr_LogPrint(LPRINT_NORMAL, "WARNING: UTF-8 not yet supported!");
+      scr_LogPrint(LPRINT_NORMAL,
+                   "WARNING: Compiled without full UTF-8 support!");
+#endif
   } else {
     // Update panels
     replace_panel(rosterPanel, rosterWnd);
@@ -949,7 +949,7 @@ void scr_Resize()
 
 //  scr_UpdateChatStatus(forceupdate)
 // Redraw the buddy status bar.
-// Set forceupdate to TRUE if doupdate() must be called.
+// Set forceupdate to TRUE if update_panels() must be called.
 void scr_UpdateChatStatus(int forceupdate)
 {
   unsigned short btype, isgrp, ismuc, isspe;
@@ -971,7 +971,6 @@ void scr_UpdateChatStatus(int forceupdate)
   if (!current_buddy) {
     if (forceupdate) {
       update_panels();
-      doupdate();
     }
     return;
   }
@@ -999,7 +998,6 @@ void scr_UpdateChatStatus(int forceupdate)
     g_free(buf_locale);
     if (forceupdate) {
       update_panels();
-      doupdate();
     }
     return;
   }
@@ -1038,7 +1036,6 @@ void scr_UpdateChatStatus(int forceupdate)
 
   if (forceupdate) {
     update_panels();
-    doupdate();
   }
 }
 
@@ -1082,7 +1079,6 @@ void scr_DrawRoster(void)
   // Leave now if buddylist is empty or the roster is hidden
   if (!buddylist || !Roster_Width) {
     update_panels();
-    doupdate();
     curs_set(cursor_backup);
     return;
   }
@@ -1209,7 +1205,6 @@ void scr_DrawRoster(void)
   g_free(name);
   top_panel(inputPanel);
   update_panels();
-  doupdate();
   curs_set(cursor_backup);
 }
 
@@ -1267,7 +1262,6 @@ void scr_WriteIncomingMessage(const char *jidfrom, const char *text,
 
   scr_WriteMessage(jidfrom, text, timestamp, prefix);
   update_panels();
-  doupdate();
 }
 
 void scr_WriteOutgoingMessage(const char *jidto, const char *text)
@@ -1276,7 +1270,7 @@ void scr_WriteOutgoingMessage(const char *jidto, const char *text)
   scr_ShowWindow(jidto, FALSE);
 }
 
-inline void set_autoaway(bool setaway)
+static inline void set_autoaway(bool setaway)
 {
   static enum imstatus oldstatus;
   static char *oldmsg;
@@ -1306,10 +1300,28 @@ inline void set_autoaway(bool setaway)
   }
 }
 
-// Check if we should enter/leave automatic away status
-void scr_CheckAutoAway(bool activity)
+unsigned int scr_GetAutoAwayTimeout(time_t now)
 {
-  static time_t LastActivity;
+  enum imstatus cur_st;
+  unsigned int autoaway_timeout = settings_opt_get_int("autoaway");
+
+  if (Autoaway || !autoaway_timeout)
+    return 86400;
+
+  cur_st = jb_getstatus();
+  // Auto-away is disabled for the following states
+  if ((cur_st != available) && (cur_st != freeforchat))
+    return 86400;
+
+  if (now >= LastActivity + (time_t)autoaway_timeout)
+    return 0;
+  else
+    return LastActivity + (time_t)autoaway_timeout - now;
+}
+
+// Check if we should enter/leave automatic away status
+void scr_CheckAutoAway(int activity)
+{
   enum imstatus cur_st;
   unsigned int autoaway_timeout = settings_opt_get_int("autoaway");
 
@@ -1529,7 +1541,6 @@ void scr_BufferScrollUpDown(int updown, unsigned int nblines)
 
   // Finished :)
   update_panels();
-  doupdate();
 }
 
 //  scr_BufferClear()
@@ -1553,7 +1564,6 @@ void scr_BufferClear(void)
 
   // Finished :)
   update_panels();
-  doupdate();
 }
 
 //  scr_BufferPurge()
@@ -1584,7 +1594,6 @@ void scr_BufferPurge(void)
 
   // Finished :)
   update_panels();
-  doupdate();
 }
 
 //  scr_BufferScrollLock(lock)
@@ -1629,7 +1638,6 @@ void scr_BufferScrollLock(int lock)
 
   // Finished :)
   update_panels();
-  doupdate();
 }
 
 //  scr_BufferTopBottom()
@@ -1657,7 +1665,6 @@ void scr_BufferTopBottom(int topbottom)
 
   // Finished :)
   update_panels();
-  doupdate();
 }
 
 //  scr_BufferSearch(direction, text)
@@ -1691,7 +1698,6 @@ void scr_BufferSearch(int direction, const char *text)
 
     // Finished :)
     update_panels();
-    doupdate();
   } else
     scr_LogPrint(LPRINT_NORMAL, "Search string not found");
 }
@@ -1725,7 +1731,6 @@ void scr_BufferPercent(int pc)
 
   // Finished :)
   update_panels();
-  doupdate();
 }
 
 //  scr_BufferDate(t)
@@ -1753,7 +1758,6 @@ void scr_BufferDate(time_t t)
 
   // Finished :)
   update_panels();
-  doupdate();
 }
 
 //  scr_set_chatmode()
@@ -1940,22 +1944,27 @@ static const char *scr_cmdhisto_next(char *mask, guint len)
 // the  line, then this transposes the two characters before point.
 void readline_transpose_chars()
 {
-  char swp;
+  char *c1, *c2;
+  unsigned a, b;
 
   if (ptr_inputline == inputLine) return;
 
   if (!*ptr_inputline) { // We're at EOL
     // If line is only 1 char long, nothing to do...
-    if (ptr_inputline == inputLine+1) return;
+    if (ptr_inputline == prev_char(ptr_inputline, inputLine)) return;
     // Transpose the two previous characters
-    swp = *(ptr_inputline-2);
-    *(ptr_inputline-2) = *(ptr_inputline-1);
-    *(ptr_inputline-1) = swp;
+    c2 = prev_char(ptr_inputline, inputLine);
+    c1 = prev_char(c2, inputLine);
+    a = get_char(c1);
+    b = get_char(c2);
+    put_char(put_char(c1, b), a);
   } else {
     // Swap the two characters before the cursor and move right.
-    swp = *(ptr_inputline-1);
-    *(ptr_inputline-1) = *ptr_inputline;
-    *ptr_inputline++ = swp;
+    c2 = ptr_inputline;
+    c1 = prev_char(c2, inputLine);
+    a = get_char(c1);
+    b = get_char(c2);
+    put_char(put_char(c1, b), a);
     check_offset(1);
   }
 }
@@ -1969,16 +1978,18 @@ void readline_backward_kill_word()
 
   if (ptr_inputline == inputLine) return;
 
-  for (c = ptr_inputline-1 ; c > inputLine ; c--) {
-    if (!isalnum(*c)) {
-      if (*c == ' ')
+  c = prev_char(ptr_inputline, inputLine);
+  for ( ; c > inputLine ; c = prev_char(c, inputLine)) {
+    if (!iswalnum(get_char(c))) {
+      if (iswblank(get_char(c))) {
         if (!spaceallowed) break;
+      } else spaceallowed = 0;
     } else spaceallowed = 0;
   }
 
-  if (c != inputLine || *c != ' ')
-    if ((c < ptr_inputline-1) && (!isalnum(*c)))
-      c++;
+  if (c != inputLine || iswblank(get_char(c)))
+    if ((c < prev_char(ptr_inputline, inputLine)) && (!iswalnum(get_char(c))))
+      c = next_char(c);
 
   // Modify the line
   ptr_inputline = c;
@@ -1998,16 +2009,20 @@ void readline_backward_word()
 
   if (ptr_inputline == inputLine) return;
 
-  for (ptr_inputline-- ; ptr_inputline > inputLine ; ptr_inputline--) {
-    if (!isalnum(*ptr_inputline)) {
-      if (*ptr_inputline == ' ')
+  for (ptr_inputline = prev_char(ptr_inputline, inputLine) ;
+       ptr_inputline > inputLine ;
+       ptr_inputline = prev_char(ptr_inputline, inputLine)) {
+    if (!iswalnum(get_char(ptr_inputline))) {
+      if (iswblank(get_char(ptr_inputline))) {
         if (!spaceallowed) break;
+      } else spaceallowed = 0;
     } else spaceallowed = 0;
   }
 
-  if (ptr_inputline < old_ptr_inputLine-1
-      && *ptr_inputline == ' ' && *(ptr_inputline+1) != ' ')
-    ptr_inputline++;
+  if (ptr_inputline < prev_char(old_ptr_inputLine, inputLine)
+      && iswblank(get_char(ptr_inputline))
+      && iswblank(get_char(next_char(ptr_inputline))))
+    ptr_inputline = next_char(ptr_inputline);
 
   check_offset(-1);
 }
@@ -2019,10 +2034,11 @@ void readline_forward_word()
   int spaceallowed = 1;
 
   while (*ptr_inputline) {
-    ptr_inputline++;
-    if (!isalnum(*ptr_inputline)) {
-      if (*ptr_inputline == ' ')
+    ptr_inputline = next_char(ptr_inputline);
+    if (!iswalnum(get_char(ptr_inputline))) {
+      if (iswblank(get_char(ptr_inputline))) {
         if (!spaceallowed) break;
+      } else spaceallowed = 0;
     } else spaceallowed = 0;
   }
 
@@ -2054,7 +2070,7 @@ static int which_row(const char **p_row)
 
   // This is a command
   row = 0;
-  for (p = inputLine ; p < ptr_inputline ; p++) {
+  for (p = inputLine ; p < ptr_inputline ; p = next_char(p)) {
     if (quote) {
       if (*p == '"' && *(p-1) != '\\')
         quote = FALSE;
@@ -2091,6 +2107,8 @@ static void scr_insert_text(const char *text)
   strcpy(ptr_inputline, tmpLine);
 }
 
+static void scr_cancel_current_completion(void);
+
 //  scr_handle_tab()
 // Function called when tab is pressed.
 // Initiate or continue a completion...
@@ -2111,7 +2129,7 @@ static void scr_handle_tab(void)
     return;
 
   if (nrow == 0) {          // Command completion
-    row = &inputLine[1];
+    row = next_char(inputLine);
     compl_categ = COMPL_CMD;
   } else if (nrow == -1) {  // Nickname completion
     compl_categ = COMPL_RESOURCE;
@@ -2149,13 +2167,7 @@ static void scr_handle_tab(void)
       completion_started = TRUE;
     }
   } else {      // Completion already initialized
-    char *c;
-    guint back = cancel_completion();
-    // Remove $back chars
-    ptr_inputline -= back;
-    c = ptr_inputline;
-    for ( ; *c ; c++)
-      *c = *(c+back);
+    scr_cancel_current_completion();
     // Now complete again
     cchar = complete();
     if (cchar)
@@ -2166,12 +2178,16 @@ static void scr_handle_tab(void)
 static void scr_cancel_current_completion(void)
 {
   char *c;
+  char *src = ptr_inputline;
   guint back = cancel_completion();
+  guint i;
   // Remove $back chars
-  ptr_inputline -= back;
+  for (i = 0; i < back; i++)
+    ptr_inputline = prev_char(ptr_inputline, inputLine);
   c = ptr_inputline;
-  for ( ; *c ; c++)
-    *c = *(c+back);
+  for ( ; *src ; )
+    *c++ = *src++;
+  *c = 0;
 }
 
 static void scr_end_current_completion(void)
@@ -2185,30 +2201,47 @@ static void scr_end_current_completion(void)
 // screen.
 static inline void check_offset(int direction)
 {
+  int i;
+  char *c = &inputLine[inputline_offset];
   // Left side
   if (inputline_offset && direction <= 0) {
-    while (ptr_inputline <= (char*)&inputLine + inputline_offset) {
-      if (inputline_offset) {
-        inputline_offset -= 5;
-        if (inputline_offset < 0)
-          inputline_offset = 0;
-      } else
+    while (ptr_inputline <= c) {
+      for (i = 0; i < 5; i++)
+        c = prev_char(c, inputLine);
+      if (c == inputLine)
         break;
     }
   }
   // Right side
   if (direction >= 0) {
-    while (ptr_inputline >= inputline_offset + (char*)&inputLine + maxX)
-      inputline_offset += 5;
+    int delta = get_char_width(c);
+    while (ptr_inputline > c) {
+      c = next_char(c);
+      delta += get_char_width(c);
+    }
+    c = &inputLine[inputline_offset];
+    while (delta >= maxX) {
+      for (i = 0; i < 5; i++) {
+        delta -= get_char_width(c);
+        c = next_char(c);
+      }
+    }
   }
+  inputline_offset = c - inputLine;
 }
 
 static inline void refresh_inputline(void)
 {
   mvwprintw(inputWnd, 0,0, "%s", inputLine + inputline_offset);
   wclrtoeol(inputWnd);
-  if (*ptr_inputline)
-    wmove(inputWnd, 0, ptr_inputline - (char*)&inputLine - inputline_offset);
+  if (*ptr_inputline) {
+    // hack to set cursor pos. Characters can have different width,
+    // so I know of no better way.
+    char c = *ptr_inputline;
+    *ptr_inputline = 0;
+    mvwprintw(inputWnd, 0,0, "%s", inputLine + inputline_offset);
+    *ptr_inputline = c;
+  }
 }
 
 void scr_handle_CtrlC(void)
@@ -2282,6 +2315,29 @@ static inline guint match_keyseq(int *iseq, keyseq **ret)
   return -1;
 }
 
+static inline int match_utf8_keyseq(int *iseq)
+{
+  int *strp = iseq;
+  unsigned c = *strp++;
+  unsigned mask = 0x80;
+  int len = -1;
+  while (c & mask) {
+    mask >>= 1;
+    len++;
+  }
+  if (len <= 0 || len > 4)
+    return -1;
+  c &= mask - 1;
+  while ((*strp & 0xc0) == 0x80) {
+    if (len-- <= 0) // can't happen
+      return -1;
+    c = (c << 6) | (*strp++ & 0x3f);
+  }
+  if (len)
+    return 0;
+  return c;
+}
+
 void scr_Getch(keycode *kcode)
 {
   keyseq *mks = NULL;
@@ -2292,6 +2348,35 @@ void scr_Getch(keycode *kcode)
   memset(ks,  0, sizeof(ks));
 
   kcode->value = wgetch(inputWnd);
+  if (utf8_mode) {
+    bool meta = (kcode->value == 27);
+
+    if (meta)
+      ks[0] = wgetch(inputWnd);
+    else
+      ks[0] = kcode->value;
+
+    for (i = 0; i < MAX_KEYSEQ_LENGTH - 1; i++) {
+      int match = match_utf8_keyseq(ks);
+      if (match == -1)
+        break;
+      if (match > 0) {
+        kcode->value = match;
+        kcode->utf8 = 1;
+        if (meta)
+          kcode->mcode = MKEY_META;
+        return;
+      }
+      ks[i + 1] = wgetch(inputWnd);
+      if (ks[i + 1] == ERR)
+        break;
+    }
+    while (i > 0)
+      ungetch(ks[i--]);
+    if (meta)
+      ungetch(ks[0]);
+    memset(ks,  0, sizeof(ks));
+  }
   if (kcode->value != 27)
     return;
 
@@ -2327,16 +2412,27 @@ void scr_Getch(keycode *kcode)
   return;
 }
 
-static int bindcommand(keycode kcode) {
-  gchar asciikey[16];
+inline void scr_DoUpdate(void)
+{
+  doupdate();
+}
+
+static int bindcommand(keycode kcode)
+{
+  gchar asciikey[16], asciicode[16];
   const gchar *boundcmd;
 
-  if (!kcode.mcode || kcode.mcode == MKEY_EQUIV)
-    g_snprintf(asciikey, 15, "%d", kcode.value);
-  else if (kcode.mcode == MKEY_META)
-    g_snprintf(asciikey, 15, "M%d", kcode.value);
+  if (kcode.utf8)
+    g_snprintf(asciicode, 15, "U%d", kcode.value);
   else
-    g_snprintf(asciikey, 15, "MK%d", kcode.mcode);
+    g_snprintf(asciicode, 15, "%d", kcode.value);
+
+  if (!kcode.mcode || kcode.mcode == MKEY_EQUIV)
+    g_snprintf(asciikey, 15, "%s", asciicode);
+  else if (kcode.mcode == MKEY_META)
+    g_snprintf(asciikey, 15, "M%s", asciicode);
+  else
+    g_snprintf(asciikey, 15, "MK%s", asciicode);
 
   boundcmd = settings_get(SETTINGS_TYPE_BINDING, asciikey);
 
@@ -2353,8 +2449,11 @@ static int bindcommand(keycode kcode) {
   }
 
   scr_LogPrint(LPRINT_NORMAL, "Unknown key=%s", asciikey);
+#ifndef UNICODE
   if (utf8_mode)
-    scr_LogPrint(LPRINT_NORMAL, "WARNING: UTF-8 not yet supported!");
+    scr_LogPrint(LPRINT_NORMAL,
+                 "WARNING: Compiled without full UTF-8 support!");
+#endif
   return -1;
 }
 
@@ -2363,6 +2462,7 @@ static int bindcommand(keycode kcode) {
 int process_key(keycode kcode)
 {
   int key = kcode.value;
+  int display_char = FALSE;
 
   switch (kcode.mcode) {
     case 0:
@@ -2387,6 +2487,12 @@ int process_key(keycode kcode)
         key = ERR; // Do not process any further
   }
 
+  if (kcode.utf8) {
+    if (key != ERR && !kcode.mcode)
+      display_char = TRUE;
+    goto display;
+  }
+
   switch (key) {
     case 0:
     case ERR:
@@ -2395,25 +2501,28 @@ int process_key(keycode kcode)
     case 127:   // Backspace too
     case KEY_BACKSPACE:
         if (ptr_inputline != (char*)&inputLine) {
-          char *c = --ptr_inputline;
-          for ( ; *c ; c++)
-            *c = *(c+1);
+          char *src = ptr_inputline;
+          char *c = prev_char(ptr_inputline, inputLine);
+          ptr_inputline = c;
+          for ( ; *src ; )
+            *c++ = *src++;
+          *c = 0;
           check_offset(-1);
         }
         break;
     case KEY_DC:// Del
         if (*ptr_inputline)
-          strcpy(ptr_inputline, ptr_inputline+1);
+          strcpy(ptr_inputline, next_char(ptr_inputline));
         break;
     case KEY_LEFT:
         if (ptr_inputline != (char*)&inputLine) {
-          ptr_inputline--;
+          ptr_inputline = prev_char(ptr_inputline, inputLine);
           check_offset(-1);
         }
         break;
     case KEY_RIGHT:
         if (*ptr_inputline)
-          ptr_inputline++;
+          ptr_inputline = next_char(ptr_inputline);
           check_offset(1);
         break;
     case 7:     // Ctrl-g
@@ -2521,9 +2630,11 @@ int process_key(keycode kcode)
     case 23:    // Ctrl-w
         readline_backward_kill_word();
         break;
+    case 515:
     case 516:   // Ctrl-Left
         readline_backward_word();
         break;
+    case 517:
     case 518:   // Ctrl-Right
         readline_forward_word();
         break;
@@ -2549,30 +2660,33 @@ int process_key(keycode kcode)
         update_panels();
         break;
     default:
-        if (isprint(key)) {
-          char tmpLine[INPUTLINE_LENGTH+1];
+        display_char = TRUE;
+  } // switch
 
-          // Check the line isn't too long
-          if (strlen(inputLine) >= INPUTLINE_LENGTH)
-            return 0;
+display:
+  if (display_char) {
+    if (kcode.utf8 ? iswprint(key) : isprint(key)) {
+      char tmpLine[INPUTLINE_LENGTH+1];
 
-          // Insert char
-          strcpy(tmpLine, ptr_inputline);
-          *ptr_inputline++ = key;
-          strcpy(ptr_inputline, tmpLine);
-          check_offset(1);
-        } else {
-          // Look for a key binding.
-          if (bindcommand(kcode) == 255)
-            return 255;
-        }
+      // Check the line isn't too long
+      if (strlen(inputLine) + 4 > INPUTLINE_LENGTH)
+        return 0;
+
+      // Insert char
+      strcpy(tmpLine, ptr_inputline);
+      ptr_inputline = put_char(ptr_inputline, key);
+      strcpy(ptr_inputline, tmpLine);
+      check_offset(1);
+    } else {
+      // Look for a key binding.
+      if (!kcode.utf8 && (bindcommand(kcode) == 255))
+        return 255;
+    }
   }
 
   if (completion_started && key != 9 && key != KEY_RESIZE)
     scr_end_current_completion();
   refresh_inputline();
-  if (!update_roster)
-    doupdate();
   return 0;
 }
 

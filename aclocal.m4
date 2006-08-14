@@ -860,6 +860,7 @@ AC_SUBST([am__tar])
 AC_SUBST([am__untar])
 ]) # _AM_PROG_TAR
 
+m4_include([macros/curslib.m4])
 m4_include([macros/define_dir.m4])
 m4_include([macros/glib-2.0.m4])
 m4_include([macros/timezone.m4])

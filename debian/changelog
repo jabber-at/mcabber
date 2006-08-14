@@ -1,3 +1,9 @@
+mcabber (0.8.0-1) unstable; urgency=low
+
+  * New upstream release
+
+ -- Mario Iseli <admin@marioiseli.com>  Mon, 14 Aug 2006 19:39:56 +0200
+
 mcabber (0.7.8-1) unstable; urgency=low
 
   * Initial release Closes: #362617
