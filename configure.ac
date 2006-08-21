@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.8.0],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.8.1],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -38,7 +38,8 @@ AC_CHECK_FUNC(initscr,,
         [LIBS="$LIBS -l$cf_ncurses"
          if test "$cf_ncurses" = ncursesw; then
             AC_CHECK_HEADERS([ncursesw/ncurses.h ncursesw/panel.h],,
-                             AC_MSG_ERROR([Missing header file]))
+                 [AC_CHECK_HEADERS([ncurses.h panel.h],,
+                                   AC_MSG_ERROR([Missing header file]))])
          else
              AC_CHECK_HEADERS([ncurses/ncurses.h ncurses/panel.h],,
                  [AC_CHECK_HEADERS([ncurses.h panel.h],,
