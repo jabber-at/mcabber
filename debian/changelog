@@ -1,3 +1,9 @@
+mcabber (0.8.1-1~bpo.1) sarge-backports; urgency=low
+
+  * Backport to Sarge (simple recompile).
+
+ -- Mario Iseli <admin@marioiseli.com>  Mon, 04 Sep 2006 00:32:21 +0200
+
 mcabber (0.8.1-1) unstable; urgency=medium
 
   * New upstream release
