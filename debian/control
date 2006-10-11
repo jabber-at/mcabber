@@ -2,7 +2,7 @@ Source: mcabber
 Section: net
 Priority: optional
 Maintainer: Mario Iseli <admin@marioiseli.com>
-Build-Depends: debhelper (>= 5.0.0), autotools-dev, libglib2.0-dev, libncurses5-dev, libssl-dev
+Build-Depends: debhelper (>= 5.0.0), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev
 Standards-Version: 3.7.2
 
 Package: mcabber

@@ -1,15 +1,23 @@
+mcabber (0.8.2-2) unstable; urgency=low
+
+  * Added support for Unicode (linked against linbcursesw5)
+  * Depend now on libncursesw5
+  * Build-Depend now on linbcursesw5-dev
+
+ -- Mario Iseli <admin@marioiseli.com>  Wed, 11 Oct 2006 23:02:51 +0200
+
 mcabber (0.8.2-1) unstable; urgency=low
 
   * New upstream release
 
  -- Mario Iseli <admin@marioiseli.com>  Sat, 23 Sep 2006 11:36:18 +0200
-
+ 
 mcabber (0.8.1-1) unstable; urgency=medium
 
   * New upstream release
 
  -- Mario Iseli <admin@marioiseli.com>  Mon, 21 Aug 2006 23:25:51 +0200
-
+ 
 mcabber (0.8.0-1) unstable; urgency=low
 
   * New upstream release
