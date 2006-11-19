@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.8.2],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.8.3],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -118,11 +118,7 @@ if test "$with_ssl" != "no"; then
         CFLAGS="$CFLAGS -I${with_openssl}"
         AC_DEFINE([HAVE_OPENSSL], [], [OpenSSL])
         AC_MSG_RESULT([found in $with_openssl])
-        AC_CHECK_LIB(crypto, main, [
-                AC_CHECK_LIB(crypto, SSLeay_add_all_algorithms, [
-                    AC_DEFINE([HAVE_SSLEAY], [], [SSLeay])
-                ])
-            ])
+        AC_CHECK_LIB(crypto, main)
         AC_CHECK_LIB(ssl, main)
     else
         AC_MSG_RESULT([not found or disabled])

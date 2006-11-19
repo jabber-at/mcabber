@@ -291,7 +291,11 @@ uninstall-am: uninstall-info-am
 
 install-data-local:
 	$(INSTALL) -d $(DESTDIR)$(datadir)/mcabber/help
-	cp -R ?? $(DESTDIR)$(datadir)/mcabber/help/
+	for lang in en fr pl; do \
+		$(INSTALL) -d $(DESTDIR)$(datadir)/mcabber/help/$$lang; \
+		$(INSTALL) -m 0644 $$lang/* \
+		           $(DESTDIR)$(datadir)/mcabber/help/$$lang; \
+	done
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.
 .NOEXPORT:
