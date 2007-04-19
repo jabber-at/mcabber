@@ -2,11 +2,12 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.8.3],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.9.1],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
 
+#AC_PROG_LIBTOOL
 AC_PROG_RANLIB
 
 # Checks for programs.
@@ -24,38 +25,6 @@ if test "x$GCC" = "xyes"; then
 
     CFLAGS="$CFLAGS -Wall"
 fi
-
-# Checks for libraries.
-
-AC_CHECK_FUNC(initscr,,
-[
-    cf_ncurses="ncurses"
-    for lib in ncursesw ncurses
-    do
-        AC_CHECK_LIB($lib, waddnwstr, [cf_ncurses="$lib"; break])
-    done
-    AC_CHECK_LIB($cf_ncurses, initscr,
-        [LIBS="$LIBS -l$cf_ncurses"
-         if test "$cf_ncurses" = ncursesw; then
-            AC_CHECK_HEADERS([ncursesw/ncurses.h ncursesw/panel.h],,
-                 [AC_CHECK_HEADERS([ncurses.h panel.h],,
-                                   AC_MSG_ERROR([Missing header file]))])
-         else
-             AC_CHECK_HEADERS([ncurses/ncurses.h ncurses/panel.h],,
-                 [AC_CHECK_HEADERS([ncurses.h panel.h],,
-                                   AC_MSG_ERROR([Missing header file]))])
-         fi
-        ],
-        [CF_CURSES_LIBS])
-])
-
-AC_CHECK_LIB([panelw], [new_panel],,
-             AC_CHECK_LIB([panel], [new_panel])
-            )
-
-AC_CHECK_DECLS([strptime],,,
-[#define _GNU_SOURCE
-#include <time.h>])
 
 # Checks for header files.
 AC_HEADER_STDC
@@ -86,11 +55,63 @@ AC_CHECK_FUNCS([alarm bzero gethostbyname gethostname inet_ntoa isascii \
                 memmove memset modf select setlocale socket strcasecmp \
                 strchr strdup strncasecmp strrchr strstr strcasestr])
 
+
+AC_CHECK_DECLS([strptime],,,
+[#define _GNU_SOURCE
+#include <time.h>])
+
 # Check for tm_gmtoff
 MC_TM_GMTOFF
 
+# Checks for libraries.
+
+AC_CHECK_FUNC(initscr,,
+[
+    cf_ncurses="ncurses"
+    for lib in ncursesw ncurses
+    do
+        AC_CHECK_LIB($lib, waddnwstr,
+            [cf_ncurses="$lib"; cf_ncurses_unicode="yes"; break])
+    done
+    AC_CHECK_LIB($cf_ncurses, initscr,
+        [LIBS="$LIBS -l$cf_ncurses"
+         if test "$cf_ncurses" = ncursesw; then
+            AC_CHECK_HEADERS([ncursesw/ncurses.h ncursesw/panel.h],,
+                 [AC_CHECK_HEADERS([ncurses.h panel.h],,
+                                   AC_MSG_ERROR([Missing header file]))])
+         else
+             AC_CHECK_HEADERS([ncurses/ncurses.h ncurses/panel.h],,
+                 [AC_CHECK_HEADERS([ncurses.h panel.h],,
+                                   AC_MSG_ERROR([Missing header file]))])
+         fi
+        ],
+        [CF_CURSES_LIBS])
+])
+
+AC_CHECK_LIB([panelw], [new_panel],,
+             AC_CHECK_LIB([panel], [new_panel])
+            )
+
+if test x"$cf_ncurses_unicode" = x"yes"; then
+    AC_DEFINE([HAVE_UNICODE], [], [Define if ncurses have unicode support])
+else
+    AC_MSG_WARN([Your ncurses installation does not support unicode])
+fi
+
 # Check for glib
 AM_PATH_GLIB_2_0(2.0.0, , AC_MSG_ERROR([glib is required]),[g_list_append])
+
+# Check for gpgme
+AC_ARG_ENABLE(gpgme, AC_HELP_STRING([--disable-gpgme], [Disable GPGME support]),
+    [ if test x"$enableval" = x"no"; then
+        enable_gpgme=no
+      fi
+    ])
+
+if test x"${enable_gpgme}" != x"no"; then
+    AM_PATH_GPGME(1.0.0, AC_DEFINE(HAVE_GPGME, 1,
+        [Define if you use GPGME to support OpenPGP]))
+fi
 
 AC_ARG_WITH(ssl, [  --with-ssl              enable SSL secured connections using either OpenSSL
                           or GnuTLS],
@@ -141,7 +162,7 @@ fi
 AC_ARG_ENABLE(debug,
     [AC_HELP_STRING(--enable-debug, Add development compilation options)],
     debug=$enableval, debug="")
-if test "${debug}" = "yes"; then
+if test x"${debug}" = x"yes"; then
     AC_DEFINE_UNQUOTED([DEBUG_ENABLE],[1],[Devel compilation options])
     if test "x$GCC" = "xyes"; then
         if test "$gccvernum" -ge "400"; then

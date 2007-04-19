@@ -28,39 +28,38 @@
 #include "utils.h"
 #include "logprint.h"
 
-static GSList *option;
-static GSList *alias;
-static GSList *binding;
+static GHashTable *option;
+static GHashTable *alias;
+static GHashTable *binding;
 
+#ifdef HAVE_GPGME     /* PGP settings */
+static GHashTable *pgpopt;
 
 typedef struct {
-  gchar *name;
-  gchar *value;
-} T_setting;
+  gchar *pgp_keyid;   /* KeyId the contact is supposed to use */
+  guint pgp_disabled; /* If TRUE, PGP is disabled for outgoing messages */
+} T_pgpopt;
+#endif
 
-static inline GSList **get_list_ptr(guint type)
+static inline GHashTable *get_hash(guint type)
 {
-  if      (type == SETTINGS_TYPE_OPTION)  return &option;
-  else if (type == SETTINGS_TYPE_ALIAS)   return &alias;
-  else if (type == SETTINGS_TYPE_BINDING) return &binding;
+  if      (type == SETTINGS_TYPE_OPTION)  return option;
+  else if (type == SETTINGS_TYPE_ALIAS)   return alias;
+  else if (type == SETTINGS_TYPE_BINDING) return binding;
   return NULL;
 }
 
-// Return a pointer to the node with the requested key, or NULL if none found
-static GSList *settings_find(GSList *list, const gchar *key)
-{
-  GSList *ptr;
-
-  if (!list) return NULL;
-
-  for (ptr = list ; ptr; ptr = g_slist_next(ptr))
-    if (!strcasecmp(key, ((T_setting*)ptr->data)->name))
-      break;
-
-  return ptr;
-}
-
 /* -- */
+
+void settings_init(void)
+{
+  option  = g_hash_table_new_full(&g_str_hash, &g_str_equal, &g_free, &g_free);
+  alias   = g_hash_table_new_full(&g_str_hash, &g_str_equal, &g_free, &g_free);
+  binding = g_hash_table_new_full(&g_str_hash, &g_str_equal, &g_free, &g_free);
+#ifdef HAVE_GPGME
+  pgpopt = g_hash_table_new(&g_str_hash, &g_str_equal);
+#endif
+}
 
 //  cfg_read_file(filename)
 // Read and parse config file "filename".  If filename is NULL,
@@ -134,18 +133,21 @@ int cfg_read_file(char *filename)
     if ((*line == '\n') || (*line == '\0') || (*line == '#'))
       continue;
 
-    if ((strchr(line, '=') != NULL)) {
-      // Only accept the set, alias and bind commands
-      if (strncmp(line, "set ", 4) &&
-          strncmp(line, "bind ", 5) &&
-          strncmp(line, "alias ", 6)) {
+    if ((strchr(line, '=') != NULL) || !strncmp(line, "pgp ", strlen("pgp "))) {
+      // Only accept the set, alias, bind and pgp commands
+      if (strncmp(line, "set ", strlen("set ")) &&
+          strncmp(line, "pgp ", strlen("pgp ")) &&
+          strncmp(line, "bind ", strlen("bind ")) &&
+          strncmp(line, "alias ", strlen("alias "))) {
         scr_LogPrint(LPRINT_LOGNORM,
                      "Error in configuration file (l. %d): bad command", ln);
         err++;
         continue;
       }
-      *(--line) = '/';        // Set the leading '/' to build a command line
-      process_command(line);  // Process the command
+      // Set the leading COMMAND_CHAR to build a command line
+      // and process the command
+      *(--line) = COMMAND_CHAR;
+      process_command(line);
     } else {
       scr_LogPrint(LPRINT_LOGNORM,
                    "Error in configuration file (l. %d): no assignment", ln);
@@ -167,7 +169,7 @@ int cfg_read_file(char *filename)
 // to NULL and return FALSE.
 //
 // The caller should g_free() *pkey and *pval (if not NULL) after use.
-guint parse_assigment(gchar *assignment, const gchar **pkey, const gchar **pval)
+guint parse_assigment(gchar *assignment, gchar **pkey, gchar **pval)
 {
   char *key, *val, *t, *p;
 
@@ -229,31 +231,16 @@ guint parse_assigment(gchar *assignment, const gchar **pkey, const gchar **pval)
 
 void settings_set(guint type, const gchar *key, const gchar *value)
 {
-  GSList **plist;
-  GSList *sptr;
-  T_setting *setting;
+  GHashTable *hash;
 
-  plist = get_list_ptr(type);
-  if (!plist) return;
+  hash = get_hash(type);
+  if (!hash)
+    return;
 
-  sptr = settings_find(*plist, key);
-  if (sptr) {
-    // The setting has been found.  We will update it or delete it.
-    setting = (T_setting*)sptr->data;
-    g_free(setting->value);
-    if (!value) {
-      // Let's remove the setting
-      g_free(setting->name);
-      *plist = g_slist_delete_link(*plist, sptr);
-    } else {
-      // Let's update the setting
-      setting->value = g_strdup(value);
-    }
-  } else if (value) {
-    setting = g_new(T_setting, 1);
-    setting->name  = g_strdup(key);
-    setting->value = g_strdup(value);
-    *plist = g_slist_append(*plist, setting);
+  if (!value) {
+    g_hash_table_remove(hash, key);
+  } else {
+    g_hash_table_insert(hash, g_strdup(key), g_strdup(value));
   }
 }
 
@@ -264,16 +251,13 @@ void settings_del(guint type, const gchar *key)
 
 const gchar *settings_get(guint type, const gchar *key)
 {
-  GSList **plist;
-  GSList *sptr;
-  T_setting *setting;
+  GHashTable *hash;
 
-  plist = get_list_ptr(type);
-  sptr = settings_find(*plist, key);
-  if (!sptr) return NULL;
+  hash = get_hash(type);
+  if (!hash)
+    return NULL;
 
-  setting = (T_setting*)sptr->data;
-  return setting->value;
+  return g_hash_table_lookup(hash, key);
 }
 
 int settings_get_int(guint type, const gchar *key)
@@ -326,21 +310,132 @@ const gchar *settings_get_status_msg(enum imstatus status)
 
 //  settings_foreach(type, pfunction, param)
 // Call pfunction(param, key, value) for each setting with requested type.
-void settings_foreach(guint type, void (*pfunc)(void *param, char *k, char *v),
+void settings_foreach(guint type, void (*pfunc)(char *k, char *v, void *param),
                       void *param)
 {
-  GSList **plist;
-  GSList *ptr;
-  T_setting *setting;
+  GHashTable *hash;
 
-  plist = get_list_ptr(type);
+  hash = get_hash(type);
+  if (!hash)
+    return;
 
-  if (!*plist) return;
+  g_hash_table_foreach(hash, (GHFunc)pfunc, param);
+}
 
-  for (ptr = *plist ; ptr; ptr = g_slist_next(ptr)) {
-    setting = ptr->data;
-    pfunc(param, setting->name, setting->value);
+
+//  default_muc_nickname()
+// Return the user's default nickname
+// The caller should free the string after use
+char *default_muc_nickname(void)
+{
+  char *nick;
+
+  // We try the "nickname" option, then the username part of the jid.
+  nick = (char*)settings_opt_get("nickname");
+  if (nick)
+    return g_strdup(nick);
+
+  nick = g_strdup(settings_opt_get("username"));
+  if (nick) {
+    char *p = strchr(nick, JID_DOMAIN_SEPARATOR);
+    if (p > nick)
+      *p = 0;
   }
+  return nick;
+}
+
+
+/* PGP settings */
+
+//  settings_pgp_setdisabled(jid, value)
+// Enable/disable PGP encryption for jid.
+// (Set value to TRUE to disable encryption)
+void settings_pgp_setdisabled(const char *bjid, guint value)
+{
+#ifdef HAVE_GPGME
+  T_pgpopt *pgpdata;
+  pgpdata = g_hash_table_lookup(pgpopt, bjid);
+  if (!pgpdata) {
+    // If value is 0, we do not need to create a structure (that's
+    // the default value).
+    if (value) {
+      pgpdata = g_new0(T_pgpopt, 1);
+      pgpdata->pgp_disabled = value;
+      g_hash_table_insert(pgpopt, g_strdup(bjid), pgpdata);
+    }
+  } else {
+    pgpdata->pgp_disabled = value;
+    // We could remove the key/value if pgp_disabled is 0 and
+    // pgp_keyid is NULL, actually.
+  }
+#endif
+}
+
+//  settings_pgp_getdisabled(jid)
+// Return TRUE if PGP encryption should be disabled for jid.
+guint settings_pgp_getdisabled(const char *bjid)
+{
+#ifdef HAVE_GPGME
+  T_pgpopt *pgpdata;
+  pgpdata = g_hash_table_lookup(pgpopt, bjid);
+  if (pgpdata)
+    return pgpdata->pgp_disabled;
+  else
+    return FALSE; // default: not disabled
+#else
+  return TRUE;    // No PGP support, let's say it's disabled.
+#endif
+}
+
+//  settings_pgp_setkeyid(jid, keyid)
+// Set the PGP KeyId for user jid.
+// Use keyid = NULL to erase the previous KeyId.
+void settings_pgp_setkeyid(const char *bjid, const char *keyid)
+{
+#ifdef HAVE_GPGME
+  T_pgpopt *pgpdata;
+  pgpdata = g_hash_table_lookup(pgpopt, bjid);
+  if (!pgpdata) {
+    // If keyid is NULL, we do not need to create a structure (that's
+    // the default value).
+    if (keyid) {
+      pgpdata = g_new0(T_pgpopt, 1);
+      pgpdata->pgp_keyid = g_strdup(keyid);
+      g_hash_table_insert(pgpopt, g_strdup(bjid), pgpdata);
+    }
+  } else {
+    g_free(pgpdata->pgp_keyid);
+    if (keyid)
+      pgpdata->pgp_keyid = g_strdup(keyid);
+    else
+      pgpdata->pgp_keyid = NULL;
+    // We could remove the key/value if pgp_disabled is 0 and
+    // pgp_keyid is NULL, actually.
+  }
+#endif
+}
+
+//  settings_pgp_getkeyid(jid)
+// Get the PGP KeyId for user jid.
+const char *settings_pgp_getkeyid(const char *bjid)
+{
+#ifdef HAVE_GPGME
+  T_pgpopt *pgpdata;
+  pgpdata = g_hash_table_lookup(pgpopt, bjid);
+  if (pgpdata)
+    return pgpdata->pgp_keyid;
+#endif
+  return NULL;
+}
+
+guint get_max_history_blocks(void)
+{
+  int max_num_of_blocks = settings_opt_get_int("max_history_blocks");
+  if (max_num_of_blocks < 0)
+    max_num_of_blocks = 0;
+  else if (max_num_of_blocks == 1)
+    max_num_of_blocks = 2;
+  return (guint)max_num_of_blocks;
 }
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

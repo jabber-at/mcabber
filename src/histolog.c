@@ -40,29 +40,30 @@ static guint FileLoadLogs;
 static char *RootDir;
 
 
-//  user_histo_file()
+//  user_histo_file(jid)
 // Returns history filename for the given jid
 // Note: the caller *must* free the filename after use (if not null).
-static char *user_histo_file(const char *jid)
+static char *user_histo_file(const char *bjid)
 {
   char *filename;
-  char *lowerid, *p;
-  if (!UseFileLogging && !FileLoadLogs) return NULL;
+  char *lowerid;
 
-  lowerid = g_strdup(jid);
-  for (p=lowerid; *p ; p++)
-    *p = tolower(*p);
+  if (!(UseFileLogging || FileLoadLogs))
+    return NULL;
 
-  filename = g_new(char, strlen(RootDir) + strlen(jid) + 1);
-  strcpy(filename, RootDir);
-  strcat(filename, lowerid);
+  lowerid = g_strdup(bjid);
+  if (!lowerid)
+    return NULL;
+  mc_strtolower(lowerid);
+
+  filename = g_strdup_printf("%s%s", RootDir, lowerid);
   g_free(lowerid);
   return filename;
 }
 
 //  write_histo_line()
 // Adds a history (multi-)line to the jid's history logfile
-static void write_histo_line(const char *jid,
+static void write_histo_line(const char *bjid,
         time_t timestamp, guchar type, guchar info, const char *data)
 {
   guint len = 0;
@@ -73,9 +74,14 @@ static void write_histo_line(const char *jid,
   char str_ts[20];
   int err;
 
-  if (!UseFileLogging) return;
+  if (!UseFileLogging)
+    return;
 
-  filename = user_histo_file(jid);
+  // Do not log status messages when 'logging_ignore_status' is set
+  if (type == 'S' && settings_opt_get_int("logging_ignore_status"))
+    return;
+
+  filename = user_histo_file(bjid);
 
   // If timestamp is null, get current date
   if (timestamp)
@@ -119,7 +125,7 @@ static void write_histo_line(const char *jid,
 
 //  hlog_read_history()
 // Reads the jid's history logfile
-void hlog_read_history(const char *jid, GList **p_buddyhbuf, guint width)
+void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
 {
   char *filename;
   guchar type, info;
@@ -133,10 +139,12 @@ void hlog_read_history(const char *jid, GList **p_buddyhbuf, guint width)
   guint err = 0;
   guint ln = 0; // line number
   time_t starttime;
+  int max_num_of_blocks;
 
-  if (!FileLoadLogs) return;
+  if (!FileLoadLogs)
+    return;
 
-  if ((roster_gettype(jid) & ROSTER_TYPE_ROOM) &&
+  if ((roster_gettype(bjid) & ROSTER_TYPE_ROOM) &&
       (settings_opt_get_int("load_muc_logs") != 1))
     return;
 
@@ -146,33 +154,40 @@ void hlog_read_history(const char *jid, GList **p_buddyhbuf, guint width)
     return;
   }
 
-  filename = user_histo_file(jid);
+  filename = user_histo_file(bjid);
 
   fp = fopen(filename, "r");
   g_free(filename);
-  if (!fp) { g_free(data); return; }
+  if (!fp) {
+    g_free(data);
+    return;
+  }
 
   // If file is large (> 3MB here), display a message to inform the user
   // (it can take a while...)
   if (!fstat(fileno(fp), &bufstat)) {
     if (bufstat.st_size > 3145728)
-      scr_LogPrint(LPRINT_LOGNORM, "Reading <%s> history file...", jid);
+      scr_LogPrint(LPRINT_LOGNORM, "Reading <%s> history file...", bjid);
   }
 
-  starttime = 0;
+  max_num_of_blocks = get_max_history_blocks();
+
+  starttime = 0L;
   if (settings_opt_get_int("max_history_age") > 0) {
     int maxdays = settings_opt_get_int("max_history_age");
     time(&starttime);
-    if (maxdays >= starttime/86400)
-      starttime = 0;
+    if (maxdays >= starttime/86400L)
+      starttime = 0L;
     else
-      starttime -= maxdays * 86400;
+      starttime -= maxdays * 86400L;
   }
 
   /* See write_histo_line() for line format... */
   while (!feof(fp)) {
     guint dataoffset = 25;
-    if (fgets(data, HBB_BLOCKSIZE+27, fp) == NULL) break;
+
+    if (fgets(data, HBB_BLOCKSIZE+27, fp) == NULL)
+      break;
     ln++;
 
     for (tail = data; *tail; tail++) ;
@@ -186,7 +201,7 @@ void hlog_read_history(const char *jid, GList **p_buddyhbuf, guint width)
          (data[25] != ' ' && data[26] != ' '))) {
       if (!err) {
         scr_LogPrint(LPRINT_LOGNORM,
-                     "Error in history file format (%s), l.%u", jid, ln);
+                     "Error in history file format (%s), l.%u", bjid, ln);
         err = 1;
       }
       continue;
@@ -202,7 +217,7 @@ void hlog_read_history(const char *jid, GList **p_buddyhbuf, guint width)
         ((type == 'I') && (!strchr("OAIFDN", info)))) {
       if (!err) {
         scr_LogPrint(LPRINT_LOGNORM, "Error in history file format (%s), l.%u",
-                     jid, ln);
+                     bjid, ln);
         err = 1;
       }
       continue;
@@ -230,7 +245,7 @@ void hlog_read_history(const char *jid, GList **p_buddyhbuf, guint width)
     // Check if the data is older than max_history_age
     if (starttime) {
       if (timestamp > starttime)
-        starttime = 0; // From now on, load everything
+        starttime = 0L; // From now on, load everything
       else
         continue;
     }
@@ -244,7 +259,8 @@ void hlog_read_history(const char *jid, GList **p_buddyhbuf, guint width)
       converted = from_utf8(&data[dataoffset+1]);
       if (converted) {
         xtext = ut_expand_tabs(converted); // Expand tabs
-        hbuf_add_line(p_buddyhbuf, xtext, timestamp, prefix_flags, width);
+        hbuf_add_line(p_buddyhbuf, xtext, timestamp, prefix_flags, width,
+                      max_num_of_blocks);
         if (xtext != converted)
           g_free(xtext);
         g_free(converted);
@@ -275,43 +291,40 @@ void hlog_enable(guint enable, const char *root_dir, guint loadfiles)
       // RootDir must be slash-terminated
       if (root_dir[l-1] == '/')
         RootDir = g_strdup(root_dir);
-      else {
-        RootDir = g_new(char, l+2);
-        strcpy(RootDir, root_dir);
-        strcat(RootDir, "/");
-      }
+      else
+        RootDir = g_strdup_printf("%s/", root_dir);
     } else {
       char *home = getenv("HOME");
-      char *dir = "/.mcabber/histo/";
-      RootDir = g_new(char, strlen(home) + strlen(dir) + 1);
-      strcpy(RootDir, home);
-      strcat(RootDir, dir);
+      const char *dir = "/.mcabber/histo/";
+      RootDir = g_strdup_printf("%s%s", home, dir);
     }
     // Check directory permissions (should not be readable by group/others)
     if (checkset_perm(RootDir, TRUE) == -1) {
       // The directory does not actually exists
       g_free(RootDir);
+      RootDir = NULL;
       scr_LogPrint(LPRINT_LOGNORM, "ERROR: Cannot access "
                    "history log directory, logging DISABLED");
       UseFileLogging = FileLoadLogs = FALSE;
     }
   } else {  // Disable history logging
     g_free(RootDir);
+    RootDir = NULL;
   }
 }
 
-inline void hlog_write_message(const char *jid, time_t timestamp, int sent,
+inline void hlog_write_message(const char *bjid, time_t timestamp, int sent,
         const char *msg)
 {
-  write_histo_line(jid, timestamp, 'M', ((sent) ? 'S' : 'R'), msg);
+  write_histo_line(bjid, timestamp, 'M', ((sent) ? 'S' : 'R'), msg);
 }
 
-inline void hlog_write_status(const char *jid, time_t timestamp,
+inline void hlog_write_status(const char *bjid, time_t timestamp,
         enum imstatus status, const char *status_msg)
 {
   // #1 XXX Check status value?
   // #2 We could add a user-readable comment
-  write_histo_line(jid, timestamp, 'S', toupper(imstatus2char[status]),
+  write_histo_line(bjid, timestamp, 'S', toupper(imstatus2char[status]),
           status_msg);
 }
 

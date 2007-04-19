@@ -26,6 +26,11 @@
 // Note: message length is limited by the HBB_BLOCKSIZE size too
 #define MULTILINE_MAX_LINE_NUMBER 299
 
+// When chatstates are enabled, timeout (in seconds) before "composing"
+// becomes "paused" because of user inactivity.
+// Warning: setting this very low will cause more network traffic.
+#define COMPOSING_TIMEOUT 6L
+
 enum colors {
   COLOR_GENERAL = 3,
   COLOR_MSGOUT,
@@ -76,12 +81,14 @@ void scr_UpdateMainStatus(int forceupdate);
 void scr_UpdateChatStatus(int forceupdate);
 void scr_RosterVisibility(int status);
 void scr_WriteIncomingMessage(const char *jidfrom, const char *text,
-        time_t timestamp, guint prefix);
-void scr_WriteOutgoingMessage(const char *jidto,   const char *text);
+                              time_t timestamp, guint prefix);
+void scr_WriteOutgoingMessage(const char *jidto,   const char *text,
+                              guint prefix);
 void scr_ShowBuddyWindow(void);
 int  scr_BuddyBufferExists(const char *jid);
 inline void scr_UpdateBuddyWindow(void);
 inline void scr_set_chatmode(int enable);
+inline int  scr_get_chatmode(void);
 inline void scr_set_multimode(int enable, char *subject);
 inline int  scr_get_multimode(void);
 void scr_setmsgflag_if_needed(const char *jid, int special);
@@ -91,20 +98,28 @@ inline const char *scr_get_multimode_subj(void);
 
 inline void scr_Beep(void);
 
-unsigned int scr_GetAutoAwayTimeout(time_t now);
+long int scr_GetAutoAwayTimeout(time_t now);
 void scr_CheckAutoAway(int activity);
+
+#if defined JEP0022 || defined JEP0085
+long int scr_GetChatStatesTimeout(time_t now);
+#endif
+int chatstates_disabled;
 
 // For commands...
 void scr_RosterTop(void);
 void scr_RosterBottom(void);
 void scr_RosterUp(void);
 void scr_RosterDown(void);
+void scr_RosterPrevGroup(void);
+void scr_RosterNextGroup(void);
 void scr_RosterSearch(char *);
 void scr_RosterJumpJid(char *);
 void scr_BufferTopBottom(int topbottom);
 void scr_BufferClear(void);
 void scr_BufferScrollLock(int lock);
-void scr_BufferPurge(void);
+void scr_BufferPurge(int);
+void scr_BufferPurgeAll(int);
 void scr_BufferSearch(int direction, const char *text);
 void scr_BufferPercent(int pc);
 void scr_BufferDate(time_t t);

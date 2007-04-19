@@ -1,7 +1,7 @@
 MCABBER(1)
 ===========
 Mikael BERTHE <mcabber@lilotux.net>
-v0.8.3, November 2006
+v0.9.1, February 2007
 
 NAME
 ----
@@ -24,6 +24,8 @@ Here are some of the features of `mcabber`:
 
 - 'SSL support'.
 - 'MUC support' (Multi-User Chat).
+- 'PGP support'
+- 'Chat States' support (typing notifications)
 - 'History logging:'  If enabled (see the CONFIGURATION FILE section),
   `mcabber` can save discussions to history log files.
 - 'Commands completion:'  If possible, `mcabber` will try to complete your
@@ -86,13 +88,16 @@ leave the chat mode.
 
 Here is a quick description of the key bindings:
 
+Esc::           Disable chat mode
 Ctrl-a::        Go to the beginning of the input line
 Ctrl-e::        Go to the end of the input line
 Ctrl-l::        Force a refresh
 Up/Down::       Move in the input line history
 PgUp/PgDown::   Move inside the roster (buddylist)
 Tab::           Complete current word, in the input line
-Ctrl-g::        Cancel completion / ctrl-g
+Ctrl-g::        Cancel completion
+Ctrl-c::        Abort multi-line messages and completions
+Ctrl-d::        Send/terminate a multi-line message
 Ctrl-p/Ctrl-n:: Scroll up/down half a screen in the buffer window (chat mode)
 Ctrl-Left::     Move the cursor back to the start of the current or previous word
 Ctrl-Right::    Move the cursor forward to the end of the current or next word
@@ -101,9 +106,8 @@ Ctrl-k::        Delete from the cursor to the end of line
 Ctrl-w::        Backward kill word
 Ctrl-t::        Transpose chars
 Ctrl-o::        Accept line and put the next history line in the input line (accept-line-and-down-history)
-Ctrl-q::        Jump to the next unread message
 
-Additional key bindings may be specified using the /bind command described
+Additional key bindings may be specified using the '/bind' command described
 in the COMMANDS section.
 
 MCABBER'S ROSTER
@@ -173,15 +177,18 @@ COMMANDS RELATED TO MCABBER
         Example: "/bind 265 = status online" (265 is F1 for me, but it may
         depend on your ncurses installation).
 
-/buffer clear|purge|top|bottom|date|%|search_backward|search_forward::
+/buffer clear|close|close_all|purge::
+/buffer top|bottom|date|%|search_backward|search_forward::
 /buffer scroll_lock|scroll_unlock|scroll_toggle::
         The 'buffer' command manipulates the current buddy's buffer
         (chat window).
 
         'clear';;                clear the current buddy chat window
+        'close';;                empty all contents of the buffer and close the current buddy chat window
+        'close_all';;            empty all contents of the chat buffers and close the chat windows
         'purge';;                clear the current buddy chat window and empty all contents of the chat buffer
-        'bottom';;               jump to the bottom of the current buddy chat buffer
         'top';;                  jump to the top of the current buddy chat buffer
+        'bottom';;               jump to the bottom of the current buddy chat buffer
         'up' [n];;               scroll the buffer up n lines (default: half a screen)
         'down' [n];;             scroll the buffer down n lines (default: half a screen)
         'date' date;;            jump to the first line after the specified date in the chat buffer (date format: "YYYY-mm-dd[THH:MM:SS]", "-" and ":" are optional)
@@ -263,7 +270,8 @@ COMMANDS RELATED TO THE ROSTER AND JABBER RESOURCES
 
 /move [groupname]::
         Move the current buddy to the requested group.  If no group is
-        specified, then the buddy is moved to the default group. +
+        specified, then the buddy is moved to the default group.
+        If the group groupname doesn't exist, it is created. +
         Tip: if the chatmode is enabled, you can use "/roster alternate"
         to jump to the moved buddy.
 
@@ -273,7 +281,7 @@ COMMANDS RELATED TO THE ROSTER AND JABBER RESOURCES
         In multi-line mode, each line (except command lines) typed in the input
         line will be added to the multi-line message.  Once the message is
         finished, it can be sent to the current selected buddy with the "/msay
-        send" command. +
+        send" command (or Ctrl-d). +
         The 'begin' subcommand enables multi-line mode.  Note that it allows
         a message subject to be specified. +
         The 'verbatim' multi-line mode disables commands, so that it is
@@ -292,18 +300,28 @@ COMMANDS RELATED TO THE ROSTER AND JABBER RESOURCES
         'toggle_verbatim';; same with verbatim multi-line mode
         'abort';;           leave multi-line mode without sending the message
 
+/pgp disable|enable|info [jid]::
+/pgp setkey [jid [key]]::
+        Manipulate PGP settings for the specified jid (by default the currently selected contact).  Please note that PGP encryption won't be used if no remote PGP support is detected, even if PGP is enabled with this command.
+
+        'disable' [jid];;   disable PGP encryption for jid (or the currently selected contact)
+        'enable' [jid];;    enable PGP encryption for jid (or the currently selected contact)
+        'info' [jid];;      show current PGP settings for the contact
+        'setkey' [jid [key]];;  set the PGP key to be used to encrypt message for this contact.  If no key is provided, the current key is erased.  You can use the shortcut-jid "." for the currently selected contact.
+
 /rename name::
         Rename current buddy or group to the given name.
         Please note that a group name change is only done when the server's
         acknowledgment is received, so a slight delay can be noticed.
 
-/request time|version [jid]::
+/request last|time|vcard|version [jid]::
         Send a "IQ" query to the current buddy, or to the specified Jabber
         user.  If the resource is not provided with the jid, mcabber will
         send the query to all known resources for this user.
 
 /room join|leave|names|nick|privmsg|remove|topic|unlock|destroy::
 /room invite|kick|ban|role|affil::
+/room bookmark [add|del] [-autojoin|+autojoin]::
         The 'room' command handles Multi-User Chat room actions.
 
         'join' [room [nick [pass]]];; join "room", using "nick" as nickname.  If no nickname is provided (or if it is an empty string), the "nickname" option value is used (see sample configuration file).  If the currently selected entry is correctly recognized as a room by mcabber, the shortcut "." can be used instead of the full room id.  A password can be provided to enter protected rooms.  If your nickname contains space characters, use quotes.
@@ -321,27 +339,36 @@ COMMANDS RELATED TO THE ROSTER AND JABBER RESOURCES
         'kick' nick [reason];;  kick "nick" from the current room
         'role' jid role [reason];;  change jid's role (role can be "none", "visitor", "participant", "moderator")
         'affil' jid affil [reason];; change jid's affiliation (affil can be "none", "member", "admin", "owner")
+        'bookmark'              add/update/remove a room bookmark, set/unset autojoin
 
-/roster bottom|top|hide_offline|show_offline|toggle_offline::
-/roster hide|show|toggle::
+/roster bottom|top|up|down|group_prev|group_next::
 /roster alternate|unread_first|unread_next::
 /roster search bud::
+/roster hide_offline|show_offline|toggle_offline::
+/roster item_lock|item_unlock::
+/roster hide|show|toggle::
+/roster note [-|text]::
         The 'roster' command manipulates the roster/buddylist.  Here are the available parameters:
 
         'bottom';;       jump to the bottom of the roster
         'top';;          jump to the top of the roster
         'up';;           move up in the roster
         'down';;         move down in the roster
-        'hide_offline';; hide offline buddies
-        'show_offline';; show offline buddies
-        'toggle_offline';; toggle display of offline buddies
-        'hide';;         hide roster (full-width chat window)
-        'show';;         show roster
-        'toggle';;       toggle roster visibility
-        'search' bud;;   search for a buddy with a name or jid containing "bud" (only in the displayed buddylist)
+        'group_prev';;   jump to the previous group in the roster
+        'group_next';;   jump to the next group in the roster
         'alternate';;    jump to alternate buddy.  The "alternate" buddy is the last buddy left while being in chat mode (this command is thus especially useful after commands like "/roster unread_first")
         'unread_first';; jump to the first unread message
         'unread_next';;  jump to the next unread message
+        'search' bud;;   search for a buddy with a name or jid containing "bud" (only in the displayed buddylist)
+        'hide_offline';; hide offline buddies
+        'show_offline';; show offline buddies
+        'toggle_offline';; toggle display of offline buddies
+        'item_lock' jid;;   lock the roster item so it remains visible regardless of its status
+        'item_unlock' jid;; undo the effects of item_lock
+        'hide';;         hide roster (full-width chat window)
+        'show';;         show roster
+        'toggle';;       toggle roster visibility
+        'note' [text];;  display or set an annotation (if text is "-", the annotation is deleted).  In the "status" buffer, it will display all annotations.
 
 /say text::
         Send the "text" message to the currently selected buddy.  Can be useful
@@ -398,8 +425,8 @@ http://www.lilotux.net/~mikael/mcabber/[Main web site]
 
 COPYING
 -------
-Copyright (C) 2005, 2006 Mikael Berthe. +
-Some portions are Copyright (C) 2002-2004 mailto:cabber@ajmacias.com[].
+Copyright \(C) 2005, 2006 Mikael Berthe. +
+Some portions are Copyright \(C) 2002-2004 mailto:cabber@ajmacias.com[].
 
 Free use of this software is granted under the terms of the GNU General Public
 License (GPL).

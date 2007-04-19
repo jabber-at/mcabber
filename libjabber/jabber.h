@@ -281,6 +281,8 @@ typedef struct xterror_struct
 #define NS_DISCO_ITEMS "http://jabber.org/protocol/disco#items"
 #define NS_IQ_AUTH    "http://jabber.org/features/iq-auth"
 #define NS_REGISTER_FEATURE "http://jabber.org/features/iq-register"
+#define NS_MUC       "http://jabber.org/protocol/muc"
+#define NS_CHATSTATES "http://jabber.org/protocol/chatstates"
 
 #define NS_XDBGINSERT "jabber:xdb:ginsert"
 #define NS_XDBNSLIST  "jabber:xdb:nslist"
@@ -288,6 +290,8 @@ typedef struct xterror_struct
 #define NS_XMPP_STANZAS "urn:ietf:params:xml:ns:xmpp-stanzas"
 #define NS_XMPP_TLS  "urn:ietf:params:xml:ns:xmpp-tls"
 #define NS_XMPP_STREAMS "urn:ietf:params:xml:ns:xmpp-streams"
+
+#define NS_PING      "urn:xmpp:ping"
 
 #define NS_JABBERD_STOREDPRESENCE "http://jabberd.org/ns/storedpresence"
 #define NS_JABBERD_HISTORY "http://jabberd.org/ns/history"

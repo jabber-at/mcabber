@@ -20,10 +20,11 @@
 #define COMPL_REQUEST     (1U<<14)
 #define COMPL_EVENTS      (1U<<15)
 #define COMPL_EVENTSID    (1U<<16)
+#define COMPL_PGP         (1U<<17)
 
 void    compl_add_category_word(guint, const char *command);
 void    compl_del_category_word(guint categ, const char *word);
-GSList *compl_get_category_list(guint cat_flags);
+GSList *compl_get_category_list(guint cat_flags, guint *dynlist);
 
 void    new_completion(char *prefix, GSList *compl_cat);
 void    done_completion(void);

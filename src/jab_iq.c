@@ -34,13 +34,29 @@
 #include "hbuf.h"
 
 
+// Bookmarks for IQ:private storage
+xmlnode bookmarks;
+// Roster notes for IQ:private storage
+xmlnode rosternotes;
+
 static GSList *iqs_list;
 
+// Enum for vCard attributes
+enum vcard_attr {
+  vcard_home    = 1<<0,
+  vcard_work    = 1<<1,
+  vcard_postal  = 1<<2,
+  vcard_voice   = 1<<3,
+  vcard_fax     = 1<<4,
+  vcard_cell    = 1<<5,
+  vcard_inet    = 1<<6,
+  vcard_pref    = 1<<7,
+};
 
 //  iqs_new(type, namespace, prefix, timeout)
 // Create a query (GET, SET) IQ structure.  This function should not be used
 // for RESULT packets.
-eviqs *iqs_new(guint8 type, const char *ns, const char *prefix, time_t timeout)
+eviqs *iqs_new(guint8 type, const char *ns, const char *prefix, time_t tmout)
 {
   static guint iqs_idn;
   eviqs *new_iqs;
@@ -51,8 +67,8 @@ eviqs *iqs_new(guint8 type, const char *ns, const char *prefix, time_t timeout)
   new_iqs = g_new0(eviqs, 1);
   time(&now_t);
   new_iqs->ts_create = now_t;
-  if (timeout)
-    new_iqs->ts_expire = now_t + timeout;
+  if (tmout)
+    new_iqs->ts_expire = now_t + tmout;
   new_iqs->type = type;
   new_iqs->xmldata = jutil_iqnew(type, (char*)ns);
   if (prefix)
@@ -166,7 +182,7 @@ static void request_roster(void)
 static void handle_iq_roster(xmlnode x)
 {
   xmlnode y;
-  const char *jid, *name, *group, *sub, *ask;
+  const char *fjid, *name, *group, *sub, *ask;
   char *cleanalias;
   enum subscr esub;
   int need_refresh = FALSE;
@@ -174,17 +190,17 @@ static void handle_iq_roster(xmlnode x)
 
   for (y = xmlnode_get_tag(x, "item"); y; y = xmlnode_get_nextsibling(y)) {
 
-    jid = xmlnode_get_attrib(y, "jid");
+    fjid = xmlnode_get_attrib(y, "jid");
     name = xmlnode_get_attrib(y, "name");
     sub = xmlnode_get_attrib(y, "subscription");
     ask = xmlnode_get_attrib(y, "ask");
 
     group = xmlnode_get_tag_data(y, "group");
 
-    if (!jid)
+    if (!fjid)
       continue;
 
-    cleanalias = jidtodisp(jid);
+    cleanalias = jidtodisp(fjid);
 
     esub = sub_none;
     if (sub) {
@@ -209,8 +225,9 @@ static void handle_iq_roster(xmlnode x)
     if (!name)
       name = cleanalias;
 
-    // Tricky... :-\  My guess is that if there is no '@', this is an agent
-    if (strchr(cleanalias, '@'))
+    // Tricky... :-\  My guess is that if there is no JID_DOMAIN_SEPARATOR,
+    // this is an agent.
+    if (strchr(cleanalias, JID_DOMAIN_SEPARATOR))
       roster_type = ROSTER_TYPE_USER;
     else
       roster_type = ROSTER_TYPE_AGENT;
@@ -253,7 +270,7 @@ static void iqscallback_version(eviqs *iqp, xmlnode xml_result, guint iqcontext)
   scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
 
   // bjid should now really be the "bare JID", let's strip the resource
-  p = strchr(bjid, '/');
+  p = strchr(bjid, JID_RESOURCE_SEPARATOR);
   if (p) *p = '\0';
 
   scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_INFO);
@@ -317,7 +334,7 @@ static void iqscallback_time(eviqs *iqp, xmlnode xml_result, guint iqcontext)
   scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
 
   // bjid should now really be the "bare JID", let's strip the resource
-  p = strchr(bjid, '/');
+  p = strchr(bjid, JID_RESOURCE_SEPARATOR);
   if (p) *p = '\0';
 
   scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_INFO);
@@ -354,6 +371,374 @@ void request_time(const char *fulljid)
   jab_send(jc, iqn->xmldata);
 }
 
+static void iqscallback_last(eviqs *iqp, xmlnode xml_result, guint iqcontext)
+{
+  xmlnode ansqry;
+  char *p;
+  char *bjid;
+  char *buf;
+
+  // Leave now if we cannot process xml_result
+  if (!xml_result || iqcontext) return;
+
+  ansqry = xmlnode_get_tag(xml_result, "query");
+  if (!ansqry) {
+    scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:last result!");
+    return;
+  }
+  // Display IQ result sender...
+  p = xmlnode_get_attrib(xml_result, "from");
+  if (!p) {
+    scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:last result (no sender name).");
+    return;
+  }
+  bjid = p;
+
+  buf = g_strdup_printf("Received IQ:last result from <%s>", bjid);
+  scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
+
+  // bjid should now really be the "bare JID", let's strip the resource
+  p = strchr(bjid, JID_RESOURCE_SEPARATOR);
+  if (p) *p = '\0';
+
+  scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_INFO);
+  g_free(buf);
+
+  // Get result data...
+  p = xmlnode_get_attrib(ansqry, "seconds");
+  if (p) {
+    long int s;
+    GString *sbuf;
+    sbuf = g_string_new("Idle time: ");
+    s = atol(p);
+    // Days
+    if (s > 86400L) {
+      g_string_append_printf(sbuf, "%ldd ", s/86400L);
+      s %= 86400L;
+    }
+    // hh:mm:ss
+    g_string_append_printf(sbuf, "%02ld:", s/3600L);
+    s %= 3600L;
+    g_string_append_printf(sbuf, "%02ld:%02ld", s/60L, s%60L);
+    scr_WriteIncomingMessage(bjid, sbuf->str, 0, HBB_PREFIX_NONE);
+    g_string_free(sbuf, TRUE);
+  } else {
+    scr_WriteIncomingMessage(bjid, "No idle time reported.",
+                             0, HBB_PREFIX_NONE);
+  }
+  p = xmlnode_get_data(ansqry);
+  if (p) {
+    buf = g_strdup_printf("Status message: %s", p);
+    scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_INFO);
+    g_free(buf);
+  }
+}
+
+void request_last(const char *fulljid)
+{
+  eviqs *iqn;
+
+  iqn = iqs_new(JPACKET__GET, NS_LAST, "last", IQS_DEFAULT_TIMEOUT);
+  xmlnode_put_attrib(iqn->xmldata, "to", fulljid);
+  iqn->callback = &iqscallback_last;
+  jab_send(jc, iqn->xmldata);
+}
+
+static void display_vcard_item(const char *bjid, const char *label,
+                               enum vcard_attr vcard_attrib, const char *text)
+{
+  char *buf;
+
+  if (!text || !bjid || !label)
+    return;
+
+  buf = g_strdup_printf("%s: %s%s%s%s%s%s%s%s%s%s", label,
+                        (vcard_attrib & vcard_home ? "[home]" : ""),
+                        (vcard_attrib & vcard_work ? "[work]" : ""),
+                        (vcard_attrib & vcard_postal ? "[postal]" : ""),
+                        (vcard_attrib & vcard_voice ? "[voice]" : ""),
+                        (vcard_attrib & vcard_fax  ? "[fax]"  : ""),
+                        (vcard_attrib & vcard_cell ? "[cell]" : ""),
+                        (vcard_attrib & vcard_inet ? "[inet]" : ""),
+                        (vcard_attrib & vcard_pref ? "[pref]" : ""),
+                        (vcard_attrib ? " " : ""),
+                        text);
+  scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_NONE);
+  g_free(buf);
+}
+
+static void handle_vcard_node(const char *barejid, xmlnode vcardnode)
+{
+  xmlnode x;
+  const char *p;
+
+  x = xmlnode_get_firstchild(vcardnode);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    const char *data;
+    enum vcard_attr vcard_attrib = 0;
+
+    p = xmlnode_get_name(x);
+    data = xmlnode_get_data(x);
+    if (!p || !data)
+      continue;
+
+    if (!strcmp(p, "FN"))
+      display_vcard_item(barejid, "Name", vcard_attrib, data);
+    else if (!strcmp(p, "NICKNAME"))
+      display_vcard_item(barejid, "Nickname", vcard_attrib, data);
+    else if (!strcmp(p, "URL"))
+      display_vcard_item(barejid, "URL", vcard_attrib, data);
+    else if (!strcmp(p, "BDAY"))
+      display_vcard_item(barejid, "Birthday", vcard_attrib, data);
+    else if (!strcmp(p, "TZ"))
+      display_vcard_item(barejid, "Timezone", vcard_attrib, data);
+    else if (!strcmp(p, "TITLE"))
+      display_vcard_item(barejid, "Title", vcard_attrib, data);
+    else if (!strcmp(p, "ROLE"))
+      display_vcard_item(barejid, "Role", vcard_attrib, data);
+    else if (!strcmp(p, "DESC"))
+      display_vcard_item(barejid, "Comment", vcard_attrib, data);
+    else if (!strcmp(p, "N")) {
+      data = xmlnode_get_tag_data(x, "FAMILY");
+      display_vcard_item(barejid, "Family Name", vcard_attrib, data);
+      data = xmlnode_get_tag_data(x, "GIVEN");
+      display_vcard_item(barejid, "Given Name", vcard_attrib, data);
+      data = xmlnode_get_tag_data(x, "MIDDLE");
+      display_vcard_item(barejid, "Middle Name", vcard_attrib, data);
+    } else if (!strcmp(p, "ORG")) {
+      data = xmlnode_get_tag_data(x, "ORGNAME");
+      display_vcard_item(barejid, "Organisation name", vcard_attrib, data);
+      data = xmlnode_get_tag_data(x, "ORGUNIT");
+      display_vcard_item(barejid, "Organisation unit", vcard_attrib, data);
+    } else {
+      // The HOME, WORK and PREF attributes are common to the remaining fields
+      // (ADR, TEL & EMAIL)
+      if (xmlnode_get_tag(x, "HOME"))
+        vcard_attrib |= vcard_home;
+      if (xmlnode_get_tag(x, "WORK"))
+        vcard_attrib |= vcard_work;
+      if (xmlnode_get_tag(x, "PREF"))
+        vcard_attrib |= vcard_pref;
+      if (!strcmp(p, "ADR")) {          // Address
+        if (xmlnode_get_tag(x, "POSTAL"))
+          vcard_attrib |= vcard_postal;
+        data = xmlnode_get_tag_data(x, "EXTADD");
+        display_vcard_item(barejid, "Addr (ext)", vcard_attrib, data);
+        data = xmlnode_get_tag_data(x, "STREET");
+        display_vcard_item(barejid, "Street", vcard_attrib, data);
+        data = xmlnode_get_tag_data(x, "LOCALITY");
+        display_vcard_item(barejid, "Locality", vcard_attrib, data);
+        data = xmlnode_get_tag_data(x, "REGION");
+        display_vcard_item(barejid, "Region", vcard_attrib, data);
+        data = xmlnode_get_tag_data(x, "PCODE");
+        display_vcard_item(barejid, "Postal code", vcard_attrib, data);
+        data = xmlnode_get_tag_data(x, "CTRY");
+        display_vcard_item(barejid, "Country", vcard_attrib, data);
+      } else if (!strcmp(p, "TEL")) {   // Telephone
+        data = xmlnode_get_tag_data(x, "NUMBER");
+        if (data) {
+          if (xmlnode_get_tag(x, "VOICE"))
+            vcard_attrib |= vcard_voice;
+          if (xmlnode_get_tag(x, "FAX"))
+            vcard_attrib |= vcard_fax;
+          if (xmlnode_get_tag(x, "CELL"))
+            vcard_attrib |= vcard_cell;
+          display_vcard_item(barejid, "Phone", vcard_attrib, data);
+        }
+      } else if (!strcmp(p, "EMAIL")) { // Email
+        if (xmlnode_get_tag(x, "INTERNET"))
+          vcard_attrib |= vcard_inet;
+        data = xmlnode_get_tag_data(x, "USERID");
+        display_vcard_item(barejid, "Email", vcard_attrib, data);
+      }
+    }
+  }
+}
+
+static void iqscallback_vcard(eviqs *iqp, xmlnode xml_result, guint iqcontext)
+{
+  xmlnode ansqry;
+  char *p;
+  char *bjid;
+  char *buf;
+
+  // Leave now if we cannot process xml_result
+  if (!xml_result || iqcontext) return;
+
+  // Display IQ result sender...
+  p = xmlnode_get_attrib(xml_result, "from");
+  if (!p) {
+    scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:vCard result (no sender name).");
+    return;
+  }
+  bjid = p;
+
+  buf = g_strdup_printf("Received IQ:vCard result from <%s>", bjid);
+  scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
+
+  // Get the vCard node
+  ansqry = xmlnode_get_tag(xml_result, "vCard");
+  if (!ansqry) {
+    scr_LogPrint(LPRINT_LOGNORM, "Empty IQ:vCard result!");
+    return;
+  }
+
+  // bjid should really be the "bare JID", let's strip the resource
+  p = strchr(bjid, JID_RESOURCE_SEPARATOR);
+  if (p) *p = '\0';
+
+  scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_INFO);
+  g_free(buf);
+
+  // Get result data...
+  handle_vcard_node(bjid, ansqry);
+}
+
+void request_vcard(const char *bjid)
+{
+  eviqs *iqn;
+  char *barejid;
+
+  barejid = jidtodisp(bjid);
+
+  // Create a new IQ structure.  We use NULL for the namespace because
+  // we'll have to use a special tag, not the usual "query" one.
+  iqn = iqs_new(JPACKET__GET, NULL, "vcard", IQS_DEFAULT_TIMEOUT);
+  xmlnode_put_attrib(iqn->xmldata, "to", barejid);
+  // Remove the useless <query/> tag, and insert a vCard one.
+  xmlnode_hide(xmlnode_get_tag(iqn->xmldata, "query"));
+  xmlnode_put_attrib(xmlnode_insert_tag(iqn->xmldata, "vCard"),
+                     "xmlns", NS_VCARD);
+  iqn->callback = &iqscallback_vcard;
+  jab_send(jc, iqn->xmldata);
+
+  g_free(barejid);
+}
+
+static void storage_bookmarks_parse_conference(xmlnode xmldata)
+{
+  const char *fjid, *name, *autojoin;
+  char *bjid;
+  GSList *room_elt;
+
+  fjid = xmlnode_get_attrib(xmldata, "jid");
+  if (!fjid)
+    return;
+  name = xmlnode_get_attrib(xmldata, "name");
+  autojoin = xmlnode_get_attrib(xmldata, "autojoin");
+
+  bjid = jidtodisp(fjid); // Bare jid
+
+  // Make sure this is a room (it can be a conversion user->room)
+  room_elt = roster_find(bjid, jidsearch, 0);
+  if (!room_elt) {
+    room_elt = roster_add_user(bjid, name, NULL, ROSTER_TYPE_ROOM, sub_none);
+  } else {
+    buddy_settype(room_elt->data, ROSTER_TYPE_ROOM);
+    /*
+    // If the name is available, should we use it?
+    // I don't think so, it would be confusing because this item is already
+    // in the roster.
+    if (name)
+      buddy_setname(room_elt->data, name);
+    */
+  }
+
+  // Is autojoin set?
+  // If it is, we'll look up for more information (nick? password?) and
+  // try to join the room.
+  if (autojoin && !strcmp(autojoin, "1")) {
+    char *nick, *passwd;
+    char *tmpnick = NULL;
+    nick = xmlnode_get_tag_data(xmldata, "nick");
+    passwd = xmlnode_get_tag_data(xmldata, "password");
+    if (!nick || !*nick)
+      nick = tmpnick = default_muc_nickname();
+    // Let's join now
+    scr_LogPrint(LPRINT_LOGNORM, "Auto-join bookmark <%s>", bjid);
+    jb_room_join(bjid, nick, passwd);
+    g_free(tmpnick);
+  }
+  g_free(bjid);
+}
+
+static void iqscallback_storage_bookmarks(eviqs *iqp, xmlnode xml_result,
+                                          guint iqcontext)
+{
+  xmlnode x, ansqry;
+  char *p;
+
+  // Leave now if we cannot process xml_result
+  if (!xml_result || iqcontext) return;
+
+  ansqry = xmlnode_get_tag(xml_result, "query");
+  ansqry = xmlnode_get_tag(ansqry, "storage");
+  if (!ansqry) {
+    scr_LogPrint(LPRINT_LOG, "Invalid IQ:private result! (storage:bookmarks)");
+    return;
+  }
+
+  // Walk through the storage tags
+  x = xmlnode_get_firstchild(ansqry);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    p = xmlnode_get_name(x);
+    // If the current node is a conference item, parse it and update the roster
+    if (p && !strcmp(p, "conference"))
+      storage_bookmarks_parse_conference(x);
+  }
+  // Copy the bookmarks node
+  xmlnode_free(bookmarks);
+  bookmarks = xmlnode_dup(ansqry);
+}
+
+static void request_storage_bookmarks(void)
+{
+  eviqs *iqn;
+  xmlnode x;
+
+  iqn = iqs_new(JPACKET__GET, NS_PRIVATE, "storage", IQS_DEFAULT_TIMEOUT);
+
+  x = xmlnode_insert_tag(xmlnode_get_tag(iqn->xmldata, "query"), "storage");
+  xmlnode_put_attrib(x, "xmlns", "storage:bookmarks");
+
+  iqn->callback = &iqscallback_storage_bookmarks;
+  jab_send(jc, iqn->xmldata);
+}
+
+static void iqscallback_storage_rosternotes(eviqs *iqp, xmlnode xml_result,
+                                            guint iqcontext)
+{
+  xmlnode ansqry;
+
+  // Leave now if we cannot process xml_result
+  if (!xml_result || iqcontext) return;
+
+  ansqry = xmlnode_get_tag(xml_result, "query");
+  ansqry = xmlnode_get_tag(ansqry, "storage");
+  if (!ansqry) {
+    scr_LogPrint(LPRINT_LOG, "Invalid IQ:private result! "
+                 "(storage:rosternotes)");
+    return;
+  }
+  // Copy the rosternotes node
+  xmlnode_free(rosternotes);
+  rosternotes = xmlnode_dup(ansqry);
+}
+
+static void request_storage_rosternotes(void)
+{
+  eviqs *iqn;
+  xmlnode x;
+
+  iqn = iqs_new(JPACKET__GET, NS_PRIVATE, "storage", IQS_DEFAULT_TIMEOUT);
+
+  x = xmlnode_insert_tag(xmlnode_get_tag(iqn->xmldata, "query"), "storage");
+  xmlnode_put_attrib(x, "xmlns", "storage:rosternotes");
+
+  iqn->callback = &iqscallback_storage_rosternotes;
+  jab_send(jc, iqn->xmldata);
+}
+
 void iqscallback_auth(eviqs *iqp, xmlnode xml_result)
 {
   if (jstate == STATE_GETAUTH) {
@@ -372,6 +757,8 @@ void iqscallback_auth(eviqs *iqp, xmlnode xml_result)
     jstate = STATE_SENDAUTH;
   } else if (jstate == STATE_SENDAUTH) {
     request_roster();
+    request_storage_bookmarks();
+    request_storage_rosternotes();
     jstate = STATE_LOGGED;
   }
 }
@@ -391,19 +778,6 @@ static void handle_iq_result(jconn conn, char *from, xmlnode xmldata)
   if (!iqs_callback(id, xmldata, IQS_CONTEXT_RESULT))
     return;
 
-  /*
-  if (!strcmp(id, "VCARDreq")) {
-    x = xmlnode_get_firstchild(xmldata);
-    if (!x) x = xmldata;
-
-    scr_LogPrint(LPRINT_LOGNORM, "Got VCARD");    // TODO
-    return;
-  } else if (!strcmp(id, "versionreq")) {
-    scr_LogPrint(LPRINT_LOGNORM, "Got version");  // TODO
-    return;
-  }
-  */
-
   x = xmlnode_get_tag(xmldata, "query");
   if (!x) return;
 
@@ -416,23 +790,62 @@ static void handle_iq_result(jconn conn, char *from, xmlnode xmldata)
     // Post-login stuff
     // Usually we request the roster only at connection time
     // so we should be there only once.  (That's ugly, however)
-    jb_setstatus(available, NULL, NULL);
+    jb_setprevstatus();
   }
+}
+
+static void handle_iq_disco_info(jconn conn, char *from, const char *id,
+                                 xmlnode xmldata)
+{
+  xmlnode x, y;
+  xmlnode myquery;
+
+  x = jutil_iqnew(JPACKET__RESULT, NS_DISCO_INFO);
+  xmlnode_put_attrib(x, "id", id);
+  xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
+  myquery = xmlnode_get_tag(x, "query");
+
+  y = xmlnode_insert_tag(myquery, "identity");
+  xmlnode_put_attrib(y, "category", "client");
+  xmlnode_put_attrib(y, "type", "pc");
+  xmlnode_put_attrib(y, "name", PACKAGE_NAME);
+
+  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
+                     "var", NS_DISCO_INFO);
+  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
+                     "var", NS_MUC);
+  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
+                     "var", NS_CHATSTATES);
+  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
+                     "var", NS_TIME);
+  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
+                     "var", NS_VERSION);
+  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
+                     "var", NS_PING);
+  jab_send(jc, x);
+  xmlnode_free(x);
+}
+
+static void handle_iq_ping(jconn conn, char *from, const char *id,
+                           xmlnode xmldata)
+{
+  xmlnode x;
+  x = jutil_iqresult(xmldata);
+  jab_send(jc, x);
+  xmlnode_free(x);
 }
 
 static void handle_iq_version(jconn conn, char *from, const char *id,
                               xmlnode xmldata)
 {
-  xmlnode senderquery, x;
+  xmlnode x;
   xmlnode myquery;
   char *os = NULL;
   char *ver = mcabber_version();
 
-  // "from" has already been converted to user locale
   scr_LogPrint(LPRINT_LOGNORM, "Received an IQ version request from <%s>",
                from);
 
-  senderquery = xmlnode_get_tag(xmldata, "query");
   if (!settings_opt_get_int("iq_version_hide_os")) {
     struct utsname osinfo;
     uname(&osinfo);
@@ -461,7 +874,7 @@ static void handle_iq_version(jconn conn, char *from, const char *id,
 static void handle_iq_time(jconn conn, char *from, const char *id,
                               xmlnode xmldata)
 {
-  xmlnode senderquery, x;
+  xmlnode x;
   xmlnode myquery;
   char *buf, *utf8_buf;
   time_t now_t;
@@ -469,11 +882,9 @@ static void handle_iq_time(jconn conn, char *from, const char *id,
 
   time(&now_t);
 
-  // "from" has already been converted to user locale
   scr_LogPrint(LPRINT_LOGNORM, "Received an IQ time request from <%s>", from);
 
   buf = g_new0(char, 512);
-  senderquery = xmlnode_get_tag(xmldata, "query");
 
   x = jutil_iqnew(JPACKET__RESULT, NS_TIME);
   xmlnode_put_attrib(x, "id", id);
@@ -517,9 +928,18 @@ static void handle_iq_get(jconn conn, char *from, xmlnode xmldata)
     return;
   }
 
+  x = xmlnode_get_tag(xmldata, "ping");
+  ns = xmlnode_get_attrib(x, "xmlns");
+  if (ns && !strcmp(ns, NS_PING)) {
+    handle_iq_ping(conn, from, id, xmldata);
+    return;
+  }
+
   x = xmlnode_get_tag(xmldata, "query");
   ns = xmlnode_get_attrib(x, "xmlns");
-  if (ns && !strcmp(ns, NS_VERSION)) {
+  if (ns && !strcmp(ns, NS_DISCO_INFO)) {
+    handle_iq_disco_info(conn, from, id, xmldata);
+  } else if (ns && !strcmp(ns, NS_VERSION)) {
     handle_iq_version(conn, from, id, xmldata);
   } else if (ns && !strcmp(ns, NS_TIME)) {
     handle_iq_time(conn, from, id, xmldata);
@@ -606,6 +1026,38 @@ void handle_packet_iq(jconn conn, char *type, char *from, xmlnode xmldata)
       display_server_error(x);
     iqs_callback(xmlnode_get_attrib(xmldata, "id"), NULL, IQS_CONTEXT_ERROR);
   }
+}
+
+//  send_storage_bookmarks()
+// Send the current bookmarks node to update the server.
+// Note: the sender should check we're online.
+void send_storage_bookmarks(void)
+{
+  eviqs *iqn;
+
+  if (!bookmarks) return;
+
+  iqn = iqs_new(JPACKET__SET, NS_PRIVATE, "storage", IQS_DEFAULT_TIMEOUT);
+  xmlnode_insert_node(xmlnode_get_tag(iqn->xmldata, "query"), bookmarks);
+
+  jab_send(jc, iqn->xmldata);
+  iqs_del(iqn->id); // XXX
+}
+
+//  send_storage_rosternotes()
+// Send the current rosternotes node to update the server.
+// Note: the sender should check we're online.
+void send_storage_rosternotes(void)
+{
+  eviqs *iqn;
+
+  if (!rosternotes) return;
+
+  iqn = iqs_new(JPACKET__SET, NS_PRIVATE, "storage", IQS_DEFAULT_TIMEOUT);
+  xmlnode_insert_node(xmlnode_get_tag(iqn->xmldata, "query"), rosternotes);
+
+  jab_send(jc, iqn->xmldata);
+  iqs_del(iqn->id); // XXX
 }
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

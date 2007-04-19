@@ -1,3 +1,12 @@
+mcabber (0.9.1-1) unstable; urgency=low
+
+  * New upstream release (Closes: #420065).
+  * Added build-dependency on libgpgme-dev to enable GPG support.
+  * Added build-dependency on dpatch and added a first patch in debian/patches
+    to fix the manpage.
+
+ -- Mario Iseli <admin@marioiseli.com>  Thu, 19 Apr 2007 21:02:12 +0200
+
 mcabber (0.8.3-1) unstable; urgency=low
 
   * New upstream release
@@ -17,13 +26,13 @@ mcabber (0.8.2-1) unstable; urgency=low
   * New upstream release
 
  -- Mario Iseli <admin@marioiseli.com>  Sat, 23 Sep 2006 11:36:18 +0200
- 
+
 mcabber (0.8.1-1) unstable; urgency=medium
 
   * New upstream release
 
  -- Mario Iseli <admin@marioiseli.com>  Mon, 21 Aug 2006 23:25:51 +0200
- 
+
 mcabber (0.8.0-1) unstable; urgency=low
 
   * New upstream release

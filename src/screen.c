@@ -52,25 +52,29 @@ static unsigned short int Roster_Width;
 
 static inline void check_offset(int);
 
-static GSList *winbuflst;
+static GHashTable *winbufhash;
 
 typedef struct {
   WINDOW *win;
   PANEL  *panel;
-  char   *name;
   GList  *hbuf;
   GList  *top;      // If top is NULL, we'll display the last lines
   char    cleared;  // For ex, user has issued a /clear command...
   char    lock;
 } winbuf;
 
+struct dimensions {
+  int l;
+  int c;
+};
 
-static WINDOW *rosterWnd, *chatWnd, *inputWnd, *logWnd;
+static WINDOW *rosterWnd, *chatWnd, *activechatWnd, *inputWnd, *logWnd;
 static WINDOW *mainstatusWnd, *chatstatusWnd;
-static PANEL *rosterPanel, *chatPanel, *inputPanel;
+static PANEL *rosterPanel, *chatPanel, *activechatPanel, *inputPanel;
 static PANEL *mainstatusPanel, *chatstatusPanel;
 static PANEL *logPanel;
 static int maxY, maxX;
+static int prev_chatwidth;
 static winbuf *statusWindow;
 static winbuf *currentWindow;
 static GList  *statushbuf;
@@ -83,6 +87,8 @@ int update_roster;
 int utf8_mode = 0;
 static bool Autoaway;
 static bool Curses;
+static bool log_win_on_top;
+static bool roster_win_on_right;
 static time_t LastActivity;
 
 static char       inputLine[INPUTLINE_LENGTH+1];
@@ -91,7 +97,13 @@ static short int  inputline_offset;
 static int    completion_started;
 static GList *cmdhisto;
 static GList *cmdhisto_cur;
+static guint  cmdhisto_nblines;
 static char   cmdhisto_backup[INPUTLINE_LENGTH+1];
+
+static int    chatstate; /* (0=active, 1=composing, 2=paused) */
+static bool   lock_chatstate;
+static time_t chatstate_timestamp;
+int chatstates_disabled;
 
 #define MAX_KEYSEQ_LENGTH 8
 
@@ -109,13 +121,6 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
 
 
 /* Functions */
-
-static int scr_WindowWidth(WINDOW * win)
-{
-  int x, y;
-  getmaxyx(win, y, x);
-  return x;
-}
 
 static int FindColor(const char *name)
 {
@@ -343,6 +348,7 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
   time_t timestamp;
   char strtimestamp[64];
   char *buffer, *btext;
+  char *convbuf1 = NULL, *convbuf2 = NULL;
   va_list ap;
 
   if (!(flag & ~LPRINT_NOTUTF8)) return; // Shouldn't happen
@@ -361,7 +367,7 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
 
     // Convert buffer to current locale for wprintw()
     if (!(flag & LPRINT_NOTUTF8))
-      buffer_locale = from_utf8(buffer);
+      buffer_locale = convbuf1 = from_utf8(buffer);
     else
       buffer_locale = buffer;
 
@@ -376,7 +382,7 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
 
     // For the special status buffer, we need utf-8, but without the timestamp
     if (flag & LPRINT_NOTUTF8)
-      buf_specialwindow = to_utf8(btext);
+      buf_specialwindow = convbuf2 = to_utf8(btext);
     else
       buf_specialwindow = btext;
 
@@ -389,14 +395,11 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
       printf("%s\n", buffer_locale);
       // ncurses are not initialized yet, so we call directly hbuf routine
       hbuf_add_line(&statushbuf, buf_specialwindow, timestamp,
-        HBB_PREFIX_SPECIAL, 0);
+        HBB_PREFIX_SPECIAL, 0, 0);
     }
 
-    if (buf_specialwindow != btext)
-      g_free(buf_specialwindow);
-    if (!(flag & LPRINT_NOTUTF8))
-      g_free(buffer_locale);
-
+    g_free(convbuf1);
+    g_free(convbuf2);
     g_free(buffer);
   }
 
@@ -409,33 +412,16 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
   g_free(btext);
 }
 
-//  scr_CreateBuddyPanel(title, dontshow)
-// Note: title (aka winId) can be NULL for special buffers
-static winbuf *scr_CreateBuddyPanel(const char *title, int dont_show)
+//  scr_new_buddy(title, dontshow)
+// Note: title (aka winId/jid) can be NULL for special buffers
+static winbuf *scr_new_buddy(const char *title, int dont_show)
 {
-  int x;
-  int y;
-  int lines;
-  int cols;
   winbuf *tmp;
 
   tmp = g_new0(winbuf, 1);
 
-  // Dimensions
-  x = Roster_Width;
-  y = 0;
-  lines = CHAT_WIN_HEIGHT;
-  cols = maxX - Roster_Width;
-  if (cols < 1) cols = 1;
-
-  tmp->win = newwin(lines, cols, y, x);
-  while (!tmp->win) {
-    safe_usleep(250);
-    tmp->win = newwin(lines, cols, y, x);
-  }
-  wbkgd(tmp->win, get_color(COLOR_GENERAL));
-  tmp->panel = new_panel(tmp->win);
-  tmp->name = g_strdup(title);
+  tmp->win = activechatWnd;
+  tmp->panel = activechatPanel;
 
   if (!dont_show) {
     currentWindow = tmp;
@@ -449,17 +435,20 @@ static winbuf *scr_CreateBuddyPanel(const char *title, int dont_show)
 
   // If title is NULL, this is a special buffer
   if (title) {
+    char *id;
     // Load buddy history from file (if enabled)
     hlog_read_history(title, &tmp->hbuf, maxX - Roster_Width - PREFIX_WIDTH);
 
-    winbuflst = g_slist_append(winbuflst, tmp);
+    id = g_strdup(title);
+    mc_strtolower(id);
+    g_hash_table_insert(winbufhash, id, tmp);
   }
   return tmp;
 }
 
 static winbuf *scr_SearchWindow(const char *winId, int special)
 {
-  GSList *wblp;
+  char *id;
   winbuf *wbp;
 
   if (special)
@@ -468,19 +457,16 @@ static winbuf *scr_SearchWindow(const char *winId, int special)
   if (!winId)
     return NULL;
 
-  for (wblp = winbuflst; wblp; wblp = g_slist_next(wblp)) {
-    wbp = wblp->data;
-    if (wbp->name) {
-      if (!strcasecmp(wbp->name, winId))
-	return wbp;
-    }
-  }
-  return NULL;
+  id = g_strdup(winId);
+  mc_strtolower(id);
+  wbp = g_hash_table_lookup(winbufhash, id);
+  g_free(id);
+  return wbp;
 }
 
-int scr_BuddyBufferExists(const char *jid)
+int scr_BuddyBufferExists(const char *bjid)
 {
-  return (scr_SearchWindow(jid, FALSE) != NULL);
+  return (scr_SearchWindow(bjid, FALSE) != NULL);
 }
 
 //  scr_UpdateWindow()
@@ -493,7 +479,7 @@ static void scr_UpdateWindow(winbuf *win_entry)
   GList *hbuf_head;
   char date[64];
 
-  width = scr_WindowWidth(win_entry->win);
+  width = getmaxx(win_entry->win);
 
   // Should the window be empty?
   if (win_entry->cleared) {
@@ -555,9 +541,11 @@ static void scr_UpdateWindow(winbuf *win_entry)
           dir = '>';
         wprintw(win_entry->win, "%.11s #%c# ", date, dir);
       } else if (line->flags & HBB_PREFIX_IN) {
-        wprintw(win_entry->win, "%.11s <== ", date);
+        char cryptflag = line->flags & HBB_PREFIX_PGPCRYPT ? '~' : '=';
+        wprintw(win_entry->win, "%.11s <%c= ", date, cryptflag);
       } else if (line->flags & HBB_PREFIX_OUT) {
-        wprintw(win_entry->win, "%.11s --> ", date);
+        char cryptflag = line->flags & HBB_PREFIX_PGPCRYPT ? '~' : '-';
+        wprintw(win_entry->win, "%.11s -%c> ", date, cryptflag);
       } else if (line->flags & HBB_PREFIX_SPECIAL) {
         strftime(date, 30, "%m-%d %H:%M:%S", localtime(&line->timestamp));
         wprintw(win_entry->win, "%.14s  ", date);
@@ -592,13 +580,12 @@ static void scr_ShowWindow(const char *winId, int special)
   if (!win_entry) {
     if (special) {
       if (!statusWindow) {
-        statusWindow = scr_CreateBuddyPanel(NULL, FALSE);
+        statusWindow = scr_new_buddy(NULL, FALSE);
         statusWindow->hbuf = statushbuf;
-        statusWindow->name = g_strdup(winId);
       }
       win_entry = statusWindow;
     } else {
-      win_entry = scr_CreateBuddyPanel(winId, FALSE);
+      win_entry = scr_new_buddy(winId, FALSE);
     }
   }
 
@@ -624,26 +611,26 @@ static void scr_ShowWindow(const char *winId, int special)
 // Display the chat window buffer for the current buddy.
 void scr_ShowBuddyWindow(void)
 {
-  const gchar *jid;
+  const gchar *bjid;
 
   if (!current_buddy) {
-    jid = NULL;
+    bjid = NULL;
   } else {
-    jid = CURRENT_JID;
+    bjid = CURRENT_JID;
     if (buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_SPECIAL) {
       scr_ShowWindow(buddy_getname(BUDDATA(current_buddy)), TRUE);
       return;
     }
   }
 
-  if (!jid) {
+  if (!bjid) {
     top_panel(chatPanel);
     top_panel(inputPanel);
     currentWindow = NULL;
     return;
   }
 
-  scr_ShowWindow(jid, FALSE);
+  scr_ShowWindow(bjid, FALSE);
 }
 
 //  scr_UpdateBuddyWindow()
@@ -673,6 +660,7 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
   char *text_locale;
   int dont_show = FALSE;
   int special;
+  guint num_history_blocks;
   bool setmsgflg = FALSE;
 
   // Look for the window entry.
@@ -689,13 +677,12 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
   if (!win_entry) {
     if (special) {
       if (!statusWindow) {
-        statusWindow = scr_CreateBuddyPanel(NULL, dont_show);
+        statusWindow = scr_new_buddy(NULL, dont_show);
         statusWindow->hbuf = statushbuf;
-        //statusWindow->name = g_strdup(winId); // (winId NULL)
       }
       win_entry = statusWindow;
     } else {
-      win_entry = scr_CreateBuddyPanel(winId, dont_show);
+      win_entry = scr_new_buddy(winId, dont_show);
     }
   }
 
@@ -703,9 +690,16 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
   if (win_entry->cleared)
     win_entry->top = g_list_last(win_entry->hbuf);
 
+  // Make sure we do not free the buffer while it's locked or when
+  // top is set.
+  if (win_entry->lock || win_entry->top)
+    num_history_blocks = 0U;
+  else
+    num_history_blocks = get_max_history_blocks();
+
   text_locale = from_utf8(text);
   hbuf_add_line(&win_entry->hbuf, text_locale, timestamp, prefix_flags,
-                maxX - Roster_Width - PREFIX_WIDTH);
+                maxX - Roster_Width - PREFIX_WIDTH, num_history_blocks);
   g_free(text_locale);
 
   if (win_entry->cleared) {
@@ -770,6 +764,8 @@ void scr_DrawMainWindow(unsigned int fullinit)
 {
   int requested_size;
   gchar *ver, *message;
+  int chat_y_pos, chatstatus_y_pos, log_y_pos;
+  int roster_x_pos, chat_x_pos;
 
   Log_Win_Height = DEFAULT_LOG_WIN_HEIGHT;
   requested_size = settings_opt_get_int("log_win_height");
@@ -803,12 +799,38 @@ void scr_DrawMainWindow(unsigned int fullinit)
       Roster_Width = DEFAULT_ROSTER_WIDTH;
   }
 
+  log_win_on_top = (settings_opt_get_int("log_win_on_top") == 1);
+  roster_win_on_right = (settings_opt_get_int("roster_win_on_right") == 1);
+
+  if (log_win_on_top) {
+    chat_y_pos = Log_Win_Height-1;
+    log_y_pos = 0;
+    chatstatus_y_pos = Log_Win_Height-2;
+  } else {
+    chat_y_pos = 0;
+    log_y_pos = CHAT_WIN_HEIGHT+1;
+    chatstatus_y_pos = CHAT_WIN_HEIGHT;
+  }
+
+  if (roster_win_on_right) {
+    roster_x_pos = maxX - Roster_Width;
+    chat_x_pos = 0;
+  } else {
+    roster_x_pos = 0;
+    chat_x_pos = Roster_Width;
+  }
+
   if (fullinit) {
+    if (!winbufhash)
+      winbufhash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     /* Create windows */
-    rosterWnd = newwin(CHAT_WIN_HEIGHT, Roster_Width, 0, 0);
-    chatWnd   = newwin(CHAT_WIN_HEIGHT, maxX - Roster_Width, 0, Roster_Width);
-    logWnd    = newwin(Log_Win_Height-2, maxX, CHAT_WIN_HEIGHT+1, 0);
-    chatstatusWnd = newwin(1, maxX, CHAT_WIN_HEIGHT, 0);
+    rosterWnd = newwin(CHAT_WIN_HEIGHT, Roster_Width, chat_y_pos, roster_x_pos);
+    chatWnd   = newwin(CHAT_WIN_HEIGHT, maxX - Roster_Width, chat_y_pos,
+                       chat_x_pos);
+    activechatWnd = newwin(CHAT_WIN_HEIGHT, maxX - Roster_Width, chat_y_pos,
+                           chat_x_pos);
+    logWnd    = newwin(Log_Win_Height-2, maxX, log_y_pos, 0);
+    chatstatusWnd = newwin(1, maxX, chatstatus_y_pos, 0);
     mainstatusWnd = newwin(1, maxX, maxY-2, 0);
     inputWnd  = newwin(1, maxX, maxY-1, 0);
     if (!rosterWnd || !chatWnd || !logWnd || !inputWnd) {
@@ -818,6 +840,7 @@ void scr_DrawMainWindow(unsigned int fullinit)
     }
     wbkgd(rosterWnd,      get_color(COLOR_GENERAL));
     wbkgd(chatWnd,        get_color(COLOR_GENERAL));
+    wbkgd(activechatWnd,  get_color(COLOR_GENERAL));
     wbkgd(logWnd,         get_color(COLOR_GENERAL));
     wbkgd(chatstatusWnd,  get_color(COLOR_STATUS));
     wbkgd(mainstatusWnd,  get_color(COLOR_STATUS));
@@ -825,14 +848,15 @@ void scr_DrawMainWindow(unsigned int fullinit)
     /* Resize/move windows */
     wresize(rosterWnd, CHAT_WIN_HEIGHT, Roster_Width);
     wresize(chatWnd, CHAT_WIN_HEIGHT, maxX - Roster_Width);
-    mvwin(chatWnd, 0, Roster_Width);
-
     wresize(logWnd, Log_Win_Height-2, maxX);
-    mvwin(logWnd, CHAT_WIN_HEIGHT+1, 0);
+
+    mvwin(chatWnd, chat_y_pos, chat_x_pos);
+    mvwin(rosterWnd, chat_y_pos, roster_x_pos);
+    mvwin(logWnd, log_y_pos, 0);
 
     // Resize & move chat status window
     wresize(chatstatusWnd, 1, maxX);
-    mvwin(chatstatusWnd, CHAT_WIN_HEIGHT, 0);
+    mvwin(chatstatusWnd, chatstatus_y_pos, 0);
     // Resize & move main status window
     wresize(mainstatusWnd, 1, maxX);
     mvwin(mainstatusWnd, maxY-2, 0);
@@ -864,6 +888,7 @@ void scr_DrawMainWindow(unsigned int fullinit)
     // Create panels
     rosterPanel = new_panel(rosterWnd);
     chatPanel   = new_panel(chatWnd);
+    activechatPanel = new_panel(activechatWnd);
     logPanel    = new_panel(logWnd);
     chatstatusPanel = new_panel(chatstatusWnd);
     mainstatusPanel = new_panel(mainstatusWnd);
@@ -872,8 +897,12 @@ void scr_DrawMainWindow(unsigned int fullinit)
     // Build the buddylist at least once, to make sure the special buffer
     // is added
     buddylist_build();
+
+    // Init prev_chatwidth; this variable will be used to prevent us
+    // from rewrapping buffers when the width doesn't change.
+    prev_chatwidth = maxX - Roster_Width - PREFIX_WIDTH;
     // Wrap existing status buffer lines
-    hbuf_rebuild(&statushbuf, maxX - Roster_Width - PREFIX_WIDTH);
+    hbuf_rebuild(&statushbuf, prev_chatwidth);
 
 #ifndef UNICODE
     if (utf8_mode)
@@ -895,30 +924,48 @@ void scr_DrawMainWindow(unsigned int fullinit)
   return;
 }
 
-static inline void resize_win_buffer(winbuf *wbp, int x, int y,
-                                     int lines, int cols)
+static void resize_win_buffer(gpointer key, gpointer value, gpointer data)
 {
+  winbuf *wbp = value;
+  struct dimensions *dim = data;
+  int chat_x_pos, chat_y_pos;
+  int new_chatwidth;
+
+  if (!(wbp && wbp->win))
+    return;
+
+  if (log_win_on_top)
+    chat_y_pos = Log_Win_Height-1;
+  else
+    chat_y_pos = 0;
+
+  if (roster_win_on_right)
+    chat_x_pos = 0;
+  else
+    chat_x_pos = Roster_Width;
+
   // Resize/move buddy window
-  wresize(wbp->win, lines, cols);
-  mvwin(wbp->win, 0, Roster_Width);
+  wresize(wbp->win, dim->l, dim->c);
+  mvwin(wbp->win, chat_y_pos, chat_x_pos);
   werase(wbp->win);
   // If a panel exists, replace the old window with the new
   if (wbp->panel)
     replace_panel(wbp->panel, wbp->win);
   // Redo line wrapping
   wbp->top = hbuf_previous_persistent(wbp->top);
-  hbuf_rebuild(&wbp->hbuf, maxX - Roster_Width - PREFIX_WIDTH);
+
+  new_chatwidth = maxX - Roster_Width - PREFIX_WIDTH;
+  if (new_chatwidth != prev_chatwidth)
+    hbuf_rebuild(&wbp->hbuf, new_chatwidth);
 }
 
 //  scr_Resize()
 // Function called when the window is resized.
 // - Resize windows
 // - Rewrap lines in each buddy buffer
-void scr_Resize()
+void scr_Resize(void)
 {
-  int x, y, lines, cols;
-  GSList *wblp;
-  winbuf *wbp;
+  struct dimensions dim;
 
   // First, update the global variables
   getmaxyx(stdscr, maxY, maxX);
@@ -931,21 +978,20 @@ void scr_Resize()
   scr_DrawMainWindow(FALSE);
 
   // Resize all buddy windows
-  x = Roster_Width;
-  y = 0;
-  lines = CHAT_WIN_HEIGHT;
-  cols = maxX - Roster_Width;
-  if (cols < 1) cols = 1;
+  dim.l = CHAT_WIN_HEIGHT;
+  dim.c = maxX - Roster_Width;
+  if (dim.c < 1)
+    dim.c = 1;
 
-  for (wblp = winbuflst; wblp; wblp = g_slist_next(wblp)) {
-    wbp = wblp->data;
-    if (wbp->win)
-      resize_win_buffer(wbp, x, y, lines, cols);
-  }
+  // Resize all buffers
+  g_hash_table_foreach(winbufhash, resize_win_buffer, &dim);
 
   // Resize/move special status buffer
   if (statusWindow)
-    resize_win_buffer(statusWindow, x, y, lines, cols);
+    resize_win_buffer(NULL, statusWindow, &dim);
+
+  // Update prev_chatwidth, now that all buffers have been resized
+  prev_chatwidth = maxX - Roster_Width - PREFIX_WIDTH;
 
   // Refresh current buddy window
   if (chatmode)
@@ -1023,9 +1069,14 @@ void scr_UpdateChatStatus(int forceupdate)
 
   // No status message for groups & MUC rooms
   if (!isgrp && !ismuc) {
-    GSList *resources = buddy_getresources(BUDDATA(current_buddy));
+    GSList *resources, *p_res;
+    resources = buddy_getresources(BUDDATA(current_buddy));
     msg = buddy_getstatusmsg(BUDDATA(current_buddy),
                              resources ? resources->data : "");
+    // Free the resources list data
+    for (p_res = resources ; p_res ; p_res = g_slist_next(p_res))
+      g_free(p_res->data);
+    g_slist_free(resources);
   } else if (ismuc) {
     msg = buddy_gettopic(BUDDATA(current_buddy));
   }
@@ -1038,6 +1089,31 @@ void scr_UpdateChatStatus(int forceupdate)
   mvwprintw(chatstatusWnd, 0, 1, "%s", buf_locale);
   g_free(buf_locale);
   g_free(buf);
+
+  // Display chatstates of the contact, if available.
+  if (btype & ROSTER_TYPE_USER) {
+    char eventchar = 0;
+    guint event;
+
+    // We do not specify the resource here, so one of the resources with the
+    // highest priority will be used.
+    event = buddy_resource_getevents(BUDDATA(current_buddy), NULL);
+
+    if (event == ROSTER_EVENT_ACTIVE)
+      eventchar = 'A';
+    else if (event == ROSTER_EVENT_COMPOSING)
+      eventchar = 'C';
+    else if (event == ROSTER_EVENT_PAUSED)
+      eventchar = 'P';
+    else if (event == ROSTER_EVENT_INACTIVE)
+      eventchar = 'I';
+    else if (event == ROSTER_EVENT_GONE)
+      eventchar = 'G';
+
+    if (eventchar)
+      mvwprintw(chatstatusWnd, 0, maxX-3, "[%c]", eventchar);
+  }
+
 
   if (forceupdate) {
     update_panels();
@@ -1057,6 +1133,7 @@ void scr_DrawRoster(void)
   int cursor_backup;
   char status, pending;
   enum imstatus currentstatus = jb_getstatus();
+  int x_pos;
 
   // We can reset update_roster
   update_roster = FALSE;
@@ -1075,10 +1152,11 @@ void scr_DrawRoster(void)
   werase(rosterWnd);
 
   if (Roster_Width) {
+    int line_x_pos = roster_win_on_right ? 0 : Roster_Width-1;
     // Redraw the vertical line (not very good...)
     wattrset(rosterWnd, get_color(COLOR_GENERAL));
     for (i=0 ; i < CHAT_WIN_HEIGHT ; i++)
-      mvwaddch(rosterWnd, i, Roster_Width-1, ACS_VLINE);
+      mvwaddch(rosterWnd, i, line_x_pos, ACS_VLINE);
   }
 
   // Leave now if buddylist is empty or the roster is hidden
@@ -1107,6 +1185,11 @@ void scr_DrawRoster(void)
     offset = i + 1 - maxy;
   }
 
+  if (roster_win_on_right)
+    x_pos = 1; // 1 char offset (vertical line)
+  else
+    x_pos = 0;
+
   name = g_new0(char, 4*Roster_Width);
   rline = g_new0(char, 4*Roster_Width+1);
 
@@ -1116,6 +1199,7 @@ void scr_DrawRoster(void)
   for (i=0; i<maxy && buddy; buddy = g_list_next(buddy)) {
     unsigned short bflags, btype, ismsg, isgrp, ismuc, ishid, isspe;
     gchar *rline_locale;
+    GSList *resources, *p_res;
 
     bflags = buddy_getflags(BUDDATA(buddy));
     btype = buddy_gettype(BUDDATA(buddy));
@@ -1133,6 +1217,18 @@ void scr_DrawRoster(void)
 
     status = '?';
     pending = ' ';
+
+    resources = buddy_getresources(BUDDATA(buddy));
+    for (p_res = resources ; p_res ; p_res = g_slist_next(p_res)) {
+      guint events = buddy_resource_getevents(BUDDATA(buddy),
+                                              p_res ? p_res->data : "");
+      if ((events & ROSTER_EVENT_PAUSED) && pending != '+')
+        pending = '.';
+      if (events & ROSTER_EVENT_COMPOSING)
+        pending = '+';
+      g_free(p_res->data);
+    }
+    g_slist_free(resources);
 
     // Display message notice if there is a message flag, but not
     // for unfolded groups.
@@ -1157,7 +1253,7 @@ void scr_DrawRoster(void)
       else
         wattrset(rosterWnd, get_color(COLOR_ROSTERSEL));
       // The 3 following lines aim at coloring the whole line
-      wmove(rosterWnd, i, 0);
+      wmove(rosterWnd, i, x_pos);
       for (n = 0; n < maxx; n++)
         waddch(rosterWnd, ' ');
     } else {
@@ -1199,7 +1295,7 @@ void scr_DrawRoster(void)
     }
 
     rline_locale = from_utf8(rline);
-    mvwprintw(rosterWnd, i, 0, "%s", rline_locale);
+    mvwprintw(rosterWnd, i, x_pos, "%s", rline_locale);
     g_free(rline_locale);
     i++;
   }
@@ -1239,18 +1335,16 @@ void scr_RosterVisibility(int status)
   }
 }
 
-inline void scr_WriteMessage(const char *jid, const char *text,
+inline void scr_WriteMessage(const char *bjid, const char *text,
                              time_t timestamp, guint prefix_flags)
 {
   char *xtext;
 
   if (!timestamp) timestamp = time(NULL);
 
-  xtext = ut_expand_tabs(text); // Expand tabs
+  xtext = ut_expand_tabs(text); // Expand tabs and filter out some chars
 
-  // XXX Are there other special chars we should filter out?
-
-  scr_WriteInWindow(jid, xtext, timestamp, prefix_flags, FALSE);
+  scr_WriteInWindow(bjid, xtext, timestamp, prefix_flags, FALSE);
 
   if (xtext != (char*)text)
     g_free(xtext);
@@ -1260,17 +1354,24 @@ inline void scr_WriteMessage(const char *jid, const char *text,
 void scr_WriteIncomingMessage(const char *jidfrom, const char *text,
         time_t timestamp, guint prefix)
 {
-  if (!(prefix & ~HBB_PREFIX_NOFLAG & ~HBB_PREFIX_HLIGHT))
+  if (!(prefix &
+        ~HBB_PREFIX_NOFLAG & ~HBB_PREFIX_HLIGHT & ~HBB_PREFIX_PGPCRYPT))
     prefix |= HBB_PREFIX_IN;
 
   scr_WriteMessage(jidfrom, text, timestamp, prefix);
-  update_panels();
 }
 
-void scr_WriteOutgoingMessage(const char *jidto, const char *text)
+void scr_WriteOutgoingMessage(const char *jidto, const char *text, guint prefix)
 {
-  scr_WriteMessage(jidto, text, 0, HBB_PREFIX_OUT|HBB_PREFIX_HLIGHT);
-  scr_ShowWindow(jidto, FALSE);
+  GSList *roster_elt;
+  roster_elt = roster_find(jidto, jidsearch,
+                           ROSTER_TYPE_USER|ROSTER_TYPE_AGENT|ROSTER_TYPE_ROOM);
+
+  scr_WriteMessage(jidto, text, 0, prefix|HBB_PREFIX_OUT|HBB_PREFIX_HLIGHT);
+
+  // Show jidto's buffer unless the buddy is not in the buddylist
+  if (roster_elt && g_list_position(buddylist, roster_elt->data) != -1)
+    scr_ShowWindow(jidto, FALSE);
 }
 
 static inline void set_autoaway(bool setaway)
@@ -1292,10 +1393,10 @@ static inline void set_autoaway(bool setaway)
       msg = prevmsg;
     if (prevmsg)
       oldmsg = g_strdup(prevmsg);
-    jb_setstatus(away, NULL, msg);
+    jb_setstatus(away, NULL, msg, FALSE);
   } else {
     // Back
-    jb_setstatus(oldstatus, NULL, (oldmsg ? oldmsg : ""));
+    jb_setstatus(oldstatus, NULL, (oldmsg ? oldmsg : ""), FALSE);
     if (oldmsg) {
       g_free(oldmsg);
       oldmsg = NULL;
@@ -1303,7 +1404,7 @@ static inline void set_autoaway(bool setaway)
   }
 }
 
-unsigned int scr_GetAutoAwayTimeout(time_t now)
+long int scr_GetAutoAwayTimeout(time_t now)
 {
   enum imstatus cur_st;
   unsigned int autoaway_timeout = settings_opt_get_int("autoaway");
@@ -1321,6 +1422,53 @@ unsigned int scr_GetAutoAwayTimeout(time_t now)
   else
     return LastActivity + (time_t)autoaway_timeout - now;
 }
+
+//  set_chatstate(state)
+// Set the current chat state (0=active, 1=composing, 2=paused)
+// If the chat state has changed, call jb_send_chatstate()
+static inline void set_chatstate(int state)
+{
+#if defined JEP0022 || defined JEP0085
+  if (chatstates_disabled)
+    return;
+  if (!chatmode)
+    state = 0;
+  if (state != chatstate) {
+    chatstate = state;
+    if (current_buddy &&
+        buddy_gettype(BUDDATA(current_buddy)) == ROSTER_TYPE_USER) {
+      guint jep_state;
+      if (chatstate == 1)
+        jep_state = ROSTER_EVENT_COMPOSING;
+      else if (chatstate == 2)
+        jep_state = ROSTER_EVENT_PAUSED;
+      else
+        jep_state = ROSTER_EVENT_ACTIVE;
+      jb_send_chatstate(BUDDATA(current_buddy), jep_state);
+    }
+    if (!chatstate)
+      chatstate_timestamp = 0;
+  }
+#endif
+}
+
+#if defined JEP0022 || defined JEP0085
+inline long int scr_GetChatStatesTimeout(time_t now)
+{
+  // Check if we're currently composing...
+  if (chatstate != 1 || !chatstate_timestamp)
+    return 86400;
+
+  // If the timeout is reached, let's change the state right now.
+  if (now >= chatstate_timestamp + COMPOSING_TIMEOUT) {
+    chatstate_timestamp = now;
+    set_chatstate(2);
+    return 86400;
+  }
+
+ return chatstate_timestamp + COMPOSING_TIMEOUT - now;
+}
+#endif
 
 // Check if we should enter/leave automatic away status
 void scr_CheckAutoAway(int activity)
@@ -1358,6 +1506,11 @@ static void set_current_buddy(GList *newbuddy)
 
   if (!current_buddy || !newbuddy)  return;
   if (newbuddy == current_buddy)    return;
+
+  // We're moving to another buddy.  We're thus inactive wrt current_buddy.
+  set_chatstate(0);
+  // We don't want the chatstate to be changed again right now.
+  lock_chatstate = true;
 
   prev_st = buddy_getstatus(BUDDATA(current_buddy), NULL);
   buddy_setflags(BUDDATA(current_buddy), ROSTER_FLAG_LOCK, FALSE);
@@ -1411,6 +1564,44 @@ void scr_RosterDown(void)
     scr_ShowBuddyWindow();
 }
 
+//  scr_RosterPrevGroup()
+// Go to the previous group in the buddylist
+void scr_RosterPrevGroup(void)
+{
+  GList *bud;
+
+  for (bud = current_buddy ; bud ; ) {
+    bud = g_list_previous(bud);
+    if (!bud)
+      break;
+    if (buddy_gettype(BUDDATA(bud)) & ROSTER_TYPE_GROUP) {
+      set_current_buddy(bud);
+      if (chatmode)
+        scr_ShowBuddyWindow();
+      break;
+    }
+  }
+}
+
+//  scr_RosterNextGroup()
+// Go to the next group in the buddylist
+void scr_RosterNextGroup(void)
+{
+  GList *bud;
+
+  for (bud = current_buddy ; bud ; ) {
+    bud = g_list_next(bud);
+    if (!bud)
+      break;
+    if (buddy_gettype(BUDDATA(bud)) & ROSTER_TYPE_GROUP) {
+      set_current_buddy(bud);
+      if (chatmode)
+        scr_ShowBuddyWindow();
+      break;
+    }
+  }
+}
+
 //  scr_RosterSearch(str)
 // Look forward for a buddy with jid/name containing str.
 void scr_RosterSearch(char *str)
@@ -1420,8 +1611,8 @@ void scr_RosterSearch(char *str)
     scr_ShowBuddyWindow();
 }
 
-//  scr_RosterJumpJid(jid)
-// Jump to buddy jid.
+//  scr_RosterJumpJid(bjid)
+// Jump to buddy bjid.
 // NOTE: With this function, the buddy is added to the roster if doesn't exist.
 void scr_RosterJumpJid(char *barejid)
 {
@@ -1569,9 +1760,31 @@ void scr_BufferClear(void)
   update_panels();
 }
 
-//  scr_BufferPurge()
+//  buffer_purge()
+// key: winId/jid
+// value: winbuf structure
+// data: int, set to 1 if the buffer should be closed.
+// NOTE: does not work for special buffers.
+static void buffer_purge(gpointer key, gpointer value, gpointer data)
+{
+  int closebuf = (gint)data; // XXX GPOINTER_TO_INT?
+  winbuf *win_entry = value;
+
+  // Delete the current hbuf
+  hbuf_free(&win_entry->hbuf);
+
+  if (closebuf) {
+    g_hash_table_remove(winbufhash, key);
+  } else {
+    win_entry->cleared = FALSE;
+    win_entry->top = NULL;
+  }
+}
+
+//  scr_BufferPurge(closebuf)
 // Purge/Drop the current buddy buffer
-void scr_BufferPurge(void)
+// If closebuf is 1, close the buffer.
+void scr_BufferPurge(int closebuf)
 {
   winbuf *win_entry;
   guint isspe;
@@ -1582,15 +1795,40 @@ void scr_BufferPurge(void)
   win_entry = scr_SearchWindow(CURRENT_JID, isspe);
   if (!win_entry) return;
 
-  // Delete the current hbuf
-  hbuf_free(&win_entry->hbuf);
-  if (isspe) {
+  if (!isspe) {
+    buffer_purge((gpointer)CURRENT_JID, win_entry, (gpointer)closebuf);
+    // XXX GINT_TO_POINTER?
+    if (closebuf) {
+      scr_set_chatmode(FALSE);
+      currentWindow = NULL;
+    }
+  } else {
+    // (Special buffer)
+    // Reset the current hbuf
+    hbuf_free(&win_entry->hbuf);
     // Currently it can only be the status buffer
     statushbuf = NULL;
+
+    win_entry->cleared = FALSE;
+    win_entry->top = NULL;
   }
 
-  win_entry->cleared = FALSE;
-  win_entry->top = NULL;
+  // Refresh the window
+  scr_UpdateBuddyWindow();
+
+  // Finished :)
+  update_panels();
+}
+
+void scr_BufferPurgeAll(int closebuf)
+{
+  g_hash_table_foreach(winbufhash, buffer_purge, (gpointer)closebuf);
+  // XXX GINT_TO_POINTER?
+
+  if (closebuf) {
+    scr_set_chatmode(FALSE);
+    currentWindow = NULL;
+  }
 
   // Refresh the window
   scr_UpdateBuddyWindow();
@@ -1771,21 +2009,28 @@ inline void scr_set_chatmode(int enable)
   scr_UpdateChatStatus(TRUE);
 }
 
+//  scr_get_chatmode()
+// Public function to get chatmode state.
+inline int scr_get_chatmode(void)
+{
+  return chatmode;
+}
+
 //  scr_get_multimode()
 // Public function to get multimode status...
-inline int scr_get_multimode()
+inline int scr_get_multimode(void)
 {
   return multimode;
 }
 
 //  scr_setmsgflag_if_needed(jid)
 // Set the message flag unless we're already in the jid buffer window
-void scr_setmsgflag_if_needed(const char *jid, int special)
+void scr_setmsgflag_if_needed(const char *bjid, int special)
 {
   const char *current_id;
   bool iscurrentlocked = FALSE;
 
-  if (!jid)
+  if (!bjid)
     return;
 
   if (current_buddy) {
@@ -1801,8 +2046,8 @@ void scr_setmsgflag_if_needed(const char *jid, int special)
   } else {
     current_id = NULL;
   }
-  if (!chatmode || !current_id || strcmp(jid, current_id) || iscurrentlocked)
-    roster_msg_setflag(jid, special, TRUE);
+  if (!chatmode || !current_id || strcmp(bjid, current_id) || iscurrentlocked)
+    roster_msg_setflag(bjid, special, TRUE);
 }
 
 //  scr_set_multimode()
@@ -1891,9 +2136,27 @@ void scr_append_multiline(const char *line)
 // Add a line to the inputLine history
 inline void scr_cmdhisto_addline(char *line)
 {
-  if (!line || !*line) return;
+  int max_histo_lines;
+
+  if (!line || !*line)
+    return;
+
+  max_histo_lines = settings_opt_get_int("cmdhistory_lines");
+
+  if (max_histo_lines < 0)
+    max_histo_lines = 1;
+
+  if (max_histo_lines)
+    while (cmdhisto_nblines >= (guint)max_histo_lines) {
+      if (cmdhisto_cur && cmdhisto_cur == cmdhisto)
+        break;
+      g_free(cmdhisto->data);
+      cmdhisto = g_list_delete_link(cmdhisto, cmdhisto);
+      cmdhisto_nblines--;
+    }
 
   cmdhisto = g_list_append(cmdhisto, g_strdup(line));
+  cmdhisto_nblines++;
 }
 
 //  scr_cmdhisto_prev()
@@ -1945,7 +2208,7 @@ static const char *scr_cmdhisto_next(char *mask, guint len)
 // Drag  the  character  before point forward over the character at
 // point, moving point forward as well.  If point is at the end  of
 // the  line, then this transposes the two characters before point.
-void readline_transpose_chars()
+void readline_transpose_chars(void)
 {
   char *c1, *c2;
   unsigned a, b;
@@ -1974,7 +2237,7 @@ void readline_transpose_chars()
 
 //  readline_backward_kill_word()
 // Kill the word before the cursor, in input line
-void readline_backward_kill_word()
+void readline_backward_kill_word(void)
 {
   char *c, *old = ptr_inputline;
   int spaceallowed = 1;
@@ -2005,7 +2268,7 @@ void readline_backward_kill_word()
 
 //  readline_backward_word()
 // Move  back  to the start of the current or previous word
-void readline_backward_word()
+void readline_backward_word(void)
 {
   char *old_ptr_inputLine = ptr_inputline;
   int spaceallowed = 1;
@@ -2032,7 +2295,7 @@ void readline_backward_word()
 
 //  readline_forward_word()
 // Move forward to the end of the next word
-void readline_forward_word()
+void readline_forward_word(void)
 {
   int spaceallowed = 1;
 
@@ -2062,7 +2325,7 @@ static int which_row(const char **p_row)
   int quote = FALSE;
 
   // Not a command?
-  if ((ptr_inputline == inputLine) || (inputLine[0] != '/')) {
+  if ((ptr_inputline == inputLine) || (inputLine[0] != COMMAND_CHAR)) {
     if (!current_buddy) return -2;
     if (buddy_gettype(BUDDATA(current_buddy)) == ROSTER_TYPE_ROOM) {
       *p_row = inputLine;
@@ -2157,12 +2420,21 @@ static void scr_handle_tab(void)
   }
 
   if (!completion_started) {
-    GSList *list = compl_get_category_list(compl_categ);
+    guint dynlist;
+    GSList *list = compl_get_category_list(compl_categ, &dynlist);
     if (list) {
       char *prefix = g_strndup(row, ptr_inputline-row);
       // Init completion
       new_completion(prefix, list);
       g_free(prefix);
+      // Free the list if it's a dynamic one
+      if (dynlist) {
+        GSList *slp;
+        for (slp = list; slp; slp = g_slist_next(slp))
+          g_free(slp->data);
+        g_slist_free(list);
+
+      }
       // Now complete
       cchar = complete();
       if (cchar)
@@ -2251,12 +2523,19 @@ void scr_handle_CtrlC(void)
 {
   if (!Curses) return;
   // Leave multi-line mode
-  process_command("/msay abort");
+  process_command(mkcmdstr("msay abort"));
   // Same as Ctrl-g, now
   scr_cancel_current_completion();
   scr_end_current_completion();
   check_offset(-1);
   refresh_inputline();
+}
+
+static void scr_handle_CtrlD(void)
+{
+  // Validate current multi-line
+  if (scr_get_multimode())
+    process_command(mkcmdstr("msay send"));
 }
 
 static void add_keyseq(char *seqstr, guint mkeycode, gint value)
@@ -2352,9 +2631,9 @@ void scr_Getch(keycode *kcode)
 
   kcode->value = wgetch(inputWnd);
   if (utf8_mode) {
-    bool meta = (kcode->value == 27);
+    bool ismeta = (kcode->value == 27);
 
-    if (meta)
+    if (ismeta)
       ks[0] = wgetch(inputWnd);
     else
       ks[0] = kcode->value;
@@ -2366,7 +2645,7 @@ void scr_Getch(keycode *kcode)
       if (match > 0) {
         kcode->value = match;
         kcode->utf8 = 1;
-        if (meta)
+        if (ismeta)
           kcode->mcode = MKEY_META;
         return;
       }
@@ -2376,7 +2655,7 @@ void scr_Getch(keycode *kcode)
     }
     while (i > 0)
       ungetch(ks[i--]);
-    if (meta)
+    if (ismeta)
       ungetch(ks[0]);
     memset(ks,  0, sizeof(ks));
   }
@@ -2440,14 +2719,14 @@ static int bindcommand(keycode kcode)
   boundcmd = settings_get(SETTINGS_TYPE_BINDING, asciikey);
 
   if (boundcmd) {
-    gchar *cmd, *boundcmd_locale;
+    gchar *cmdline, *boundcmd_locale;
     boundcmd_locale = from_utf8(boundcmd);
-    cmd = g_strdup_printf("/%s", boundcmd_locale);
+    cmdline = g_strdup_printf(mkcmdstr("%s"), boundcmd_locale);
     scr_CheckAutoAway(TRUE);
-    if (process_command(cmd))
+    if (process_command(cmdline))
       return 255; // Quit
     g_free(boundcmd_locale);
-    g_free(cmd);
+    g_free(cmdline);
     return 0;
   }
 
@@ -2466,6 +2745,8 @@ int process_key(keycode kcode)
 {
   int key = kcode.value;
   int display_char = FALSE;
+
+  lock_chatstate = false;
 
   switch (kcode.mcode) {
     case 0:
@@ -2603,6 +2884,9 @@ int process_key(keycode kcode)
     case 3:     // Ctrl-C
         scr_handle_CtrlC();
         break;
+    case 4:     // Ctrl-D
+        scr_handle_CtrlD();
+        break;
     case KEY_END:
     case 5:
         for (; *ptr_inputline; ptr_inputline++) ;
@@ -2622,10 +2906,6 @@ int process_key(keycode kcode)
         break;
     case 14:    // Ctrl-n
         scr_BufferScrollUpDown(1, 0);
-        break;
-    case 17:    // Ctrl-q
-        scr_CheckAutoAway(TRUE);
-        scr_RosterUnreadMessage(1); // next unread message
         break;
     case 20:    // Ctrl-t
         readline_transpose_chars();
@@ -2690,6 +2970,17 @@ display:
   if (completion_started && key != 9 && key != KEY_RESIZE)
     scr_end_current_completion();
   refresh_inputline();
+
+  if (!lock_chatstate) {
+    // Set chat state to composing (1) if the user is currently composing,
+    // i.e. not an empty line and not a command line.
+    if (inputLine[0] == 0 || inputLine[0] == COMMAND_CHAR)
+      set_chatstate(0);
+    else
+      set_chatstate(1);
+    if (chatstate)
+      time(&chatstate_timestamp);
+  }
   return 0;
 }
 

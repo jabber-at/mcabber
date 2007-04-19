@@ -2,7 +2,7 @@ Source: mcabber
 Section: net
 Priority: optional
 Maintainer: Mario Iseli <admin@marioiseli.com>
-Build-Depends: debhelper (>= 5.0.0), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev
+Build-Depends: debhelper (>= 5.0.0), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, dpatch
 Standards-Version: 3.7.2
 
 Package: mcabber
@@ -15,4 +15,4 @@ Description: Small Jabber console client
  SSL support, history logging, commands completion, and external actions
  triggers.
  .
-  Homepage: http://www.lilotux.net/~mikael/mcabber/ 
+  Homepage: http://www.lilotux.net/~mikael/mcabber/

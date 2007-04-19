@@ -40,7 +40,6 @@ DIST_COMMON = $(srcdir)/Makefile.am $(srcdir)/Makefile.in COPYING
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/macros/curslib.m4 \
 	$(top_srcdir)/macros/define_dir.m4 \
-	$(top_srcdir)/macros/glib-2.0.m4 \
 	$(top_srcdir)/macros/timezone.m4 \
 	$(top_srcdir)/macros/tm-gmtoff.m4 $(top_srcdir)/configure.ac
 am__configure_deps = $(am__aclocal_m4_deps) $(CONFIGURE_DEPENDENCIES) \
@@ -55,11 +54,12 @@ am_mcabber_OBJECTS = main.$(OBJEXT) roster.$(OBJEXT) events.$(OBJEXT) \
 	jabglue.$(OBJEXT) jab_iq.$(OBJEXT) commands.$(OBJEXT) \
 	compl.$(OBJEXT) hbuf.$(OBJEXT) screen.$(OBJEXT) \
 	settings.$(OBJEXT) hooks.$(OBJEXT) utf8.$(OBJEXT) \
-	histolog.$(OBJEXT) utils.$(OBJEXT) help.$(OBJEXT)
+	histolog.$(OBJEXT) utils.$(OBJEXT) pgp.$(OBJEXT) \
+	help.$(OBJEXT)
 mcabber_OBJECTS = $(am_mcabber_OBJECTS)
 mcabber_LDADD = $(LDADD)
 am__DEPENDENCIES_1 =
-mcabber_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+mcabber_DEPENDENCIES = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	../libjabber/liblibjabber.a ../connwrap/libconnwrap.a
 DEFAULT_INCLUDES = -I. -I$(srcdir) -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
@@ -100,6 +100,9 @@ GLIB_GENMARSHAL = @GLIB_GENMARSHAL@
 GLIB_LIBS = @GLIB_LIBS@
 GLIB_MKENUMS = @GLIB_MKENUMS@
 GOBJECT_QUERY = @GOBJECT_QUERY@
+GPGME_CFLAGS = @GPGME_CFLAGS@
+GPGME_CONFIG = @GPGME_CONFIG@
+GPGME_LIBS = @GPGME_LIBS@
 GREP = @GREP@
 HGCSET_FALSE = @HGCSET_FALSE@
 HGCSET_TRUE = @HGCSET_TRUE@
@@ -166,12 +169,13 @@ mcabber_SOURCES = main.c roster.c roster.h events.c events.h \
 		  commands.c commands.h compl.c compl.h \
 		  hbuf.c hbuf.h screen.c screen.h logprint.h \
 		  settings.c settings.h hooks.c hooks.h utf8.c utf8.h \
-		  histolog.c histolog.h utils.c utils.h help.c help.h
+		  histolog.c histolog.h utils.c utils.h pgp.c pgp.h \
+		  help.c help.h
 
-LDADD = $(GLIB_LIBS) \
+LDADD = $(GLIB_LIBS) $(GPGME_LIBS) \
 	../libjabber/liblibjabber.a ../connwrap/libconnwrap.a
 
-INCLUDES = $(GLIB_CFLAGS)
+AM_CPPFLAGS = $(GLIB_CFLAGS) $(GPGME_CFLAGS)
 CLEANFILES = hgcset.h
 @HGCSET_TRUE@BUILT_SOURCES = hgcset.h
 all: $(BUILT_SOURCES)
@@ -251,6 +255,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/jab_iq.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/jabglue.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/main.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/pgp.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/roster.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/screen.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/settings.Po@am__quote@

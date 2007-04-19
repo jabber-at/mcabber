@@ -32,11 +32,15 @@
 #include "hbuf.h"
 #include "histolog.h"
 #include "commands.h"
+#include "pgp.h"
 
 #define JABBERPORT      5222
 #define JABBERSSLPORT   5223
 
+#define RECONNECTION_TIMEOUT    60L
+
 jconn jc;
+guint AutoConnection;
 enum enum_jstate jstate;
 
 char imstatus2char[imstatus_size+1] = {
@@ -46,11 +50,15 @@ char imstatus2char[imstatus_size+1] = {
 static time_t LastPingTime;
 static unsigned int KeepaliveDelay;
 static enum imstatus mystatus = offline;
+static enum imstatus mywantedstatus = available;
 static gchar *mystatusmsg;
 static unsigned char online;
 
 static void statehandler(jconn, int);
 static void packethandler(jconn, jpacket);
+static void handle_state_events(char* from, xmlnode xmldata);
+
+static void evscallback_invitation(eviqs *evp, guint evcontext);
 
 static void logger(jconn j, int io, const char *buf)
 {
@@ -60,14 +68,14 @@ static void logger(jconn j, int io, const char *buf)
 //  jidtodisp(jid)
 // Strips the resource part from the jid
 // The caller should g_free the result after use.
-char *jidtodisp(const char *jid)
+char *jidtodisp(const char *fjid)
 {
   char *ptr;
   char *alias;
 
-  alias = g_strdup(jid);
+  alias = g_strdup(fjid);
 
-  if ((ptr = strchr(alias, '/')) != NULL) {
+  if ((ptr = strchr(alias, JID_RESOURCE_SEPARATOR)) != NULL) {
     *ptr = 0;
   }
   return alias;
@@ -76,16 +84,16 @@ char *jidtodisp(const char *jid)
 char *compose_jid(const char *username, const char *servername,
                   const char *resource)
 {
-  char *jid = g_new(char, 3 +
-                    strlen(username) + strlen(servername) + strlen(resource));
-  strcpy(jid, username);
-  if (!strchr(jid, '@')) {
-    strcat(jid, "@");
-    strcat(jid, servername);
+  char *fjid = g_new(char, 3 +
+                     strlen(username) + strlen(servername) + strlen(resource));
+  strcpy(fjid, username);
+  if (!strchr(fjid, JID_DOMAIN_SEPARATOR)) {
+    strcat(fjid, JID_DOMAIN_SEPARATORSTR);
+    strcat(fjid, servername);
   }
-  strcat(jid, "/");
-  strcat(jid, resource);
-  return jid;
+  strcat(fjid, JID_RESOURCE_SEPARATORSTR);
+  strcat(fjid, resource);
+  return fjid;
 }
 
 inline unsigned char jb_getonline(void)
@@ -93,7 +101,7 @@ inline unsigned char jb_getonline(void)
   return online;
 }
 
-jconn jb_connect(const char *jid, const char *server, unsigned int port,
+jconn jb_connect(const char *fjid, const char *server, unsigned int port,
                  int ssl, const char *pass)
 {
   if (!port) {
@@ -105,9 +113,9 @@ jconn jb_connect(const char *jid, const char *server, unsigned int port,
 
   jb_disconnect();
 
-  if (!jid) return jc;
+  if (!fjid) return jc;
 
-  jc = jab_new((char*)jid, (char*)pass, (char*)server, port, ssl);
+  jc = jab_new((char*)fjid, (char*)pass, (char*)server, port, ssl);
 
   /* These 3 functions can deal with a NULL jc, no worry... */
   jab_logger(jc, logger);
@@ -130,9 +138,14 @@ void jb_disconnect(void)
 
   if (online) {
     // Announce it to  everyone else
-    jb_setstatus(offline, NULL, "");
+    jb_setstatus(offline, NULL, "", FALSE);
     // End the XML flow
     jb_send_raw("</stream:stream>");
+    /*
+    // Free status message
+    g_free(mystatusmsg);
+    mystatusmsg = NULL;
+    */
   }
 
   // Announce it to the user
@@ -165,16 +178,48 @@ void jb_set_keepalive_delay(unsigned int delay)
   KeepaliveDelay = delay;
 }
 
+//  check_connection()
+// Check if we've been disconnected for a while (predefined timeout),
+// and if so try to reconnect.
+static void check_connection(void)
+{
+  static time_t disconnection_timestamp = 0L;
+  time_t now;
+
+  // Maybe we're voluntarily offline...
+  if (!AutoConnection)
+    return;
+
+  // Are we totally disconnected?
+  if (jc && jc->state != JCONN_STATE_OFF) {
+    disconnection_timestamp = 0L;
+    return;
+  }
+
+  time(&now);
+  if (!disconnection_timestamp) {
+    disconnection_timestamp = now;
+    return;
+  }
+
+  // If the reconnection_timeout is reached, try to reconnect.
+  if (now > disconnection_timestamp + RECONNECTION_TIMEOUT) {
+    mcabber_connect();
+    disconnection_timestamp = 0L;
+  }
+}
+
 void jb_main()
 {
   time_t now;
   fd_set fds;
-  long autoaway_timeout;
+  long tmout;
   struct timeval tv;
-  static time_t last_eviqs_check = 0;
+  static time_t last_eviqs_check = 0L;
 
   if (!online) {
     safe_usleep(10000);
+    check_connection();
     return;
   }
 
@@ -201,10 +246,19 @@ void jb_main()
     }
   }
 
-  autoaway_timeout = scr_GetAutoAwayTimeout(now);
-  if (tv.tv_sec > autoaway_timeout) {
-    tv.tv_sec = autoaway_timeout;
+  // Check auto-away timeout
+  tmout = scr_GetAutoAwayTimeout(now);
+  if (tv.tv_sec > tmout) {
+    tv.tv_sec = tmout;
   }
+
+#if defined JEP0022 || defined JEP0085
+  // Check composing timeout
+  tmout = scr_GetChatStatesTimeout(now);
+  if (tv.tv_sec > tmout) {
+    tv.tv_sec = tmout;
+  }
+#endif
 
   if (!tv.tv_sec)
     tv.tv_usec = 350000;
@@ -271,7 +325,7 @@ inline const char *jb_getstatusmsg()
 
 static void roompresence(gpointer room, void *presencedata)
 {
-  const char *jid;
+  const char *bjid;
   const char *nickname;
   char *to;
   struct T_presence *pres = presencedata;
@@ -279,13 +333,13 @@ static void roompresence(gpointer room, void *presencedata)
   if (!buddy_getinsideroom(room))
     return;
 
-  jid = buddy_getjid(room);
-  if (!jid) return;
+  bjid = buddy_getjid(room);
+  if (!bjid) return;
   nickname = buddy_getnickname(room);
   if (!nickname) return;
 
-  to = g_strdup_printf("%s/%s", jid, nickname);
-  jb_setstatus(pres->st, to, pres->msg);
+  to = g_strdup_printf("%s/%s", bjid, nickname);
+  jb_setstatus(pres->st, to, pres->msg, TRUE);
   g_free(to);
 }
 
@@ -351,11 +405,10 @@ static xmlnode presnew(enum imstatus st, const char *recipient,
   return x;
 }
 
-void jb_setstatus(enum imstatus st, const char *recipient, const char *msg)
+void jb_setstatus(enum imstatus st, const char *recipient, const char *msg,
+                  int do_not_sign)
 {
   xmlnode x;
-
-  if (!online) return;
 
   if (msg) {
     // The status message has been specified.  We'll use it, unless it is
@@ -376,28 +429,53 @@ void jb_setstatus(enum imstatus st, const char *recipient, const char *msg)
     }
   }
 
-  x = presnew(st, recipient, (st != invisible ? msg : NULL));
-  jab_send(jc, x);
-  xmlnode_free(x);
+  // Only send the packet if we're online.
+  // (But we want to update internal status even when disconnected,
+  // in order to avoid some problems during network failures)
+  if (online) {
+    const char *s_msg = (st != invisible ? msg : NULL);
+    x = presnew(st, recipient, s_msg);
+#ifdef HAVE_GPGME
+    if (!do_not_sign && gpg_enabled()) {
+      char *signature;
+      signature = gpg_sign(s_msg ? s_msg : "");
+      if (signature) {
+        xmlnode y;
+        y = xmlnode_insert_tag(x, "x");
+        xmlnode_put_attrib(y, "xmlns", NS_SIGNED);
+        xmlnode_insert_cdata(y, signature, (unsigned) -1);
+        g_free(signature);
+      }
+    }
+#endif
+    jab_send(jc, x);
+    xmlnode_free(x);
+  }
 
   // If we didn't change our _global_ status, we are done
   if (recipient) return;
 
-  // Send presence to chatrooms
-  if (st != invisible) {
-    struct T_presence room_presence;
-    room_presence.st = st;
-    room_presence.msg = msg;
-    foreach_buddy(ROSTER_TYPE_ROOM, &roompresence, &room_presence);
+  if (online) {
+    // Send presence to chatrooms
+    if (st != invisible) {
+      struct T_presence room_presence;
+      room_presence.st = st;
+      room_presence.msg = msg;
+      foreach_buddy(ROSTER_TYPE_ROOM, &roompresence, &room_presence);
+    }
   }
 
-  // We'll need to update the roster if we switch to/from offline because
-  // we don't know the presences of buddies when offline...
-  if (mystatus == offline || st == offline)
-    update_roster = TRUE;
+  if (online) {
+    // We'll need to update the roster if we switch to/from offline because
+    // we don't know the presences of buddies when offline...
+    if (mystatus == offline || st == offline)
+      update_roster = TRUE;
 
-  hk_mystatuschange(0, mystatus, st, (st != invisible ? msg : ""));
-  mystatus = st;
+    hk_mystatuschange(0, mystatus, st, (st != invisible ? msg : ""));
+    mystatus = st;
+  }
+  if (st)
+    mywantedstatus = st;
   if (msg != mystatusmsg) {
     g_free(mystatusmsg);
     if (*msg)
@@ -410,11 +488,51 @@ void jb_setstatus(enum imstatus st, const char *recipient, const char *msg)
   scr_UpdateMainStatus(TRUE);
 }
 
-void jb_send_msg(const char *jid, const char *text, int type,
-                 const char *subject)
+//  jb_setprevstatus()
+// Set previous status.  This wrapper function is used after a disconnection.
+inline void jb_setprevstatus(void)
+{
+  jb_setstatus(mywantedstatus, NULL, mystatusmsg, FALSE);
+}
+
+//  new_msgid()
+// Generate a new id string.  The caller should free it.
+// The caller must free the string when no longer needed.
+static char *new_msgid(void)
+{
+  static guint msg_idn;
+  time_t now;
+  time(&now);
+  if (!msg_idn)
+    srand(now);
+  msg_idn += 1U + (unsigned int) (9.0 * (rand() / (RAND_MAX + 1.0)));
+  return g_strdup_printf("%u%d", msg_idn, (int)(now%10L));
+}
+
+//  jb_send_msg(jid, test, type, subject, msgid, *encrypted)
+// When encrypted is not NULL, the function set *encrypted to TRUE if the
+// message has been PGP-encrypted.
+void jb_send_msg(const char *fjid, const char *text, int type,
+                 const char *subject, const char *msgid, guint *encrypted)
 {
   xmlnode x;
   gchar *strtype;
+#if defined HAVE_GPGME || defined JEP0022 || defined JEP0085
+  char *rname, *barejid;
+  GSList *sl_buddy;
+#endif
+#if defined JEP0022 || defined JEP0085
+  xmlnode event;
+  guint use_jep85 = 0;
+  struct jep0085 *jep85 = NULL;
+#endif
+#if defined JEP0022
+  gchar *nmsgid = NULL;
+#endif
+  gchar *enc = NULL;
+
+  if (encrypted)
+    *encrypted = FALSE;
 
   if (!online) return;
 
@@ -423,64 +541,381 @@ void jb_send_msg(const char *jid, const char *text, int type,
   else
     strtype = TMSG_CHAT;
 
-  x = jutil_msgnew(strtype, (char*)jid, NULL, (char*)text);
+#if defined HAVE_GPGME || defined JEP0022 || defined JEP0085
+  rname = strchr(fjid, JID_RESOURCE_SEPARATOR);
+  barejid = jidtodisp(fjid);
+  sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
+
+  // If we can get a resource name, we use it.  Else we use NULL,
+  // which hopefully will give us the most likely resource.
+  if (rname)
+    rname++;
+
+#ifdef HAVE_GPGME
+  if (type == ROSTER_TYPE_USER && sl_buddy && gpg_enabled()) {
+    if (!settings_pgp_getdisabled(barejid)) { // disabled for this contact?
+      struct pgp_data *res_pgpdata;
+      res_pgpdata = buddy_resource_pgp(sl_buddy->data, rname);
+      if (res_pgpdata && res_pgpdata->sign_keyid) {
+        /* Remote client has PGP support (we have a signature).
+         * If the contact has a specific KeyId, we'll use it;
+         * if not, we'll use the key used for the signature.
+         * Both keys should match, in theory (cf. XEP-0027). */
+        const char *key;
+        key = settings_pgp_getkeyid(barejid);
+        if (!key)
+          key = res_pgpdata->sign_keyid;
+        enc = gpg_encrypt(text, key);
+      }
+    }
+  }
+#endif // HAVE_GPGME
+
+  g_free(barejid);
+#endif // HAVE_GPGME || defined JEP0022 || defined JEP0085
+
+  x = jutil_msgnew(strtype, (char*)fjid, NULL,
+                   (enc ? "This message is PGP-encrypted." : (char*)text));
   if (subject) {
     xmlnode y;
     y = xmlnode_insert_tag(x, "subject");
     xmlnode_insert_cdata(y, subject, (unsigned) -1);
   }
+  if (enc) {
+    xmlnode y;
+    y = xmlnode_insert_tag(x, "x");
+    xmlnode_put_attrib(y, "xmlns", NS_ENCRYPTED);
+    xmlnode_insert_cdata(y, enc, (unsigned) -1);
+    if (encrypted)
+      *encrypted = TRUE;
+    g_free(enc);
+  }
+
+#if defined JEP0022 || defined JEP0085
+  // If typing notifications are disabled, we can skip all this stuff...
+  if (chatstates_disabled || type == ROSTER_TYPE_ROOM)
+    goto jb_send_msg_no_chatstates;
+
+  if (sl_buddy)
+    jep85 = buddy_resource_jep85(sl_buddy->data, rname);
+#endif
+
+#ifdef JEP0085
+  /* JEP-0085 5.1
+   * "Until receiving a reply to the initial content message (or a standalone
+   * notification) from the Contact, the User MUST NOT send subsequent chat
+   * state notifications to the Contact."
+   * In our implementation support is initially "unknown", they it's "probed"
+   * and can become "ok".
+   */
+  if (jep85 && (jep85->support == CHATSTATES_SUPPORT_OK ||
+                jep85->support == CHATSTATES_SUPPORT_UNKNOWN)) {
+    event = xmlnode_insert_tag(x, "active");
+    xmlnode_put_attrib(event, "xmlns", NS_CHATSTATES);
+    if (jep85->support == CHATSTATES_SUPPORT_UNKNOWN)
+      jep85->support = CHATSTATES_SUPPORT_PROBED;
+    else
+      use_jep85 = 1;
+    jep85->last_state_sent = ROSTER_EVENT_ACTIVE;
+  }
+#endif
+#ifdef JEP0022
+  /* JEP-22
+   * If the Contact supports JEP-0085, we do not use JEP-0022.
+   * If not, we try to fall back to JEP-0022.
+   */
+  if (!use_jep85) {
+    struct jep0022 *jep22 = NULL;
+    event = xmlnode_insert_tag(x, "x");
+    xmlnode_put_attrib(event, "xmlns", NS_EVENT);
+    xmlnode_insert_tag(event, "composing");
+
+    if (sl_buddy)
+      jep22 = buddy_resource_jep22(sl_buddy->data, rname);
+    if (jep22)
+      jep22->last_state_sent = ROSTER_EVENT_ACTIVE;
+
+    // An id is mandatory when using JEP-0022.
+    if (!msgid && (text || subject)) {
+      msgid = nmsgid = new_msgid();
+      // Let's update last_msgid_sent
+      // (We do not update it when the msgid is provided by the caller,
+      // because this is probably a special message...)
+      if (jep22) {
+        g_free(jep22->last_msgid_sent);
+        jep22->last_msgid_sent = g_strdup(msgid);
+      }
+    }
+  }
+#endif
+
+jb_send_msg_no_chatstates:
+  xmlnode_put_attrib(x, "id", msgid);
+
+  jab_send(jc, x);
+  xmlnode_free(x);
+#if defined JEP0022
+  g_free(nmsgid);
+#endif
+
+  jb_reset_keepalive();
+}
+
+
+#ifdef JEP0085
+//  jb_send_jep85_chatstate()
+// Send a JEP-85 chatstate.
+static void jb_send_jep85_chatstate(const char *bjid, const char *resname,
+                                    guint state)
+{
+  xmlnode x;
+  xmlnode event;
+  GSList *sl_buddy;
+  const char *chattag;
+  char *rjid, *fjid = NULL;
+  struct jep0085 *jep85 = NULL;
+
+  if (!online) return;
+
+  sl_buddy = roster_find(bjid, jidsearch, ROSTER_TYPE_USER);
+
+  // If we have a resource name, we use it.  Else we use NULL,
+  // which hopefully will give us the most likely resource.
+  if (sl_buddy)
+    jep85 = buddy_resource_jep85(sl_buddy->data, resname);
+
+  if (!jep85 || (jep85->support != CHATSTATES_SUPPORT_OK))
+    return;
+
+  if (state == jep85->last_state_sent)
+    return;
+
+  if (state == ROSTER_EVENT_ACTIVE)
+    chattag = "active";
+  else if (state == ROSTER_EVENT_COMPOSING)
+    chattag = "composing";
+  else if (state == ROSTER_EVENT_PAUSED)
+    chattag = "paused";
+  else {
+    scr_LogPrint(LPRINT_LOGNORM, "Error: unsupported JEP-85 state (%d)", state);
+    return;
+  }
+
+  jep85->last_state_sent = state;
+
+  if (resname)
+    fjid = g_strdup_printf("%s/%s", bjid, resname);
+
+  rjid = resname ? fjid : (char*)bjid;
+  x = jutil_msgnew(TMSG_CHAT, rjid, NULL, NULL);
+
+  event = xmlnode_insert_tag(x, chattag);
+  xmlnode_put_attrib(event, "xmlns", NS_CHATSTATES);
+
+  jab_send(jc, x);
+  xmlnode_free(x);
+
+  g_free(fjid);
+  jb_reset_keepalive();
+}
+#endif
+
+#ifdef JEP0022
+//  jb_send_jep22_event()
+// Send a JEP-22 message event (delivered, composing...).
+static void jb_send_jep22_event(const char *fjid, guint type)
+{
+  xmlnode x;
+  xmlnode event;
+  const char *msgid;
+  char *rname, *barejid;
+  GSList *sl_buddy;
+  struct jep0022 *jep22 = NULL;
+  guint jep22_state;
+
+  if (!online) return;
+
+  rname = strchr(fjid, JID_RESOURCE_SEPARATOR);
+  barejid = jidtodisp(fjid);
+  sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
+  g_free(barejid);
+
+  // If we can get a resource name, we use it.  Else we use NULL,
+  // which hopefully will give us the most likely resource.
+  if (rname)
+    rname++;
+  if (sl_buddy)
+    jep22 = buddy_resource_jep22(sl_buddy->data, rname);
+
+  if (!jep22)
+    return; // XXX Maybe we could try harder (other resources?)
+
+  msgid = jep22->last_msgid_rcvd;
+
+  // For composing events (composing, active, inactive, paused...),
+  // JEP22 only has 2 states; we'll use composing and active.
+  if (type == ROSTER_EVENT_COMPOSING)
+    jep22_state = ROSTER_EVENT_COMPOSING;
+  else if (type == ROSTER_EVENT_ACTIVE ||
+           type == ROSTER_EVENT_PAUSED)
+    jep22_state = ROSTER_EVENT_ACTIVE;
+  else
+    jep22_state = 0; // ROSTER_EVENT_NONE
+
+  if (jep22_state) {
+    // Do not re-send a same event
+    if (jep22_state == jep22->last_state_sent)
+      return;
+    jep22->last_state_sent = jep22_state;
+  }
+
+  x = jutil_msgnew(TMSG_CHAT, (char*)fjid, NULL, NULL);
+
+  event = xmlnode_insert_tag(x, "x");
+  xmlnode_put_attrib(event, "xmlns", NS_EVENT);
+  if (type == ROSTER_EVENT_DELIVERED)
+    xmlnode_insert_tag(event, "delivered");
+  else if (type == ROSTER_EVENT_COMPOSING)
+    xmlnode_insert_tag(event, "composing");
+  xmlnode_put_attrib(event, "id", msgid);
+
   jab_send(jc, x);
   xmlnode_free(x);
 
   jb_reset_keepalive();
 }
+#endif
+
+//  jb_send_chatstate(buddy, state)
+// Send a chatstate or event (JEP-22/85) according to the buddy's capabilities.
+// The message is sent to one of the resources with the highest priority.
+#if defined JEP0022 || defined JEP0085
+void jb_send_chatstate(gpointer buddy, guint chatstate)
+{
+  const char *bjid;
+#ifdef JEP0085
+  GSList *resources, *p_res, *p_next;
+  struct jep0085 *jep85 = NULL;;
+#endif
+#ifdef JEP0022
+  struct jep0022 *jep22;
+#endif
+
+  bjid = buddy_getjid(buddy);
+  if (!bjid) return;
+
+#ifdef JEP0085
+  /* Send the chatstate to the last resource (which should have the highest
+     priority).
+     If chatstate is "active", send an "active" state to all resources
+     which do not curently have this state.
+   */
+  resources = buddy_getresources(buddy);
+  for (p_res = resources ; p_res ; p_res = p_next) {
+    p_next = g_slist_next(p_res);
+    jep85 = buddy_resource_jep85(buddy, p_res->data);
+    if (jep85 && jep85->support == CHATSTATES_SUPPORT_OK) {
+      // If p_next is NULL, this is the highest (prio) resource, i.e.
+      // the one we are probably writing to.
+      if (!p_next || (jep85->last_state_sent != ROSTER_EVENT_ACTIVE &&
+                      chatstate == ROSTER_EVENT_ACTIVE))
+        jb_send_jep85_chatstate(bjid, p_res->data, chatstate);
+    }
+    g_free(p_res->data);
+  }
+  g_slist_free(resources);
+  // If the last resource had chatstates support when can return now,
+  // we don't want to send a JEP22 event.
+  if (jep85 && jep85->support == CHATSTATES_SUPPORT_OK)
+    return;
+#endif
+#ifdef JEP0022
+  jep22 = buddy_resource_jep22(buddy, NULL);
+  if (jep22 && jep22->support == CHATSTATES_SUPPORT_OK) {
+    jb_send_jep22_event(bjid, chatstate);
+  }
+#endif
+}
+#endif
+
+//  chatstates_reset_probed(fulljid)
+// If the JEP has been probed for this contact, set it back to unknown so
+// that we probe it again.  The parameter must be a full jid (w/ resource).
+#if defined JEP0022 || defined JEP0085
+static void chatstates_reset_probed(const char *fulljid)
+{
+  char *rname, *barejid;
+  GSList *sl_buddy;
+  struct jep0085 *jep85;
+  struct jep0022 *jep22;
+
+  rname = strchr(fulljid, JID_RESOURCE_SEPARATOR);
+  if (!rname++)
+    return;
+
+  barejid = jidtodisp(fulljid);
+  sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
+  g_free(barejid);
+
+  if (!sl_buddy)
+    return;
+
+  jep85 = buddy_resource_jep85(sl_buddy->data, rname);
+  jep22 = buddy_resource_jep22(sl_buddy->data, rname);
+
+  if (jep85 && jep85->support == CHATSTATES_SUPPORT_PROBED)
+    jep85->support = CHATSTATES_SUPPORT_UNKNOWN;
+  if (jep22 && jep22->support == CHATSTATES_SUPPORT_PROBED)
+    jep22->support = CHATSTATES_SUPPORT_UNKNOWN;
+}
+#endif
 
 //  jb_subscr_send_auth(jid)
 // Allow jid to receive our presence updates
-void jb_subscr_send_auth(const char *jid)
+void jb_subscr_send_auth(const char *bjid)
 {
   xmlnode x;
 
-  x = jutil_presnew(JPACKET__SUBSCRIBED, (char *)jid, NULL);
+  x = jutil_presnew(JPACKET__SUBSCRIBED, (char *)bjid, NULL);
   jab_send(jc, x);
   xmlnode_free(x);
 }
 
 //  jb_subscr_cancel_auth(jid)
 // Cancel jid's subscription to our presence updates
-void jb_subscr_cancel_auth(const char *jid)
+void jb_subscr_cancel_auth(const char *bjid)
 {
   xmlnode x;
 
-  x = jutil_presnew(JPACKET__UNSUBSCRIBED, (char *)jid, NULL);
+  x = jutil_presnew(JPACKET__UNSUBSCRIBED, (char *)bjid, NULL);
   jab_send(jc, x);
   xmlnode_free(x);
 }
 
 //  jb_subscr_request_auth(jid)
 // Request a subscription to jid's presence updates
-void jb_subscr_request_auth(const char *jid)
+void jb_subscr_request_auth(const char *bjid)
 {
   xmlnode x;
 
-  x = jutil_presnew(JPACKET__SUBSCRIBE, (char *)jid, NULL);
+  x = jutil_presnew(JPACKET__SUBSCRIBE, (char *)bjid, NULL);
   jab_send(jc, x);
   xmlnode_free(x);
 }
 
 //  jb_subscr_request_cancel(jid)
 // Request to cancel jour subscription to jid's presence updates
-void jb_subscr_request_cancel(const char *jid)
+void jb_subscr_request_cancel(const char *bjid)
 {
   xmlnode x;
 
-  x = jutil_presnew(JPACKET__UNSUBSCRIBE, (char *)jid, NULL);
+  x = jutil_presnew(JPACKET__UNSUBSCRIBE, (char *)bjid, NULL);
   jab_send(jc, x);
   xmlnode_free(x);
 }
 
 // Note: the caller should check the jid is correct
-void jb_addbuddy(const char *jid, const char *name, const char *group)
+void jb_addbuddy(const char *bjid, const char *name, const char *group)
 {
   xmlnode y, z;
   eviqs *iqn;
@@ -488,7 +923,7 @@ void jb_addbuddy(const char *jid, const char *name, const char *group)
 
   if (!online) return;
 
-  cleanjid = jidtodisp(jid);
+  cleanjid = jidtodisp(bjid); // Stripping resource, just in case...
 
   // We don't check if the jabber user already exists in the roster,
   // because it allows to re-ask for notification.
@@ -518,7 +953,7 @@ void jb_addbuddy(const char *jid, const char *name, const char *group)
   update_roster = TRUE;
 }
 
-void jb_delbuddy(const char *jid)
+void jb_delbuddy(const char *bjid)
 {
   xmlnode y, z;
   eviqs *iqn;
@@ -526,7 +961,7 @@ void jb_delbuddy(const char *jid)
 
   if (!online) return;
 
-  cleanjid = jidtodisp(jid);
+  cleanjid = jidtodisp(bjid); // Stripping resource, just in case...
 
   // If the current buddy is an agent, unsubscribe from it
   if (roster_gettype(cleanjid) == ROSTER_TYPE_AGENT) {
@@ -560,7 +995,7 @@ void jb_delbuddy(const char *jid)
   update_roster = TRUE;
 }
 
-void jb_updatebuddy(const char *jid, const char *name, const char *group)
+void jb_updatebuddy(const char *bjid, const char *name, const char *group)
 {
   xmlnode y;
   eviqs *iqn;
@@ -570,7 +1005,7 @@ void jb_updatebuddy(const char *jid, const char *name, const char *group)
 
   // XXX We should check name's and group's correctness
 
-  cleanjid = jidtodisp(jid);
+  cleanjid = jidtodisp(bjid); // Stripping resource, just in case...
 
   iqn = iqs_new(JPACKET__SET, NS_ROSTER, NULL, IQS_DEFAULT_TIMEOUT);
   y = xmlnode_insert_tag(xmlnode_get_tag(iqn->xmldata, "query"), "item");
@@ -587,9 +1022,9 @@ void jb_updatebuddy(const char *jid, const char *name, const char *group)
   g_free(cleanjid);
 }
 
-void jb_request(const char *jid, enum iqreq_type reqtype)
+void jb_request(const char *fjid, enum iqreq_type reqtype)
 {
-  GSList *resources;
+  GSList *resources, *p_res;
   GSList *roster_elt;
   void (*request_fn)(const char *);
   const char *strreqtype;
@@ -600,39 +1035,55 @@ void jb_request(const char *jid, enum iqreq_type reqtype)
   } else if (reqtype == iqreq_time) {
     request_fn = &request_time;
     strreqtype = "time";
+  } else if (reqtype == iqreq_last) {
+    request_fn = &request_last;
+    strreqtype = "last";
+  } else if (reqtype == iqreq_vcard) {
+    // Special case
   } else
     return;
 
-  if (strchr(jid, '/')) {
+  // vCard request
+  if (reqtype == iqreq_vcard) {
+    char *bjid = jidtodisp(fjid);
+    request_vcard(bjid);
+    scr_LogPrint(LPRINT_NORMAL, "Sent vCard request to <%s>", bjid);
+    g_free(bjid);
+    return;
+  }
+
+  if (strchr(fjid, JID_RESOURCE_SEPARATOR)) {
     // This is a full JID
-    (*request_fn)(jid);
-    scr_LogPrint(LPRINT_NORMAL, "Sent %s request to <%s>", strreqtype, jid);
+    (*request_fn)(fjid);
+    scr_LogPrint(LPRINT_NORMAL, "Sent %s request to <%s>", strreqtype, fjid);
     return;
   }
 
   // The resource has not been specified
-  roster_elt = roster_find(jid, jidsearch, ROSTER_TYPE_USER|ROSTER_TYPE_ROOM);
+  roster_elt = roster_find(fjid, jidsearch, ROSTER_TYPE_USER|ROSTER_TYPE_ROOM);
   if (!roster_elt) {
-    scr_LogPrint(LPRINT_NORMAL, "No known resource for <%s>...", jid);
-    (*request_fn)(jid); // Let's send a request anyway...
-    scr_LogPrint(LPRINT_NORMAL, "Sent %s request to <%s>", strreqtype, jid);
+    scr_LogPrint(LPRINT_NORMAL, "No known resource for <%s>...", fjid);
+    (*request_fn)(fjid); // Let's send a request anyway...
+    scr_LogPrint(LPRINT_NORMAL, "Sent %s request to <%s>", strreqtype, fjid);
     return;
   }
 
   // Send a request to each resource
   resources = buddy_getresources(roster_elt->data);
   if (!resources) {
-    scr_LogPrint(LPRINT_NORMAL, "No known resource for <%s>...", jid);
-    (*request_fn)(jid); // Let's send a request anyway...
-    scr_LogPrint(LPRINT_NORMAL, "Sent %s request to <%s>", strreqtype, jid);
+    scr_LogPrint(LPRINT_NORMAL, "No known resource for <%s>...", fjid);
+    (*request_fn)(fjid); // Let's send a request anyway...
+    scr_LogPrint(LPRINT_NORMAL, "Sent %s request to <%s>", strreqtype, fjid);
   }
-  for ( ; resources ; resources = g_slist_next(resources) ) {
+  for (p_res = resources ; p_res ; p_res = g_slist_next(p_res)) {
     gchar *fulljid;
-    fulljid = g_strdup_printf("%s/%s", jid, (char*)resources->data);
+    fulljid = g_strdup_printf("%s/%s", fjid, (char*)p_res->data);
     (*request_fn)(fulljid);
     scr_LogPrint(LPRINT_NORMAL, "Sent %s request to <%s>", strreqtype, fulljid);
     g_free(fulljid);
+    g_free(p_res->data);
   }
+  g_slist_free(resources);
 }
 
 // Join a MUC room
@@ -740,25 +1191,25 @@ void jb_room_destroy(const char *room, const char *venue, const char *reason)
 //     (ex. role none for kick, affil outcast for ban...)
 // The reason can be null
 // Return 0 if everything is ok
-int jb_room_setattrib(const char *roomid, const char *jid, const char *nick,
+int jb_room_setattrib(const char *roomid, const char *fjid, const char *nick,
                       struct role_affil ra, const char *reason)
 {
   xmlnode y, z;
   eviqs *iqn;
 
   if (!online || !roomid) return 1;
-  if (!jid && !nick) return 1;
+  if (!fjid && !nick) return 1;
 
   if (check_jid_syntax((char*)roomid)) {
     scr_LogPrint(LPRINT_NORMAL, "<%s> is not a valid Jabber id", roomid);
     return 1;
   }
-  if (jid && check_jid_syntax((char*)jid)) {
-    scr_LogPrint(LPRINT_NORMAL, "<%s> is not a valid Jabber id", jid);
+  if (fjid && check_jid_syntax((char*)fjid)) {
+    scr_LogPrint(LPRINT_NORMAL, "<%s> is not a valid Jabber id", fjid);
     return 1;
   }
 
-  if (ra.type == type_affil && ra.val.affil == affil_outcast && !jid)
+  if (ra.type == type_affil && ra.val.affil == affil_outcast && !fjid)
     return 1; // Shouldn't happen (jid mandatory when banning)
 
   iqn = iqs_new(JPACKET__SET, "http://jabber.org/protocol/muc#admin",
@@ -768,8 +1219,8 @@ int jb_room_setattrib(const char *roomid, const char *jid, const char *nick,
   y = xmlnode_get_tag(iqn->xmldata, "query");
   z = xmlnode_insert_tag(y, "item");
 
-  if (jid) {
-    xmlnode_put_attrib(z, "jid", jid);
+  if (fjid) {
+    xmlnode_put_attrib(z, "jid", fjid);
   } else { // nickname
     xmlnode_put_attrib(z, "nick", nick);
   }
@@ -794,11 +1245,11 @@ int jb_room_setattrib(const char *roomid, const char *jid, const char *nick,
 // Invite a user to a MUC room
 // room syntax: "room@server"
 // reason can be null.
-void jb_room_invite(const char *room, const char *jid, const char *reason)
+void jb_room_invite(const char *room, const char *fjid, const char *reason)
 {
   xmlnode x, y, z;
 
-  if (!online || !room || !jid) return;
+  if (!online || !room || !fjid) return;
 
   x = jutil_msgnew(NULL, (char*)room, NULL, NULL);
 
@@ -806,7 +1257,7 @@ void jb_room_invite(const char *room, const char *jid, const char *reason)
   xmlnode_put_attrib(y, "xmlns", "http://jabber.org/protocol/muc#user");
 
   z = xmlnode_insert_tag(y, "invite");
-  xmlnode_put_attrib(z, "to", jid);
+  xmlnode_put_attrib(z, "to", fjid);
 
   if (reason) {
     y = xmlnode_insert_tag(z, "reason");
@@ -818,44 +1269,364 @@ void jb_room_invite(const char *room, const char *jid, const char *reason)
   jb_reset_keepalive();
 }
 
-static void gotmessage(char *type, const char *from, const char *body,
-                       const char *enc, time_t timestamp)
+//  jb_set_storage_bookmark(roomid, name, nick, passwd, autojoin)
+// Update the private storage bookmarks: add a conference room.
+// If name is nil, we remove the bookmark.
+void jb_set_storage_bookmark(const char *roomid, const char *name,
+                             const char *nick, const char *passwd, int autojoin)
 {
-  char *jid;
+  xmlnode x;
+  bool changed = FALSE;
+
+  if (!roomid)
+    return;
+
+  // If we have no bookmarks, probably the server doesn't support them.
+  if (!bookmarks) {
+    scr_LogPrint(LPRINT_LOGNORM,
+                 "Sorry, your server doesn't seem to support private storage.");
+    return;
+  }
+
+  // Walk through the storage tags
+  x = xmlnode_get_firstchild(bookmarks);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    const char *fjid;
+    const char *p;
+    p = xmlnode_get_name(x);
+    // If the current node is a conference item, see if we have to replace it.
+    if (p && !strcmp(p, "conference")) {
+      fjid = xmlnode_get_attrib(x, "jid");
+      if (!fjid)
+        continue;
+      if (!strcmp(fjid, roomid)) {
+        // We've found a bookmark for this room.  Let's hide it and we'll
+        // create a new one.
+        xmlnode_hide(x);
+        changed = TRUE;
+        break;
+      }
+    }
+  }
+
+  // Let's create a node/bookmark for this roomid, if the name is not NULL.
+  if (name) {
+    x = xmlnode_insert_tag(bookmarks, "conference");
+    xmlnode_put_attrib(x, "jid", roomid);
+    xmlnode_put_attrib(x, "name", name);
+    xmlnode_put_attrib(x, "autojoin", autojoin ? "1" : "0");
+    if (nick)
+      xmlnode_insert_cdata(xmlnode_insert_tag(x, "nick"), nick, -1);
+    if (passwd)
+      xmlnode_insert_cdata(xmlnode_insert_tag(x, "password"), passwd, -1);
+    changed = TRUE;
+  }
+
+  if (!changed)
+    return;
+
+  if (online)
+    send_storage_bookmarks();
+  else
+    scr_LogPrint(LPRINT_LOGNORM,
+                 "Warning: you're not connected to the server.");
+}
+
+static struct annotation *parse_storage_rosternote(xmlnode notenode)
+{
+  const char *p;
+  struct annotation *note = g_new0(struct annotation, 1);
+  p = xmlnode_get_attrib(notenode, "cdate");
+  if (p)
+    note->cdate = from_iso8601(p, 1);
+  p = xmlnode_get_attrib(notenode, "mdate");
+  if (p)
+    note->mdate = from_iso8601(p, 1);
+  note->text = g_strdup(xmlnode_get_data(notenode));
+  note->jid = g_strdup(xmlnode_get_attrib(notenode, "jid"));
+  return note;
+}
+
+//  jb_get_all_storage_rosternotes()
+// Return a GSList with all storage annotations.
+// The caller should g_free the list and its contents.
+GSList *jb_get_all_storage_rosternotes(void)
+{
+  xmlnode x;
+  GSList *sl_notes = NULL;
+
+  // If we have no rosternotes, probably the server doesn't support them.
+  if (!rosternotes)
+    return NULL;
+
+  // Walk through the storage rosternotes tags
+  x = xmlnode_get_firstchild(rosternotes);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    const char *p;
+    struct annotation *note;
+    p = xmlnode_get_name(x);
+
+    // We want a note item
+    if (!p || strcmp(p, "note"))
+      continue;
+    // Just in case, check the jid...
+    if (!xmlnode_get_attrib(x, "jid"))
+      continue;
+    // Ok, let's add the note to our list
+    note = parse_storage_rosternote(x);
+    sl_notes = g_slist_append(sl_notes, note);
+  }
+  return sl_notes;
+}
+
+//  jb_get_storage_rosternotes(barejid, silent)
+// Return the annotation associated with this jid.
+// If silent is TRUE, no warning is displayed when rosternotes is disabled
+// The caller should g_free the string and structure after use.
+struct annotation *jb_get_storage_rosternotes(const char *barejid, int silent)
+{
+  xmlnode x;
+
+  if (!barejid)
+    return NULL;
+
+  // If we have no rosternotes, probably the server doesn't support them.
+  if (!rosternotes) {
+    if (!silent)
+      scr_LogPrint(LPRINT_LOGNORM, "Sorry, "
+                   "your server doesn't seem to support private storage.");
+    return NULL;
+  }
+
+  // Walk through the storage rosternotes tags
+  x = xmlnode_get_firstchild(rosternotes);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    const char *fjid;
+    const char *p;
+    p = xmlnode_get_name(x);
+    // We want a note item
+    if (!p || strcmp(p, "note"))
+      continue;
+    // Just in case, check the jid...
+    fjid = xmlnode_get_attrib(x, "jid");
+    if (fjid && !strcmp(fjid, barejid)) // We've found a note for this contact.
+      return parse_storage_rosternote(x);
+  }
+  return NULL;  // No note found
+}
+
+//  jb_set_storage_rosternotes(barejid, note)
+// Update the private storage rosternotes: add/delete a note.
+// If note is nil, we remove the existing note.
+void jb_set_storage_rosternotes(const char *barejid, const char *note)
+{
+  xmlnode x;
+  bool changed = FALSE;
+  const char *cdate = NULL;
+
+  if (!barejid)
+    return;
+
+  // If we have no rosternotes, probably the server doesn't support them.
+  if (!rosternotes) {
+    scr_LogPrint(LPRINT_LOGNORM,
+                 "Sorry, your server doesn't seem to support private storage.");
+    return;
+  }
+
+  // Walk through the storage tags
+  x = xmlnode_get_firstchild(rosternotes);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    const char *fjid;
+    const char *p;
+    p = xmlnode_get_name(x);
+    // If the current node is a conference item, see if we have to replace it.
+    if (p && !strcmp(p, "note")) {
+      fjid = xmlnode_get_attrib(x, "jid");
+      if (!fjid)
+        continue;
+      if (!strcmp(fjid, barejid)) {
+        // We've found a note for this jid.  Let's hide it and we'll
+        // create a new one.
+        cdate = xmlnode_get_attrib(x, "cdate");
+        xmlnode_hide(x);
+        changed = TRUE;
+        break;
+      }
+    }
+  }
+
+  // Let's create a node for this jid, if the note is not NULL.
+  if (note) {
+    char mdate[20];
+    time_t now;
+    time(&now);
+    to_iso8601(mdate, now);
+    if (!cdate)
+      cdate = mdate;
+    x = xmlnode_insert_tag(rosternotes, "note");
+    xmlnode_put_attrib(x, "jid", barejid);
+    xmlnode_put_attrib(x, "cdate", cdate);
+    xmlnode_put_attrib(x, "mdate", mdate);
+    xmlnode_insert_cdata(x, note, -1);
+    changed = TRUE;
+  }
+
+  if (!changed)
+    return;
+
+  if (online)
+    send_storage_rosternotes();
+  else
+    scr_LogPrint(LPRINT_LOGNORM,
+                 "Warning: you're not connected to the server.");
+}
+
+//  keys_mismatch(key, expectedkey)
+// Return TRUE if both keys are non-null and "expectedkey" doesn't match
+// the end of "key".
+// If one of the keys is null, return FALSE.
+// If expectedkey is less than 8 bytes long, return TRUE.
+//
+// Example: keys_mismatch("C9940A9BB0B92210", "B0B92210") will return FALSE.
+static bool keys_mismatch(const char *key, const char *expectedkey)
+{
+  int lk, lek;
+
+  if (!expectedkey || !key)
+    return FALSE;
+
+  lk = strlen(key);
+  lek = strlen(expectedkey);
+
+  // If the expectedkey is less than 8 bytes long, this is probably a
+  // user mistake so we consider it's a mismatch.
+  if (lek < 8)
+    return TRUE;
+
+  if (lek < lk)
+    key += lk - lek;
+
+  return strcasecmp(key, expectedkey);
+}
+
+//  check_signature(barejid, resourcename, xmldata, text)
+// Verify the signature (in xmldata) of "text" for the contact
+// barejid/resourcename.
+// xmldata is the 'jabber:x:signed' stanza.
+// If the key id is found, the contact's PGP data are updated.
+static void check_signature(const char *barejid, const char *rname,
+                            xmlnode xmldata, const char *text)
+{
+#ifdef HAVE_GPGME
+  char *p, *key;
+  GSList *sl_buddy;
+  struct pgp_data *res_pgpdata;
+  gpgme_sigsum_t sigsum;
+
+  // All parameters must be valid
+  if (!(xmldata && barejid && rname && text))
+    return;
+
+  if (!gpg_enabled())
+    return;
+
+  // Get the resource PGP data structure
+  sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
+  if (!sl_buddy)
+    return;
+  res_pgpdata = buddy_resource_pgp(sl_buddy->data, rname);
+  if (!res_pgpdata)
+    return;
+
+  p = xmlnode_get_name(xmldata);
+  if (!p || strcmp(p, "x"))
+    return; // We expect "<x xmlns='jabber:x:signed'>"
+
+  // Get signature
+  p = xmlnode_get_data(xmldata);
+  if (!p)
+    return;
+
+  key = gpg_verify(p, text, &sigsum);
+  if (key) {
+    const char *expectedkey;
+    char *buf;
+    g_free(res_pgpdata->sign_keyid);
+    res_pgpdata->sign_keyid = key;
+    res_pgpdata->last_sigsum = sigsum;
+    if (sigsum & GPGME_SIGSUM_RED) {
+      buf = g_strdup_printf("Bad signature from <%s/%s>", barejid, rname);
+      scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO);
+      scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
+      g_free(buf);
+    }
+    // Verify that the key id is the one we expect.
+    expectedkey = settings_pgp_getkeyid(barejid);
+    if (keys_mismatch(key, expectedkey)) {
+      buf = g_strdup_printf("Warning: The KeyId from <%s/%s> doesn't match "
+                            "the key you set up", barejid, rname);
+      scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO);
+      scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
+      g_free(buf);
+    }
+  }
+#endif
+}
+
+static void gotmessage(char *type, const char *from, const char *body,
+                       const char *enc, time_t timestamp,
+                       xmlnode xmldata_signed)
+{
+  char *bjid;
   const char *rname, *s;
+  char *decrypted = NULL;
 
-  jid = jidtodisp(from);
+  bjid = jidtodisp(from);
 
-  rname = strchr(from, '/');
+  rname = strchr(from, JID_RESOURCE_SEPARATOR);
   if (rname) rname++;
+
+#ifdef HAVE_GPGME
+  if (enc && gpg_enabled()) {
+    decrypted = gpg_decrypt(enc);
+    if (decrypted) {
+      body = decrypted;
+    }
+  }
+  // Check signature of an unencrypted message
+  if (xmldata_signed && gpg_enabled())
+    check_signature(bjid, rname, xmldata_signed, decrypted);
+#endif
 
   // Check for unexpected groupchat messages
   // If we receive a groupchat message from a room we're not a member of,
   // this is probably a server issue and the best we can do is to send
   // a type unavailable.
-  if (type && !strcmp(type, "groupchat") && !roster_getnickname(jid)) {
+  if (type && !strcmp(type, "groupchat") && !roster_getnickname(bjid)) {
     // It shouldn't happen, probably a server issue
     GSList *room_elt;
     char *mbuf;
 
     mbuf = g_strdup_printf("Unexpected groupchat packet!");
     scr_LogPrint(LPRINT_LOGNORM, "%s", mbuf);
-    scr_WriteIncomingMessage(jid, mbuf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(bjid, mbuf, 0, HBB_PREFIX_INFO);
     g_free(mbuf);
 
     // Send back an unavailable packet
-    jb_setstatus(offline, jid, "");
+    jb_setstatus(offline, bjid, "", TRUE);
 
     // MUC
     // Make sure this is a room (it can be a conversion user->room)
-    room_elt = roster_find(jid, jidsearch, 0);
+    room_elt = roster_find(bjid, jidsearch, 0);
     if (!room_elt) {
-      room_elt = roster_add_user(jid, NULL, NULL, ROSTER_TYPE_ROOM, sub_none);
+      room_elt = roster_add_user(bjid, NULL, NULL, ROSTER_TYPE_ROOM, sub_none);
     } else {
       buddy_settype(room_elt->data, ROSTER_TYPE_ROOM);
     }
 
-    g_free(jid);
+    g_free(bjid);
+    g_free(decrypted);
 
     buddylist_build();
     scr_DrawRoster();
@@ -866,14 +1637,16 @@ static void gotmessage(char *type, const char *from, const char *body,
   // this is a regular message from an unsubscribed user.
   // System messages (from our server) are allowed.
   if (!settings_opt_get_int("block_unsubscribed") ||
-      (roster_getsubscription(jid) & sub_from) ||
+      (roster_getsubscription(bjid) & sub_from) ||
       (type && strcmp(type, "chat")) ||
-      ((s = settings_opt_get("server")) != NULL && !strcasecmp(jid, s))) {
-    hk_message_in(jid, rname, timestamp, body, type);
+      ((s = settings_opt_get("server")) != NULL && !strcasecmp(bjid, s))) {
+    hk_message_in(bjid, rname, timestamp, body, type,
+                  (decrypted ? TRUE : FALSE));
   } else {
-    scr_LogPrint(LPRINT_LOGNORM, "Blocked a message from <%s>", jid);
+    scr_LogPrint(LPRINT_LOGNORM, "Blocked a message from <%s>", bjid);
   }
-  g_free(jid);
+  g_free(bjid);
+  g_free(decrypted);
 }
 
 static const char *defaulterrormsg(int code)
@@ -979,13 +1752,17 @@ static void statehandler(jconn conn, int state)
         if (previous_state != JCONN_STATE_OFF)
           scr_LogPrint(LPRINT_LOGNORM, "[Jabber] Not connected to the server");
 
+        // Sometimes the state isn't correctly updated
+        if (jc)
+          jc->state = JCONN_STATE_OFF;
         online = FALSE;
         mystatus = offline;
-        if (mystatusmsg) {
-          g_free(mystatusmsg);
-          mystatusmsg = NULL;
-        }
+        // Free bookmarks
+        xmlnode_free(bookmarks);
+        bookmarks = NULL;
+        // Free roster
         roster_free();
+        // Update display
         update_roster = TRUE;
         scr_UpdateBuddyWindow();
         break;
@@ -1002,6 +1779,8 @@ static void statehandler(jconn conn, int state)
         scr_LogPrint(LPRINT_LOGNORM, "[Jabber] Communication with the server "
                      "established");
         online = TRUE;
+        // We set AutoConnection to true after the 1st successful connection
+        AutoConnection = true;
         break;
 
     case JCONN_STATE_CONNECTING:
@@ -1022,10 +1801,8 @@ inline static xmlnode xml_get_xmlns(xmlnode xmldata, const char *xmlns)
 
   x = xmlnode_get_firstchild(xmldata);
   for ( ; x; x = xmlnode_get_nextsibling(x)) {
-    if ((p = xmlnode_get_name(x)) && !strcmp(p, "x"))
-      if ((p = xmlnode_get_attrib(x, "xmlns")) && !strcmp(p, xmlns)) {
-        break;
-    }
+    if ((p = xmlnode_get_attrib(x, "xmlns")) && !strcmp(p, xmlns))
+      break;
   }
   return x;
 }
@@ -1058,6 +1835,7 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
   unsigned int statuscode = 0;
   GSList *room_elt;
   int log_muc_conf;
+  guint msgflags;
 
   log_muc_conf = settings_opt_get_int("log_muc_conf");
 
@@ -1116,8 +1894,7 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
     scr_WriteIncomingMessage(roomjid, mbuf, 0, HBB_PREFIX_INFO);
     g_free(mbuf);
     // Send back an unavailable packet
-    jb_setstatus(offline, roomjid, "");
-    buddylist_build();
+    jb_setstatus(offline, roomjid, "", TRUE);
     scr_DrawRoster();
     return;
   }
@@ -1219,8 +1996,11 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
       }
     }
 
-    scr_WriteIncomingMessage(roomjid, mbuf, usttime,
-                             HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
+    msgflags = HBB_PREFIX_INFO;
+    if (!we_left)
+      msgflags |= HBB_PREFIX_NOFLAG;
+
+    scr_WriteIncomingMessage(roomjid, mbuf, usttime, msgflags);
 
     if (log_muc_conf) hlog_write_message(roomjid, 0, FALSE, mbuf);
 
@@ -1287,7 +2067,6 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
   } else
     scr_LogPrint(LPRINT_LOGNORM, "MUC DBG: no rname!"); /* DBG */
 
-  buddylist_build();
   scr_DrawRoster();
 }
 
@@ -1299,10 +2078,10 @@ static void handle_packet_presence(jconn conn, char *type, char *from,
   const char *rname;
   enum imstatus ust;
   char bpprio;
-  time_t timestamp = 0;
+  time_t timestamp = 0L;
   xmlnode muc_packet;
 
-  rname = strchr(from, '/');
+  rname = strchr(from, JID_RESOURCE_SEPARATOR);
   if (rname) rname++;
 
   r = jidtodisp(from);
@@ -1361,13 +2140,83 @@ static void handle_packet_presence(jconn conn, char *type, char *from,
     // Not a MUC message, so this is a regular buddy...
     // Call hk_statuschange() if status has changed or if the
     // status message is different
-    const char *m = roster_getstatusmsg(r, rname);
+    const char *m;
+    m = roster_getstatusmsg(r, rname);
     if ((ust != roster_getstatus(r, rname)) ||
         (!ustmsg && m && m[0]) || (ustmsg && (!m || strcmp(ustmsg, m))))
       hk_statuschange(r, rname, bpprio, timestamp, ust, ustmsg);
+    // Presence signature processing
+    if (!ustmsg)
+      ustmsg = ""; // Some clients omit the <status/> element :-(
+    check_signature(r, rname, xml_get_xmlns(xmldata, NS_SIGNED), ustmsg);
   }
 
   g_free(r);
+}
+
+static void got_invite(char* from, char *to, char* reason, char* passwd)
+{
+  eviqs *evn;
+  event_muc_invitation *invitation;
+  GString *sbuf;
+
+  sbuf = g_string_new("");
+  if (reason) {
+    g_string_printf(sbuf,
+                    "Received an invitation to <%s>, from <%s>, reason: %s",
+                    to, from, reason);
+  } else {
+    g_string_printf(sbuf, "Received an invitation to <%s>, from <%s>",
+                    to, from);
+  }
+  scr_WriteIncomingMessage(from, sbuf->str, 0, HBB_PREFIX_INFO);
+  scr_LogPrint(LPRINT_LOGNORM, "%s", sbuf->str);
+
+  evn = evs_new(EVS_TYPE_INVITATION, EVS_MAX_TIMEOUT);
+  if (evn) {
+    evn->callback = &evscallback_invitation;
+    invitation = g_new(event_muc_invitation, 1);
+    invitation->to = g_strdup(to);
+    invitation->from = g_strdup(from);
+    invitation->passwd = g_strdup(passwd);
+    invitation->reason = g_strdup(reason);
+    evn->data = invitation;
+    evn->desc = g_strdup_printf("<%s> invites you to %s ", from, to);
+    g_string_printf(sbuf, "Please use /event %s accept|reject", evn->id);
+  } else {
+    g_string_printf(sbuf, "Unable to create a new event!");
+  }
+  scr_WriteIncomingMessage(from, sbuf->str, 0, HBB_PREFIX_INFO);
+  scr_LogPrint(LPRINT_LOGNORM, "%s", sbuf->str);
+  g_string_free(sbuf, TRUE);
+}
+
+// Specific MUC message handling (for example invitation processing)
+static void got_muc_message(char *from, xmlnode x)
+{
+  xmlnode invite = xmlnode_get_tag(x, "invite");
+  if (invite)
+  {
+    char* invite_from;
+    char *reason = NULL;
+    char *password = NULL;
+    xmlnode r;
+
+    invite_from = xmlnode_get_attrib(invite, "from");
+    r = xmlnode_get_tag(invite, "reason");
+    if (r)
+      reason = xmlnode_get_tag_data(r, NULL);
+    r = xmlnode_get_tag(invite, "password");
+    if (r)
+      password = xmlnode_get_tag_data(r, NULL);
+    if (invite_from)
+      got_invite(invite_from, from, reason, password);
+  }
+  // TODO
+  // handle status code = 100 ( not anonymous )
+  // handle status code = 170 ( changement de config )
+  // 10.2.1 Notification of Configuration Changes
+  // declined invitation
 }
 
 static void handle_packet_message(jconn conn, char *type, char *from,
@@ -1375,10 +2224,10 @@ static void handle_packet_message(jconn conn, char *type, char *from,
 {
   char *p, *r, *s;
   xmlnode x;
-  char *body=NULL;
+  char *body = NULL;
   char *enc = NULL;
   char *tmp = NULL;
-  time_t timestamp = 0;
+  time_t timestamp = 0L;
 
   body = xmlnode_get_tag_data(xmldata, "body");
 
@@ -1390,7 +2239,7 @@ static void handle_packet_message(jconn conn, char *type, char *from,
       gchar *subj = p;
       // Get the room (s) and the nickname (r)
       s = g_strdup(from);
-      r = strchr(s, '/');
+      r = strchr(s, JID_RESOURCE_SEPARATOR);
       if (r) *r++ = 0;
       else   r = s;
       // Set the new topic
@@ -1434,10 +2283,138 @@ static void handle_packet_message(jconn conn, char *type, char *from,
   if (type && !strcmp(type, TMSG_ERROR)) {
     if ((x = xmlnode_get_tag(xmldata, TMSG_ERROR)) != NULL)
       display_server_error(x);
+#if defined JEP0022 || defined JEP0085
+    // If the JEP85/22 support is probed, set it back to unknown so that
+    // we probe it again.
+    chatstates_reset_probed(from);
+#endif
+  } else {
+    handle_state_events(from, xmldata);
   }
   if (from && body)
-    gotmessage(type, from, body, enc, timestamp);
+    gotmessage(type, from, body, enc, timestamp,
+               xml_get_xmlns(xmldata, NS_SIGNED));
+
+  if (from) {
+    x = xml_get_xmlns(xmldata, "http://jabber.org/protocol/muc#user");
+    if (x && !strcmp(xmlnode_get_name(x), "x"))
+      got_muc_message(from, x);
+  }
   g_free(tmp);
+}
+
+static void handle_state_events(char *from, xmlnode xmldata)
+{
+#if defined JEP0022 || defined JEP0085
+  xmlnode state_ns = NULL;
+  const char *body;
+  char *rname, *bjid;
+  GSList *sl_buddy;
+  guint events;
+  struct jep0022 *jep22 = NULL;
+  struct jep0085 *jep85 = NULL;
+  enum {
+    JEP_none,
+    JEP_85,
+    JEP_22
+  } which_jep = JEP_none;
+
+  rname = strchr(from, JID_RESOURCE_SEPARATOR);
+  bjid  = jidtodisp(from);
+  sl_buddy = roster_find(bjid, jidsearch, ROSTER_TYPE_USER);
+  g_free(bjid);
+
+  /* XXX Actually that's wrong, since it filters out server "offline"
+     messages (for JEP-0022).  This JEP is (almost) deprecated so
+     we don't really care. */
+  if (!sl_buddy || !rname++) {
+    return;
+  }
+
+  /* Let's see chich JEP the contact uses.  If possible, we'll use
+     JEP-85, if not we'll look for JEP-22 support. */
+  events = buddy_resource_getevents(sl_buddy->data, rname);
+
+  jep85 = buddy_resource_jep85(sl_buddy->data, rname);
+  if (jep85) {
+    state_ns = xml_get_xmlns(xmldata, NS_CHATSTATES);
+    if (state_ns)
+      which_jep = JEP_85;
+  }
+
+  if (which_jep != JEP_85) { /* Fall back to JEP-0022 */
+    jep22 = buddy_resource_jep22(sl_buddy->data, rname);
+    if (jep22) {
+      state_ns = xml_get_xmlns(xmldata, NS_EVENT);
+      if (state_ns)
+        which_jep = JEP_22;
+    }
+  }
+
+  if (!which_jep) { /* Sender does not use chat states */
+    return;
+  }
+
+  body = xmlnode_get_tag_data(xmldata, "body");
+
+  if (which_jep == JEP_85) { /* JEP-0085 */
+    const char *p;
+    jep85->support = CHATSTATES_SUPPORT_OK;
+
+    p = xmlnode_get_name(state_ns);
+    if (!strcmp(p, "composing")) {
+      jep85->last_state_rcvd = ROSTER_EVENT_COMPOSING;
+    } else if (!strcmp(p, "active")) {
+      jep85->last_state_rcvd = ROSTER_EVENT_ACTIVE;
+    } else if (!strcmp(p, "paused")) {
+      jep85->last_state_rcvd = ROSTER_EVENT_PAUSED;
+    } else if (!strcmp(p, "inactive")) {
+      jep85->last_state_rcvd = ROSTER_EVENT_INACTIVE;
+    } else if (!strcmp(p, "gone")) {
+      jep85->last_state_rcvd = ROSTER_EVENT_GONE;
+    }
+    events = jep85->last_state_rcvd;
+  } else {              /* JEP-0022 */
+#ifdef JEP0022
+    const char *msgid;
+    jep22->support = CHATSTATES_SUPPORT_OK;
+    jep22->last_state_rcvd = ROSTER_EVENT_NONE;
+
+    msgid = xmlnode_get_attrib(xmldata, "id");
+
+    if (xmlnode_get_tag(state_ns, "composing")) {
+      // Clear composing if the message contains a body
+      if (body)
+        events &= ~ROSTER_EVENT_COMPOSING;
+      else
+        events |= ROSTER_EVENT_COMPOSING;
+      jep22->last_state_rcvd |= ROSTER_EVENT_COMPOSING;
+
+    } else {
+      events &= ~ROSTER_EVENT_COMPOSING;
+    }
+
+    // Cache the message id
+    g_free(jep22->last_msgid_rcvd);
+    if (msgid)
+      jep22->last_msgid_rcvd = g_strdup(msgid);
+    else
+      jep22->last_msgid_rcvd = NULL;
+
+    if (xmlnode_get_tag(state_ns, "delivered")) {
+      jep22->last_state_rcvd |= ROSTER_EVENT_DELIVERED;
+
+      // Do we have to send back an ACK?
+      if (body)
+        jb_send_jep22_event(from, ROSTER_EVENT_DELIVERED);
+    }
+#endif
+  }
+
+  buddy_resource_setevents(sl_buddy->data, rname, events);
+
+  update_roster = TRUE;
+#endif
 }
 
 static void evscallback_subscription(eviqs *evp, guint evcontext)
@@ -1487,6 +2464,74 @@ static void evscallback_subscription(eviqs *evp, guint evcontext)
   scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO);
   scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
   g_free(buf);
+}
+
+static void decline_invitation(event_muc_invitation *invitation, char *reason)
+{
+  // cut and paste from jb_room_invite
+  xmlnode x,y,z;
+
+  if (!invitation) return;
+  if (!invitation->to || !invitation->from) return;
+
+  x = jutil_msgnew(NULL, (char*)invitation->to, NULL, NULL);
+
+  y = xmlnode_insert_tag(x, "x");
+  xmlnode_put_attrib(y, "xmlns", "http://jabber.org/protocol/muc#user");
+
+  z = xmlnode_insert_tag(y, "decline");
+  xmlnode_put_attrib(z, "to", invitation->from);
+
+  if (reason) {
+    y = xmlnode_insert_tag(z, "reason");
+    xmlnode_insert_cdata(y, reason, (unsigned) -1);
+  }
+
+  jab_send(jc, x);
+  xmlnode_free(x);
+  jb_reset_keepalive();
+}
+
+static void evscallback_invitation(eviqs *evp, guint evcontext)
+{
+  event_muc_invitation *invitation = evp->data;
+
+  // Sanity check
+  if (!invitation) {
+    // Shouldn't happen.
+    scr_LogPrint(LPRINT_LOGNORM, "Error in evs callback.");
+    return;
+  }
+
+  if (evcontext == EVS_CONTEXT_TIMEOUT) {
+    scr_LogPrint(LPRINT_LOGNORM, "Event %s timed out, cancelled.", evp->id);
+    goto evscallback_invitation_free;
+  }
+  if (evcontext == EVS_CONTEXT_CANCEL) {
+    scr_LogPrint(LPRINT_LOGNORM, "Event %s cancelled.", evp->id);
+    goto evscallback_invitation_free;
+  }
+  if (!(evcontext & EVS_CONTEXT_USER))
+    goto evscallback_invitation_free;
+  // Ok, let's work now.
+  // evcontext: 0, 1 == reject, accept
+
+  if (evcontext & ~EVS_CONTEXT_USER) {
+    char *nickname = default_muc_nickname();
+    jb_room_join(invitation->to, nickname, invitation->passwd);
+    g_free(nickname);
+  } else {
+    scr_LogPrint(LPRINT_LOGNORM, "Invitation to %s refused.", invitation->to);
+    decline_invitation(invitation, NULL);
+  }
+
+evscallback_invitation_free:
+  g_free(invitation->to);
+  g_free(invitation->from);
+  g_free(invitation->passwd);
+  g_free(invitation->reason);
+  g_free(invitation);
+  evp->data = NULL;
 }
 
 static void handle_packet_s10n(jconn conn, char *type, char *from,
@@ -1568,20 +2613,14 @@ static void handle_packet_s10n(jconn conn, char *type, char *from,
     newbuddy = FALSE;
   }
 
-  if (newbuddy) {
-    buddylist_build();
+  if (newbuddy)
     update_roster = TRUE;
-  }
   g_free(r);
 }
 
 static void packethandler(jconn conn, jpacket packet)
 {
   char *p;
-  /*
-  char *r, *s;
-  const char *m;
-  */
   char *from=NULL, *type=NULL;
 
   jb_reset_keepalive(); // reset keepalive timeout
@@ -1599,7 +2638,7 @@ static void packethandler(jconn conn, jpacket packet)
   if (p) from = p;
 
   if (!from && packet->type != JPACKET_IQ) {
-    scr_LogPrint(LPRINT_LOGNORM, "Error in packet (could be UTF8-related)");
+    scr_LogPrint(LPRINT_LOGNORM, "Error in stream packet");
     return;
   }
 

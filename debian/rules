@@ -1,5 +1,7 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpatch/dpatch.make
+
 #export DH_VERBOSE=1
 
 DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
@@ -14,7 +16,7 @@ else
 	CFLAGS += -O2
 endif
 
-config.status: configure
+config.status: patch
 	dh_testdir
 	CFLAGS="$(CFLAGS) -Wl,-z,defs" ./configure --host=$(DEB_HOST_GNU_TYPE) --build=$(DEB_BUILD_GNU_TYPE) --prefix=/usr --mandir=\$${prefix}/share/man --infodir=\$${prefix}/share/info
 
@@ -26,10 +28,10 @@ build-stamp:  config.status
 	$(MAKE)
 	touch build-stamp
 
-clean:
+clean: unpatch
 	dh_testdir
 	dh_testroot
-	rm -f build-stamp 
+	rm -f build-stamp
 	-$(MAKE) distclean
 ifneq "$(wildcard /usr/share/misc/config.sub)" ""
 	cp -f /usr/share/misc/config.sub config.sub
@@ -39,12 +41,12 @@ ifneq "$(wildcard /usr/share/misc/config.guess)" ""
 endif
 
 
-	dh_clean 
+	dh_clean
 
 install: build
 	dh_testdir
 	dh_testroot
-	dh_clean -k 
+	dh_clean -k
 	dh_installdirs
 	$(MAKE) install DESTDIR=$(CURDIR)/debian/mcabber
 
@@ -69,4 +71,4 @@ binary-arch: build install
 	dh_builddeb
 
 binary: binary-indep binary-arch
-.PHONY: build clean binary-indep binary-arch binary install 
+.PHONY: build clean binary-indep binary-arch binary install

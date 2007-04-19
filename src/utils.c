@@ -39,6 +39,7 @@
 #include <glib.h>
 
 #include <config.h>
+#include "utils.h"
 #include "logprint.h"
 
 static int DebugEnabled;
@@ -305,28 +306,28 @@ inline void safe_usleep(unsigned int usec)
  * Check if the full JID is valid
  * Return 0 if it is valid, non zero otherwise
  */
-int check_jid_syntax(char *jid)
+int check_jid_syntax(char *fjid)
 {
   char *str;
   char *domain, *resource;
   int domlen;
 
-  if (!jid) return 1;
+  if (!fjid) return 1;
 
-  domain = strchr(jid, '@');
+  domain = strchr(fjid, JID_DOMAIN_SEPARATOR);
 
   /* the username is optional */
   if (!domain) {
-    domain = jid;
+    domain = fjid;
   } else {
     /* node identifiers may not be longer than 1023 bytes */
-    if ((domain == jid) || (domain-jid > 1023))
+    if ((domain == fjid) || (domain-fjid > 1023))
       return 1;
     domain++;
 
     /* check for low and invalid ascii characters in the username */
-    for (str = jid; *str != '@'; str++) {
-      if (*str <= 32 || *str == ':' || *str == '@' ||
+    for (str = fjid; *str != JID_DOMAIN_SEPARATOR; str++) {
+      if (*str <= ' ' || *str == ':' || *str == JID_DOMAIN_SEPARATOR ||
               *str == '<' || *str == '>' || *str == '\'' ||
               *str == '"' || *str == '&') {
         return 1;
@@ -335,7 +336,7 @@ int check_jid_syntax(char *jid)
     /* the username is okay as far as we can tell without LIBIDN */
   }
 
-  resource = strchr(domain, '/');
+  resource = strchr(domain, JID_RESOURCE_SEPARATOR);
 
   /* the resource is optional */
   if (resource) {
@@ -355,7 +356,7 @@ int check_jid_syntax(char *jid)
   if (domlen > 1023) return 1;
 
   /* make sure the hostname is valid characters */
-  for (str = domain; *str != '\0' && *str != '/'; str++) {
+  for (str = domain; *str != '\0' && *str != JID_RESOURCE_SEPARATOR; str++) {
     if (!(isalnum(*str) || *str == '.' || *str == '-' || *str == '_'))
       return 1;
   }
@@ -365,7 +366,7 @@ int check_jid_syntax(char *jid)
 }
 
 
-void mc_strtolower(char *str)
+inline void mc_strtolower(char *str)
 {
   if (!str) return;
   for ( ; *str; str++)
@@ -381,6 +382,8 @@ void strip_arg_special_chars(char *s)
   int instring = FALSE;
   int escape = FALSE;
   char *p;
+
+  if (!s) return;
 
   for (p = s; *p; p++) {
     if (*p == '"') {
@@ -483,22 +486,27 @@ void replace_nl_with_dots(char *bufstr)
 }
 
 //  ut_expand_tabs(text)
-// Expand tabs in string text.
-// If there is no tab in the string, a pointer to text is returned (be
-// careful _not_ to free the pointer in this case).
-// If there are some tabs, a new string with expanded chars is returned; this
-// is up to the caller to free this string after use.
+// Expand tabs and filter out some bad chars in string text.
+// If there is no tab and no bad chars in the string, a pointer to text
+// is returned (be careful _not_ to free the pointer in this case).
+// If there are some tabs or bad chars, a new string with expanded chars
+// and no bad chars is returned; this is up to the caller to free this
+// string after use.
 char *ut_expand_tabs(const char *text)
 {
   char *xtext;
   char *p, *q;
-  guint8 n=0;
+  guint n = 0, bc = 0;
 
   xtext = (char*)text;
   for (p=xtext; *p; p++)
-    if (*p == '\t') n++;
+    if (*p == '\t')
+      n++;
+    else if (*p == '\x0d')
+      bc++;
+  // XXX Are there other special chars we should filter out?
 
-  if (!n)
+  if (!n && !bc)
     return (char*)text;
 
   xtext = g_new(char, strlen(text) + 1 + 8*n);
@@ -507,7 +515,7 @@ char *ut_expand_tabs(const char *text)
   do {
     if (*p == '\t') {
       do { *q++ = ' '; } while ((q-xtext)%8);
-    } else {
+    } else if (*p != '\x0d') {
       *q++ = *p;
     }
   } while (*p++);
