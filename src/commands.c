@@ -1,7 +1,7 @@
 /*
  * commands.c   -- user commands handling
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -42,6 +42,9 @@
 #define IMSTATUS_NOTAVAILABLE   "notavail"
 #define IMSTATUS_DONOTDISTURB   "dnd"
 
+// Return value container for the following functions
+static int retval_for_cmds;
+
 // Commands callbacks
 static void do_roster(char *arg);
 static void do_status(char *arg);
@@ -70,6 +73,10 @@ static void do_request(char *arg);
 static void do_event(char *arg);
 static void do_help(char *arg);
 static void do_pgp(char *arg);
+static void do_iline(char *arg);
+static void do_screen_refresh(char *arg);
+static void do_chat_disable(char *arg);
+static void do_source(char *arg);
 
 // Global variable for the commands list
 static GSList *Commands;
@@ -93,6 +100,10 @@ static void cmd_add(const char *name, const char *help,
 
 //  cmd_init()
 // Commands table initialization
+// !!!
+// After changing commands names and it arguments names here, you must change
+// ones in init_bindings()!
+//
 void cmd_init(void)
 {
   cmd_add("add", "Add a jabber user", COMPL_JID, 0, &do_add);
@@ -102,6 +113,7 @@ void cmd_init(void)
   cmd_add("bind", "Add an key binding", 0, 0, &do_bind);
   cmd_add("buffer", "Manipulate current buddy's buffer (chat window)",
           COMPL_BUFFER, 0, &do_buffer);
+  cmd_add("chat_disable", "Disable chat mode", 0, 0, &do_chat_disable);
   cmd_add("clear", "Clear the dialog window", 0, 0, &do_clear);
   cmd_add("connect", "Connect to the server", 0, 0, &do_connect);
   cmd_add("del", "Delete the current buddy", 0, 0, &do_del);
@@ -109,6 +121,7 @@ void cmd_init(void)
   cmd_add("event", "Process an event", COMPL_EVENTSID, COMPL_EVENTS, &do_event);
   cmd_add("group", "Change group display settings", COMPL_GROUP, 0, &do_group);
   cmd_add("help", "Display some help", COMPL_CMD, 0, &do_help);
+  cmd_add("iline", "Manipulate input buffer", 0, 0, &do_iline);
   cmd_add("info", "Show basic info on current buddy", 0, 0, &do_info);
   cmd_add("move", "Move the current buddy to another group", COMPL_GROUPNAME,
           0, &do_move);
@@ -126,8 +139,10 @@ void cmd_init(void)
   cmd_add("say", "Say something to the selected buddy", 0, 0, &do_say);
   cmd_add("say_to", "Say something to a specific buddy", COMPL_JID, 0,
           &do_say_to);
+  cmd_add("screen_refresh", "Redraw mcabber screen", 0, 0, &do_screen_refresh);
   //cmd_add("search");
   cmd_add("set", "Set/query an option value", 0, 0, &do_set);
+  cmd_add("source", "Read a configuration file", 0, 0, &do_source);
   cmd_add("status", "Show or set your status", COMPL_STATUS, 0, &do_status);
   cmd_add("status_to", "Show or set your status for one recipient",
           COMPL_JID, COMPL_STATUS, &do_status_to);
@@ -141,6 +156,7 @@ void cmd_init(void)
   compl_add_category_word(COMPL_STATUS, "dnd");
   compl_add_category_word(COMPL_STATUS, "notavail");
   compl_add_category_word(COMPL_STATUS, "away");
+  compl_add_category_word(COMPL_STATUS, "offline");
 
   // Roster category
   compl_add_category_word(COMPL_ROSTER, "bottom");
@@ -232,6 +248,7 @@ void cmd_init(void)
   // PGP category
   compl_add_category_word(COMPL_PGP, "disable");
   compl_add_category_word(COMPL_PGP, "enable");
+  compl_add_category_word(COMPL_PGP, "force");
   compl_add_category_word(COMPL_PGP, "info");
   compl_add_category_word(COMPL_PGP, "setkey");
 }
@@ -307,7 +324,7 @@ cmd *cmd_get(const char *command)
 static void send_message(const char *msg, const char *subj)
 {
   const char *bjid;
-  guint crypted;
+  gint crypted;
 
   if (!jb_getonline()) {
     scr_LogPrint(LPRINT_NORMAL, "You are not connected.");
@@ -329,6 +346,11 @@ static void send_message(const char *msg, const char *subj)
   jb_send_msg(bjid, msg, buddy_gettype(BUDDATA(current_buddy)), subj, NULL,
               &crypted);
 
+  if (crypted == -1) {
+    scr_LogPrint(LPRINT_LOGNORM, "Encryption error.  Message was not sent.");
+    return;
+  }
+
   // Hook
   if (buddy_gettype(BUDDATA(current_buddy)) != ROSTER_TYPE_ROOM) {
     // local part (UI, logging, etc.)
@@ -342,17 +364,19 @@ static void send_message(const char *msg, const char *subj)
   }
 }
 
-//  process_command(line)
+//  process_command(line, iscmd)
 // Process a command line.
+// If iscmd is TRUE, process the command even if verbatim mmode is set;
+// it is intended to be used for key bindings.
 // Return 255 if this is the /quit command, and 0 for the other commands.
-int process_command(char *line)
+int process_command(char *line, guint iscmd)
 {
   char *p;
   char *xpline;
   cmd *curcmd;
 
   // We do alias expansion here
-  if (scr_get_multimode() != 2)
+  if (iscmd || scr_get_multimode() != 2)
     xpline = expandalias(line);
   else
     xpline = line; // No expansion in verbatim multi-line mode
@@ -368,7 +392,7 @@ int process_command(char *line)
     *p = 0;
 
   // Command "quit"?
-  if ((scr_get_multimode() != 2)
+  if ((iscmd || scr_get_multimode() != 2)
       && (!strncasecmp(xpline, mkcmdstr("quit"), strlen(mkcmdstr("quit"))))) {
     if (!xpline[5] || xpline[5] == ' ') {
       g_free(xpline);
@@ -377,7 +401,7 @@ int process_command(char *line)
   }
 
   // If verbatim multi-line mode, we check if another /msay command is typed
-  if ((scr_get_multimode() == 2)
+  if (!iscmd && scr_get_multimode() == 2
       && (strncasecmp(xpline, mkcmdstr("msay "), strlen(mkcmdstr("msay "))))) {
     // It isn't an /msay command
     scr_append_multiline(xpline);
@@ -407,9 +431,10 @@ int process_command(char *line)
   while (*p && (*p == ' '))
     p++;
   // Call command-specific function
+  retval_for_cmds = 0;
   (*curcmd->func)(p);
   g_free(xpline);
-  return 0;
+  return retval_for_cmds;
 }
 
 //  process_line(line)
@@ -441,8 +466,8 @@ int process_line(char *line)
     return 0;
   }
 
-  /* It is (probably) a command -- except for verbatim multi-line mode */
-  return process_command(line);
+  /* It is _probably_ a command -- except for verbatim multi-line mode */
+  return process_command(line, FALSE);
 }
 
 // Helper routine for buffer item_{lock,unlock}
@@ -541,13 +566,15 @@ static void display_all_annotations(void)
 {
   GSList *notes;
   notes = jb_get_all_storage_rosternotes();
+
+  if (!notes)
+    return;
+
   // Call display_and_free_note() for each note,
   // with winId = NULL (special window)
   g_slist_foreach(notes, (GFunc)&display_and_free_note, NULL);
-  if (notes) {
-    scr_setmsgflag_if_needed(SPECIAL_BUFFER_STATUS_ID, TRUE);
-    update_roster = TRUE;
-  }
+  scr_setmsgflag_if_needed(SPECIAL_BUFFER_STATUS_ID, TRUE);
+  update_roster = TRUE;
   g_slist_free(notes);
 }
 
@@ -678,7 +705,7 @@ static void do_roster(char *arg)
 // Set your Jabber status.
 // - if recipient is not NULL, the status is sent to this contact only
 // - arg must be "status message" (message is optional)
-static void setstatus(const char *recipient, const char *arg)
+void setstatus(const char *recipient, const char *arg)
 {
   char **paramlst;
   char *status;
@@ -878,6 +905,9 @@ static void do_del(char *arg)
     }
   }
 
+  // Close the buffer
+  scr_BufferPurge(1);
+
   scr_LogPrint(LPRINT_LOGNORM, "Removing <%s>...", bjid);
   jb_delbuddy(bjid);
   scr_UpdateBuddyWindow();
@@ -931,7 +961,8 @@ static int send_message_to(const char *fjid, const char *msg, const char *subj)
 {
   char *bare_jid, *rp;
   char *hmsg;
-  guint crypted;
+  gint crypted;
+  gint retval = 0;
 
   if (!fjid || !*fjid) {
     scr_LogPrint(LPRINT_NORMAL, "You must specify a Jabber ID.");
@@ -971,12 +1002,19 @@ static int send_message_to(const char *fjid, const char *msg, const char *subj)
   // Network part
   jb_send_msg(fjid, msg, ROSTER_TYPE_USER, subj, NULL, &crypted);
 
+  if (crypted == -1) {
+    scr_LogPrint(LPRINT_LOGNORM, "Encryption error.  Message was not sent.");
+    retval = 1;
+    goto send_message_to_return;
+  }
+
   // Hook
   hk_message_out(bare_jid, rp, 0, hmsg, crypted);
-  if (hmsg != msg) g_free(hmsg);
 
+send_message_to_return:
+  if (hmsg != msg) g_free(hmsg);
   if (rp) g_free(bare_jid);
-  return 0;
+  return retval;
 }
 
 static void do_say(char *arg)
@@ -1102,7 +1140,8 @@ static void do_msay(char *arg)
     }
 
     bud = BUDDATA(current_buddy);
-    if (!(buddy_gettype(bud) & (ROSTER_TYPE_USER|ROSTER_TYPE_ROOM))) {
+    if (!(buddy_gettype(bud) &
+          (ROSTER_TYPE_USER|ROSTER_TYPE_AGENT|ROSTER_TYPE_ROOM))) {
       scr_LogPrint(LPRINT_NORMAL, "This is not a user.");
       goto do_msay_return;
     }
@@ -1270,6 +1309,10 @@ static void do_buffer(char *arg)
     buffer_date(arg);
   } else if (*subcmd == '%') {
     buffer_percent(subcmd+1, arg);
+#ifdef DEBUG_ENABLE
+  } else if (!strcasecmp(subcmd, "list")) {
+    scr_BufferList();
+#endif
   } else {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
   }
@@ -1413,10 +1456,17 @@ static void room_names(gpointer bud, char *arg)
   const char *bjid;
   char *buffer;
   GSList *resources, *p_res;
+  enum { style_normal = 0, style_short, style_quiet } style = 0;
 
   if (*arg) {
-    scr_LogPrint(LPRINT_NORMAL, "This action does not require a parameter.");
-    return;
+    if (!strcasecmp(arg, "--short"))
+      style = style_short;
+    else if (!strcasecmp(arg, "--quiet"))
+      style = style_quiet;
+    else {
+      scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
+      return;
+    }
   }
 
   // Enter chat mode
@@ -1437,12 +1487,20 @@ static void room_names(gpointer bud, char *arg)
     rstatus = buddy_getstatus(bud, p_res->data);
     rst_msg = buddy_getstatusmsg(bud, p_res->data);
 
-    snprintf(buffer, 4095, "[%c] %s", imstatus2char[rstatus],
-             (char*)p_res->data);
-    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
-    if (rst_msg) {
-      snprintf(buffer, 4095, "Status message: %s", rst_msg);
-      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+    if (style == style_short) {
+      snprintf(buffer, 4095, "[%c] %s%s%s", imstatus2char[rstatus],
+               (char*)p_res->data,
+               rst_msg ? " -- " : "", rst_msg ? rst_msg : "");
+      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+    } else {
+      // (Style "normal" or "quiet")
+      snprintf(buffer, 4095, "[%c] %s", imstatus2char[rstatus],
+               (char*)p_res->data);
+      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+      if (rst_msg && style == style_normal) {
+        snprintf(buffer, 4095, "Status message: %s", rst_msg);
+        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+      }
     }
     g_free(p_res->data);
   }
@@ -1991,7 +2049,7 @@ static void room_kick(gpointer bud, char *arg)
   free_arg_lst(paramlst);
 }
 
-static void room_leave(gpointer bud, char *arg)
+void room_leave(gpointer bud, char *arg)
 {
   gchar *roomid, *desc;
   const char *nickname;
@@ -2249,6 +2307,32 @@ static void room_bookmark(gpointer bud, char *arg)
   jb_set_storage_bookmark(roomid, name, nick, NULL, autojoin);
 }
 
+static void display_all_bookmarks(void)
+{
+  GSList *bm, *bmp;
+  GString *sbuf;
+
+  bm = jb_get_all_storage_bookmarks();
+
+  if (!bm)
+    return;
+
+  sbuf = g_string_new("");
+
+  scr_WriteIncomingMessage(NULL, "List of MUC bookmarks:", 0, HBB_PREFIX_INFO);
+
+  for (bmp = bm; bmp; bmp = g_slist_next(bmp)) {
+    g_string_printf(sbuf, "<%s>", (char*)bmp->data);
+    scr_WriteIncomingMessage(NULL, sbuf->str, 0, HBB_PREFIX_NONE);
+  }
+
+  scr_setmsgflag_if_needed(SPECIAL_BUFFER_STATUS_ID, TRUE);
+  update_roster = TRUE;
+  g_string_free(sbuf, TRUE);
+  g_slist_free(bm);
+}
+
+
 static void do_room(char *arg)
 {
   char **paramlst;
@@ -2328,7 +2412,10 @@ static void do_room(char *arg)
     if ((arg = check_room_subcommand(arg, TRUE, bud)) != NULL)
       room_whois(bud, arg, TRUE);
   } else if (!strcasecmp(subcmd, "bookmark"))  {
-    if ((arg = check_room_subcommand(arg, FALSE, bud)) != NULL)
+    if (!arg && !buddy_getjid(BUDDATA(current_buddy)) &&
+        buddy_gettype(BUDDATA(current_buddy)) == ROSTER_TYPE_SPECIAL)
+      display_all_bookmarks();
+    else if ((arg = check_room_subcommand(arg, FALSE, bud)) != NULL)
       room_bookmark(bud, arg);
   } else {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
@@ -2572,8 +2659,10 @@ static void do_pgp(char *arg)
     pgp_enable,
     pgp_disable,
     pgp_setkey,
+    pgp_force,
     pgp_info
   } op = 0;
+  int force = FALSE;
 
   paramlst = split_arg(arg, 3, 0); // subcmd, jid, [key]
   subcmd = *paramlst;
@@ -2592,6 +2681,12 @@ static void do_pgp(char *arg)
       op = pgp_disable;
     else if (!strcasecmp(subcmd, "setkey"))
       op = pgp_setkey;
+    else if ((!strcasecmp(subcmd, "force")) ||
+             (!strcasecmp(subcmd, "+force"))) {
+      op = pgp_force;
+      force = TRUE;
+    } else if (!strcasecmp(subcmd, "-force"))
+      op = pgp_force;
     else if (!strcasecmp(subcmd, "info"))
       op = pgp_info;
   }
@@ -2634,11 +2729,15 @@ static void do_pgp(char *arg)
   }
 
   if (fjid) { // fjid is actually a bare jid...
+    guint disabled;
     GString *sbuf;
     switch (op) {
       case pgp_enable:
       case pgp_disable:
           settings_pgp_setdisabled(fjid, (op == pgp_disable ? TRUE : FALSE));
+          break;
+      case pgp_force:
+          settings_pgp_setforce(fjid, force);
           break;
       case pgp_setkey:
           settings_pgp_setkeyid(fjid, keyid);
@@ -2650,10 +2749,15 @@ static void do_pgp(char *arg)
                             settings_pgp_getkeyid(fjid));
             scr_WriteIncomingMessage(fjid, sbuf->str, 0, HBB_PREFIX_INFO);
           }
+          disabled = settings_pgp_getdisabled(fjid);
           g_string_printf(sbuf, "PGP encryption is %s",
-                          (settings_pgp_getdisabled(fjid) ?  "disabled" :
-                           "enabled"));
+                          (disabled ?  "disabled" : "enabled"));
           scr_WriteIncomingMessage(fjid, sbuf->str, 0, HBB_PREFIX_INFO);
+          if (!disabled && settings_pgp_getforce(fjid)) {
+            scr_WriteIncomingMessage(fjid,
+                                     "Encryption enforced (no negotiation)",
+                                     0, HBB_PREFIX_INFO);
+          }
           g_string_free(sbuf, TRUE);
           break;
       default:
@@ -2664,6 +2768,97 @@ static void do_pgp(char *arg)
   }
 
   free_arg_lst(paramlst);
+}
+
+/* !!!
+  After changing the /iline arguments names here, you must change ones
+  in init_bindings().
+*/
+static void do_iline(char *arg)
+{
+  if (!strcasecmp(arg, "fword")) {
+    readline_forward_word();
+  } else if (!strcasecmp(arg, "bword")) {
+    readline_backward_word();
+  } else if (!strcasecmp(arg, "word_fdel")) {
+    readline_forward_kill_word();
+  } else if (!strcasecmp(arg, "word_bdel")) {
+    readline_backward_kill_word();
+  } else if (!strcasecmp(arg, "word_upcase")) {
+    readline_updowncase_word(1);
+  } else if (!strcasecmp(arg, "word_downcase")) {
+    readline_updowncase_word(0);
+  } else if (!strcasecmp(arg, "word_capit")) {
+    readline_capitalize_word();
+  } else if (!strcasecmp(arg, "fchar")) {
+    readline_forward_char();
+  } else if (!strcasecmp(arg, "bchar")) {
+    readline_backward_char();
+  } else if (!strcasecmp(arg, "char_fdel")) {
+    readline_forward_kill_char();
+  } else if (!strcasecmp(arg, "char_bdel")) {
+    readline_backward_kill_char();
+  } else if (!strcasecmp(arg, "char_swap")) {
+    readline_transpose_chars();
+  } else if (!strcasecmp(arg, "hist_beginning_search_bwd")) {
+    readline_hist_beginning_search_bwd();
+  } else if (!strcasecmp(arg, "hist_beginning_search_fwd")) {
+    readline_hist_beginning_search_fwd();
+  } else if (!strcasecmp(arg, "hist_prev")) {
+    readline_hist_prev();
+  } else if (!strcasecmp(arg, "hist_next")) {
+    readline_hist_next();
+  } else if (!strcasecmp(arg, "iline_start")) {
+    readline_iline_start();
+  } else if (!strcasecmp(arg, "iline_end")) {
+    readline_iline_end();
+  } else if (!strcasecmp(arg, "iline_fdel")) {
+    readline_forward_kill_iline();
+  } else if (!strcasecmp(arg, "iline_bdel")) {
+    readline_backward_kill_iline();
+  } else if (!strcasecmp(arg, "send_multiline")) {
+    readline_send_multiline();
+  } else if (!strcasecmp(arg, "iline_accept")) {
+    retval_for_cmds = readline_accept_line(FALSE);
+  } else if (!strcasecmp(arg, "iline_accept_down_hist")) {
+    retval_for_cmds = readline_accept_line(TRUE);
+  } else if (!strcasecmp(arg, "compl_cancel")) {
+    readline_cancel_completion();
+  } else if (!strcasecmp(arg, "compl_do")) {
+    readline_do_completion();
+  }
+}
+
+static void do_screen_refresh(char *arg)
+{
+  readline_refresh_screen();
+}
+
+static void do_chat_disable(char *arg)
+{
+  readline_disable_chat_mode();
+}
+
+static void do_source(char *arg)
+{
+  static int recur_level;
+  gchar *filename, *expfname;
+  if (!*arg) {
+    scr_LogPrint(LPRINT_NORMAL, "Missing filename.");
+    return;
+  }
+  if (recur_level > 20) {
+    scr_LogPrint(LPRINT_LOGNORM, "** Too many source commands!");
+    return;
+  }
+  filename = g_strdup(arg);
+  strip_arg_special_chars(filename);
+  expfname = expand_filename(filename);
+  recur_level++;
+  cfg_read_file(expfname, FALSE);
+  recur_level--;
+  g_free(filename);
+  g_free(expfname);
 }
 
 static void do_connect(char *arg)

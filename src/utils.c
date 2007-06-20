@@ -1,7 +1,7 @@
 /*
  * utils.c      -- Various utility functions
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  * ut_* functions are derived from Cabber debug/log code.
  * from_iso8601() comes from the Gaim project.
  *
@@ -45,6 +45,21 @@
 static int DebugEnabled;
 static char *FName;
 
+//  expand_filename(filename)
+// Expand "~/" with the $HOME env. variable in a file name.
+// The caller must free the string after use.
+char *expand_filename(const char *fname)
+{
+  if (!fname)
+    return NULL;
+  if (!strncmp(fname, "~/", 2)) {
+    char *homedir = getenv("HOME");
+    if (homedir)
+      return g_strdup_printf("%s%s", homedir, fname+1);
+  }
+  return g_strdup(fname);
+}
+
 void ut_InitDebug(int level, const char *filename)
 {
   FILE *fp;
@@ -58,16 +73,13 @@ void ut_InitDebug(int level, const char *filename)
   }
 
   if (filename)
-    FName = g_strdup(filename);
+    FName = expand_filename(filename);
   else {
     FName = getenv("HOME");
     if (!FName)
-      FName = "/tmp/mcabberlog";
+      FName = g_strdup("/tmp/mcabberlog");
     else {
-      char *tmpname = g_new(char, strlen(FName) + 12);
-      strcpy(tmpname, FName);
-      strcat(tmpname, "/mcabberlog");
-      FName = tmpname;
+      FName = g_strdup_printf("%s/mcabberlog", FName);
     }
   }
 
@@ -93,8 +105,7 @@ void ut_InitDebug(int level, const char *filename)
   }
   fchmod(fileno(fp), S_IRUSR|S_IWUSR);
 
-  fprintf(fp, "New trace log started.\n"
-	  "----------------------\n");
+  fprintf(fp, "New trace log started.\n----------------------\n");
   fclose(fp);
 }
 
@@ -412,7 +423,7 @@ void strip_arg_special_chars(char *s)
 // Split the string arg into a maximum of n pieces, taking care of
 // double quotes.
 // Return a null-terminated array of strings.  This array should be freed
-// be the caller after use, for example with free_arg_lst().
+// by the caller after use, for example with free_arg_lst().
 // If dontstriplast is true, the Nth argument isn't stripped (i.e. no
 // processing of quote chars)
 char **split_arg(const char *arg, unsigned int n, int dontstriplast)
@@ -637,5 +648,16 @@ strcasestr (const char *haystack, const char *needle)
   return NULL;
 }
 #endif /* !HAVE_STRCASESTR */
+
+//  startswith(str, word, ignore_case)
+// Returns TRUE if string str starts with word.
+int startswith(const char *str, const char *word, guint ignore_case)
+{
+  if (ignore_case && !strncasecmp(str, word, strlen(word)))
+    return TRUE;
+  else if (!ignore_case && !strncmp(str, word, strlen(word)))
+    return TRUE;
+  return FALSE;
+}
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

@@ -1,7 +1,7 @@
 /*
  * compl.c      -- Completion system
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,6 +32,7 @@
 #include <string.h>
 
 #include "compl.h"
+#include "utf8.h"
 #include "roster.h"
 #include "events.h"
 
@@ -57,7 +58,8 @@ static compl *InputCompl;
 // . compl_cat = pointer to a completion category list (list of *char)
 // Set the InputCompl pointer to an allocated compl structure.
 // done_completion() must be called when finished.
-void new_completion(char *prefix, GSList *compl_cat)
+// Returns the number of possible completions.
+guint new_completion(char *prefix, GSList *compl_cat)
 {
   compl *c;
   GSList *sl_cat;
@@ -69,7 +71,7 @@ void new_completion(char *prefix, GSList *compl_cat)
 
   c = g_new0(compl, 1);
   // Build the list of matches
-  for (sl_cat=compl_cat; sl_cat; sl_cat = g_slist_next(sl_cat)) {
+  for (sl_cat = compl_cat; sl_cat; sl_cat = g_slist_next(sl_cat)) {
     char *word = sl_cat->data;
     if (!strncasecmp(prefix, word, len)) {
       if (strlen(word) != len)
@@ -78,6 +80,7 @@ void new_completion(char *prefix, GSList *compl_cat)
   }
   c->next = c->list;
   InputCompl = c;
+  return g_slist_length(c->list);
 }
 
 //  done_completion();
@@ -119,7 +122,14 @@ const char *complete()
   }
   r = (char*)c->next->data;
   c->next = g_slist_next(c->next);
-  c->len_compl = strlen(r);
+  if (!utf8_mode) {
+    c->len_compl = strlen(r);
+  } else {
+    char *wc;
+    c->len_compl = 0;
+    for (wc = r; *wc; wc = next_char(wc))
+      c->len_compl += get_char_width(wc);
+  }
   return r;
 }
 
@@ -150,9 +160,7 @@ void compl_add_category_word(guint categ, const char *word)
     ;
   if (nword > word) nword--;
   if (*nword != ' ') {  // Add a space
-    nword = g_new(char, strlen(word)+2);
-    strcpy(nword, word);
-    strcat(nword, " ");
+    nword = g_strdup_printf("%s ", word);
   } else {              // word is fine
     nword = g_strdup(word);
   }
@@ -182,9 +190,7 @@ void compl_del_category_word(guint categ, const char *word)
     ;
   if (nword > word) nword--;
   if (*nword != ' ') {  // Add a space
-    nword = g_new(char, strlen(word)+2);
-    strcpy(nword, word);
-    strcat(nword, " ");
+    nword = g_strdup_printf("%s ", word);
   } else {              // word is fine
     nword = g_strdup(word);
   }

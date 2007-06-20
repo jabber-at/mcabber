@@ -62,7 +62,7 @@ void jb_setstatus(enum imstatus st, const char *recipient, const char *msg,
                   int do_not_sign);
 inline void jb_setprevstatus(void);
 void jb_send_msg(const char *fjid, const char *text, int type,
-                 const char *subject, const char *id, guint *encrypted);
+                 const char *subject, const char *id, gint *encrypted);
 void jb_send_raw(const char *str);
 void jb_send_chatstate(gpointer buddy, guint chatstate);
 void jb_keepalive(void);
@@ -76,6 +76,7 @@ int  jb_room_setattrib(const char *roomid, const char *fjid, const char *nick,
                        struct role_affil ra, const char *reason);
 void jb_iqs_display_list(void);
 void jb_request(const char *fjid, enum iqreq_type reqtype);
+GSList *jb_get_all_storage_bookmarks(void);
 void jb_set_storage_bookmark(const char *roomid, const char *name,
                              const char *nick, const char *passwd,
                              int autojoin);

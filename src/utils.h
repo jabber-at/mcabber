@@ -17,6 +17,8 @@ extern char *LocaleCharSet;
 void ut_InitDebug(int level, const char *file);
 void ut_WriteLog(unsigned int flag, const char *data);
 
+char *expand_filename(const char *fname);
+
 int checkset_perm(const char *name, unsigned int setmode);
 
 const char *ut_get_tmpdir(void);
@@ -40,6 +42,8 @@ char *ut_expand_tabs(const char *text);
 #if !defined (HAVE_STRCASESTR)
 char *strcasestr(const char *haystack, const char *needle);
 #endif
+
+int startswith(const char *str, const char *word, guint ignore_case);
 
 #endif // __UTILS_H__
 

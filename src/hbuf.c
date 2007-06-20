@@ -1,7 +1,7 @@
 /*
  * hbuf.c       -- History buffer implementation
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -175,7 +175,6 @@ void hbuf_add_line(GList **p_hbuf, const char *text, time_t timestamp,
         // Let's use an old block, and free the extra blocks if needed
         char *allocated_block = NULL;
         while (n >= maxhbufblocks) {
-          /* --- */
           int start_of_block = 1;
           for (hbuf_elt = hbuf_head; hbuf_elt; hbuf_elt = hbuf_head) {
             hbuf_b_elt = (hbuf_block*)(hbuf_elt->data);
@@ -191,7 +190,6 @@ void hbuf_add_line(GList **p_hbuf, const char *text, time_t timestamp,
             hbuf_head = *p_hbuf = g_list_delete_link(hbuf_head, hbuf_elt);
           }
           n--;
-          /* --- */
         }
         memset(allocated_block, 0, HBB_BLOCKSIZE);
         hbuf_block_elt->ptr = allocated_block;
@@ -294,7 +292,7 @@ hbb_line **hbuf_get_lines(GList *hbuf, unsigned int n)
 {
   unsigned int i;
   hbuf_block *blk;
-  guchar last_persist_prefixflags = 0;
+  guint last_persist_prefixflags = 0;
   GList *last_persist;  // last persistent flags
   hbb_line **array, **array_elt;
 
@@ -327,8 +325,9 @@ hbb_line **hbuf_get_lines(GList *hbuf, unsigned int n)
       if ((blk->flags & HBB_FLAG_PERSISTENT) && blk->prefix.flags) {
         last_persist_prefixflags = blk->prefix.flags;
       } else {
-        // Propagate highlighting flag
-        (*array_elt)->flags |= last_persist_prefixflags & HBB_PREFIX_HLIGHT;
+        // Propagate highlighting flags
+        (*array_elt)->flags |= last_persist_prefixflags &
+                               (HBB_PREFIX_HLIGHT_OUT | HBB_PREFIX_HLIGHT);
       }
 
       hbuf = g_list_next(hbuf);
@@ -393,5 +392,22 @@ GList *hbuf_jump_percent(GList *hbuf, int pc)
 
   return g_list_nth(hbuf, pc*hlen/100);
 }
+
+#ifdef DEBUG_ENABLE
+//  hbuf_get_blocks_number()
+// Returns the number of allocated hbuf_block's.
+guint hbuf_get_blocks_number(GList *hbuf)
+{
+  hbuf_block *hbuf_b_elt;
+  guint count = 0U;
+
+  for (hbuf = g_list_first(hbuf); hbuf; hbuf = g_list_next(hbuf)) {
+    hbuf_b_elt = (hbuf_block*)(hbuf->data);
+    if (hbuf_b_elt->flags & HBB_FLAG_ALLOC)
+      count++;
+  }
+  return count;
+}
+#endif
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

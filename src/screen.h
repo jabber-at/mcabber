@@ -14,6 +14,12 @@
 # include <panel.h>
 #endif
 
+#ifdef WITH_ASPELL
+void spellcheck_init(void);
+void spellcheck_deinit(void);
+//static void spellcheck(char*, char*);
+#endif
+
 #include "logprint.h"
 
 // Length of the timestamp & flag prefix in the chat buffer window
@@ -34,6 +40,7 @@
 enum colors {
   COLOR_GENERAL = 3,
   COLOR_MSGOUT,
+  COLOR_MSGHL,
   COLOR_STATUS,
   COLOR_ROSTER,
   COLOR_ROSTERSEL,
@@ -66,6 +73,8 @@ typedef struct {
     MKEY_CTRL_SHIFT_END
   } mcode;
 } keycode;
+
+void scr_init_bindings(void);
 
 void scr_Getch(keycode *kcode);
 int process_key(keycode kcode);
@@ -126,6 +135,36 @@ void scr_BufferDate(time_t t);
 void scr_RosterUnreadMessage(int);
 void scr_RosterJumpAlternate(void);
 void scr_BufferScrollUpDown(int updown, unsigned int nblines);
+
+#ifdef DEBUG_ENABLE
+void scr_BufferList(void);
+#endif
+
+void readline_transpose_chars(void);
+void readline_forward_kill_word(void);
+void readline_backward_kill_word(void);
+void readline_backward_word(void);
+void readline_forward_word(void);
+void readline_updowncase_word(int);
+void readline_capitalize_word(void);
+void readline_backward_char(void);
+void readline_forward_char(void);
+int  readline_accept_line(int down_history);
+void readline_cancel_completion(void);
+void readline_do_completion(void);
+void readline_refresh_screen(void);
+void readline_disable_chat_mode(void);
+void readline_hist_beginning_search_bwd(void);
+void readline_hist_beginning_search_fwd(void);
+void readline_hist_prev(void);
+void readline_hist_next(void);
+void readline_backward_kill_char(void);
+void readline_forward_kill_char(void);
+void readline_iline_start(void);
+void readline_iline_end(void);
+void readline_backward_kill_iline(void);
+void readline_forward_kill_iline(void);
+void readline_send_multiline(void);
 
 #endif
 

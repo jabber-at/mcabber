@@ -1,3 +1,11 @@
+mcabber (0.9.3-1) unstable; urgency=low
+
+  * New upstream release.
+  * Updated the manpage patch.
+  * Added --enable-aspell and --enable-gpgme to the call of configure.
+
+ -- Mario Iseli <admin@marioiseli.com>  Wed, 20 Jun 2007 17:27:50 +0100
+
 mcabber (0.9.1-1) unstable; urgency=low
 
   * New upstream release (Closes: #420065).

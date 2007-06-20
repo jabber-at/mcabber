@@ -1,7 +1,7 @@
 /*
  * jabglue.c    -- Jabber protocol handling
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  * Parts come from the centericq project:
  * Copyright (C) 2002-2005 by Konstantin Klyagin <konst@konst.org.ua>
  *
@@ -58,7 +58,7 @@ static void statehandler(jconn, int);
 static void packethandler(jconn, jpacket);
 static void handle_state_events(char* from, xmlnode xmldata);
 
-static void evscallback_invitation(eviqs *evp, guint evcontext);
+static int evscallback_invitation(eviqs *evp, guint evcontext);
 
 static void logger(jconn j, int io, const char *buf)
 {
@@ -323,6 +323,23 @@ inline const char *jb_getstatusmsg()
   return mystatusmsg;
 }
 
+//  insert_entity_capabilities(presence_stanza)
+// Entity Capabilities (XEP-0115)
+static void insert_entity_capabilities(xmlnode x)
+{
+  xmlnode y;
+  const char *ver = entity_version();
+
+  y = xmlnode_insert_tag(x, "c");
+  xmlnode_put_attrib(y, "xmlns", NS_CAPS);
+  xmlnode_put_attrib(y, "node", MCABBER_CAPS_NODE);
+  xmlnode_put_attrib(y, "ver", ver);
+#ifdef JEP0085
+  if (!chatstates_disabled)
+    xmlnode_put_attrib(y, "ext", "csn");
+#endif
+}
+
 static void roompresence(gpointer room, void *presencedata)
 {
   const char *bjid;
@@ -435,6 +452,7 @@ void jb_setstatus(enum imstatus st, const char *recipient, const char *msg,
   if (online) {
     const char *s_msg = (st != invisible ? msg : NULL);
     x = presnew(st, recipient, s_msg);
+    insert_entity_capabilities(x); // Entity Capabilities (XEP-0115)
 #ifdef HAVE_GPGME
     if (!do_not_sign && gpg_enabled()) {
       char *signature;
@@ -510,10 +528,11 @@ static char *new_msgid(void)
 }
 
 //  jb_send_msg(jid, test, type, subject, msgid, *encrypted)
-// When encrypted is not NULL, the function set *encrypted to TRUE if the
-// message has been PGP-encrypted.
+// When encrypted is not NULL, the function set *encrypted to 1 if the
+// message has been PGP-encrypted.  If encryption enforcement is set and
+// encryption fails, *encrypted is set to -1.
 void jb_send_msg(const char *fjid, const char *text, int type,
-                 const char *subject, const char *msgid, guint *encrypted)
+                 const char *subject, const char *msgid, gint *encrypted)
 {
   xmlnode x;
   gchar *strtype;
@@ -532,7 +551,7 @@ void jb_send_msg(const char *fjid, const char *text, int type,
   gchar *enc = NULL;
 
   if (encrypted)
-    *encrypted = FALSE;
+    *encrypted = 0;
 
   if (!online) return;
 
@@ -553,19 +572,29 @@ void jb_send_msg(const char *fjid, const char *text, int type,
 
 #ifdef HAVE_GPGME
   if (type == ROSTER_TYPE_USER && sl_buddy && gpg_enabled()) {
-    if (!settings_pgp_getdisabled(barejid)) { // disabled for this contact?
+    if (!settings_pgp_getdisabled(barejid)) { // not disabled for this contact?
+      guint force;
       struct pgp_data *res_pgpdata;
+      force = settings_pgp_getforce(barejid);
       res_pgpdata = buddy_resource_pgp(sl_buddy->data, rname);
-      if (res_pgpdata && res_pgpdata->sign_keyid) {
-        /* Remote client has PGP support (we have a signature).
+      if (force || (res_pgpdata && res_pgpdata->sign_keyid)) {
+        /* Remote client has PGP support (we have a signature)
+         * OR encryption is enforced (force = TRUE).
          * If the contact has a specific KeyId, we'll use it;
          * if not, we'll use the key used for the signature.
          * Both keys should match, in theory (cf. XEP-0027). */
         const char *key;
         key = settings_pgp_getkeyid(barejid);
-        if (!key)
+        if (!key && res_pgpdata)
           key = res_pgpdata->sign_keyid;
-        enc = gpg_encrypt(text, key);
+        if (key)
+          enc = gpg_encrypt(text, key);
+        if (!enc && force) {
+          if (encrypted)
+            *encrypted = -1;
+          g_free(barejid);
+          return;
+        }
       }
     }
   }
@@ -587,7 +616,7 @@ void jb_send_msg(const char *fjid, const char *text, int type,
     xmlnode_put_attrib(y, "xmlns", NS_ENCRYPTED);
     xmlnode_insert_cdata(y, enc, (unsigned) -1);
     if (encrypted)
-      *encrypted = TRUE;
+      *encrypted = 1;
     g_free(enc);
   }
 
@@ -1269,6 +1298,35 @@ void jb_room_invite(const char *room, const char *fjid, const char *reason)
   jb_reset_keepalive();
 }
 
+//  jb_get_all_storage_bookmarks()
+// Return a GSList with all storage bookmarks.
+// The caller should g_free the list (not the MUC jids).
+GSList *jb_get_all_storage_bookmarks(void)
+{
+  xmlnode x;
+  GSList *sl_bookmarks = NULL;
+
+  // If we have no bookmarks, probably the server doesn't support them.
+  if (!bookmarks)
+    return NULL;
+
+  // Walk through the storage bookmark tags
+  x = xmlnode_get_firstchild(bookmarks);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    const char *fjid;
+    const char *p;
+    p = xmlnode_get_name(x);
+    // If the node is a conference item, let's add the note to our list.
+    if (p && !strcmp(p, "conference")) {
+      fjid = xmlnode_get_attrib(x, "jid");
+      if (!fjid)
+        continue;
+      sl_bookmarks = g_slist_append(sl_bookmarks, (char*)fjid);
+    }
+  }
+  return sl_bookmarks;
+}
+
 //  jb_set_storage_bookmark(roomid, name, nick, passwd, autojoin)
 // Update the private storage bookmarks: add a conference room.
 // If name is nil, we remove the bookmark.
@@ -1283,7 +1341,7 @@ void jb_set_storage_bookmark(const char *roomid, const char *name,
 
   // If we have no bookmarks, probably the server doesn't support them.
   if (!bookmarks) {
-    scr_LogPrint(LPRINT_LOGNORM,
+    scr_LogPrint(LPRINT_NORMAL,
                  "Sorry, your server doesn't seem to support private storage.");
     return;
   }
@@ -1304,7 +1362,8 @@ void jb_set_storage_bookmark(const char *roomid, const char *name,
         // create a new one.
         xmlnode_hide(x);
         changed = TRUE;
-        break;
+        if (!name)
+          scr_LogPrint(LPRINT_LOGNORM, "Deleting bookmark...");
       }
     }
   }
@@ -1320,6 +1379,7 @@ void jb_set_storage_bookmark(const char *roomid, const char *name,
     if (passwd)
       xmlnode_insert_cdata(xmlnode_insert_tag(x, "password"), passwd, -1);
     changed = TRUE;
+    scr_LogPrint(LPRINT_LOGNORM, "Updating bookmarks...");
   }
 
   if (!changed)
@@ -1393,7 +1453,7 @@ struct annotation *jb_get_storage_rosternotes(const char *barejid, int silent)
   // If we have no rosternotes, probably the server doesn't support them.
   if (!rosternotes) {
     if (!silent)
-      scr_LogPrint(LPRINT_LOGNORM, "Sorry, "
+      scr_LogPrint(LPRINT_NORMAL, "Sorry, "
                    "your server doesn't seem to support private storage.");
     return NULL;
   }
@@ -1429,7 +1489,7 @@ void jb_set_storage_rosternotes(const char *barejid, const char *note)
 
   // If we have no rosternotes, probably the server doesn't support them.
   if (!rosternotes) {
-    scr_LogPrint(LPRINT_LOGNORM,
+    scr_LogPrint(LPRINT_NORMAL,
                  "Sorry, your server doesn't seem to support private storage.");
     return;
   }
@@ -1482,6 +1542,7 @@ void jb_set_storage_rosternotes(const char *barejid, const char *note)
                  "Warning: you're not connected to the server.");
 }
 
+#ifdef HAVE_GPGME
 //  keys_mismatch(key, expectedkey)
 // Return TRUE if both keys are non-null and "expectedkey" doesn't match
 // the end of "key".
@@ -1509,6 +1570,7 @@ static bool keys_mismatch(const char *key, const char *expectedkey)
 
   return strcasecmp(key, expectedkey);
 }
+#endif
 
 //  check_signature(barejid, resourcename, xmldata, text)
 // Verify the signature (in xmldata) of "text" for the contact
@@ -1704,6 +1766,8 @@ void display_server_error(xmlnode x)
   char *s;
   const char *p;
 
+  if (!x) return;
+
   /* RFC3920:
    *    The <error/> element:
    *       o  MUST contain a child element corresponding to one of the defined
@@ -1762,6 +1826,8 @@ static void statehandler(jconn conn, int state)
         bookmarks = NULL;
         // Free roster
         roster_free();
+        xmlnode_free(rosternotes);
+        rosternotes = NULL;
         // Update display
         update_roster = TRUE;
         scr_UpdateBuddyWindow();
@@ -1917,7 +1983,8 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
     mbuf = g_strdup_printf("%s is now known as %s", rname, mbnick);
     scr_WriteIncomingMessage(roomjid, mbuf, usttime,
                              HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
-    if (log_muc_conf) hlog_write_message(roomjid, 0, FALSE, mbuf);
+    if (log_muc_conf)
+      hlog_write_message(roomjid, 0, FALSE, mbuf);
     g_free(mbuf);
     buddy_resource_setname(room_elt->data, rname, mbnick);
     // Maybe it's _our_ nickname...
@@ -1926,7 +1993,7 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
   }
 
   // Check for departure/arrival
-  if (!mbnick && mbrole == role_none) {
+  if (!mbnick && ust == offline) {
     enum { leave=0, kick, ban } how = leave;
     bool we_left = FALSE;
 
@@ -1997,12 +2064,13 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
     }
 
     msgflags = HBB_PREFIX_INFO;
-    if (!we_left)
+    if (!we_left && settings_opt_get_int("muc_flag_joins") != 2)
       msgflags |= HBB_PREFIX_NOFLAG;
 
     scr_WriteIncomingMessage(roomjid, mbuf, usttime, msgflags);
 
-    if (log_muc_conf) hlog_write_message(roomjid, 0, FALSE, mbuf);
+    if (log_muc_conf)
+      hlog_write_message(roomjid, 0, FALSE, mbuf);
 
     if (we_left) {
       scr_LogPrint(LPRINT_LOGNORM, "%s", mbuf);
@@ -2033,7 +2101,8 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
         //       so we use 0 here.
         scr_WriteIncomingMessage(roomjid, mbuf, 0,
                                  HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
-        if (log_muc_conf) hlog_write_message(roomjid, 0, FALSE, mbuf);
+        if (log_muc_conf)
+          hlog_write_message(roomjid, 0, FALSE, mbuf);
         g_free(mbuf);
         mbuf = g_strdup_printf("%s has joined", rname);
         new_member = TRUE;
@@ -2047,9 +2116,12 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
     }
 
     if (mbuf) {
-      scr_WriteIncomingMessage(roomjid, mbuf, usttime,
-                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
-      if (log_muc_conf) hlog_write_message(roomjid, 0, FALSE, mbuf);
+      msgflags = HBB_PREFIX_INFO;
+      if (!settings_opt_get_int("muc_flag_joins"))
+        msgflags |= HBB_PREFIX_NOFLAG;
+      scr_WriteIncomingMessage(roomjid, mbuf, usttime, msgflags);
+      if (log_muc_conf)
+        hlog_write_message(roomjid, 0, FALSE, mbuf);
       g_free(mbuf);
     }
   }
@@ -2092,8 +2164,8 @@ static void handle_packet_presence(jconn conn, char *type, char *from,
   if (type && !strcmp(type, TMSG_ERROR)) {
     xmlnode x;
     scr_LogPrint(LPRINT_LOGNORM, "Error presence packet from <%s>", r);
-    if ((x = xmlnode_get_tag(xmldata, TMSG_ERROR)) != NULL)
-      display_server_error(x);
+    x = xmlnode_get_tag(xmldata, TMSG_ERROR);
+    display_server_error(x);
 
     // Let's check it isn't a nickname conflict.
     // XXX Note: We should handle the <conflict/> string condition.
@@ -2159,6 +2231,8 @@ static void got_invite(char* from, char *to, char* reason, char* passwd)
   eviqs *evn;
   event_muc_invitation *invitation;
   GString *sbuf;
+  char *barejid;
+  GSList *room_elt;
 
   sbuf = g_string_new("");
   if (reason) {
@@ -2169,7 +2243,9 @@ static void got_invite(char* from, char *to, char* reason, char* passwd)
     g_string_printf(sbuf, "Received an invitation to <%s>, from <%s>",
                     to, from);
   }
-  scr_WriteIncomingMessage(from, sbuf->str, 0, HBB_PREFIX_INFO);
+
+  barejid = jidtodisp(from);
+  scr_WriteIncomingMessage(barejid, sbuf->str, 0, HBB_PREFIX_INFO);
   scr_LogPrint(LPRINT_LOGNORM, "%s", sbuf->str);
 
   evn = evs_new(EVS_TYPE_INVITATION, EVS_MAX_TIMEOUT);
@@ -2186,9 +2262,16 @@ static void got_invite(char* from, char *to, char* reason, char* passwd)
   } else {
     g_string_printf(sbuf, "Unable to create a new event!");
   }
-  scr_WriteIncomingMessage(from, sbuf->str, 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(barejid, sbuf->str, 0, HBB_PREFIX_INFO);
   scr_LogPrint(LPRINT_LOGNORM, "%s", sbuf->str);
   g_string_free(sbuf, TRUE);
+
+  // Make sure the barejid is a room in the roster
+  room_elt = roster_find(barejid, jidsearch, 0);
+  if (room_elt)
+    buddy_settype(room_elt->data, ROSTER_TYPE_ROOM);
+
+  g_free(barejid);
 }
 
 // Specific MUC message handling (for example invitation processing)
@@ -2281,8 +2364,8 @@ static void handle_packet_message(jconn conn, char *type, char *from,
   timestamp = xml_get_timestamp(xmldata);
 
   if (type && !strcmp(type, TMSG_ERROR)) {
-    if ((x = xmlnode_get_tag(xmldata, TMSG_ERROR)) != NULL)
-      display_server_error(x);
+    x = xmlnode_get_tag(xmldata, TMSG_ERROR);
+    display_server_error(x);
 #if defined JEP0022 || defined JEP0085
     // If the JEP85/22 support is probed, set it back to unknown so that
     // we probe it again.
@@ -2417,7 +2500,7 @@ static void handle_state_events(char *from, xmlnode xmldata)
 #endif
 }
 
-static void evscallback_subscription(eviqs *evp, guint evcontext)
+static int evscallback_subscription(eviqs *evp, guint evcontext)
 {
   char *barejid;
   char *buf;
@@ -2425,20 +2508,20 @@ static void evscallback_subscription(eviqs *evp, guint evcontext)
   if (evcontext == EVS_CONTEXT_TIMEOUT) {
     scr_LogPrint(LPRINT_LOGNORM, "Event %s timed out, cancelled.",
                  evp->id);
-    return;
+    return 0;
   }
   if (evcontext == EVS_CONTEXT_CANCEL) {
     scr_LogPrint(LPRINT_LOGNORM, "Event %s cancelled.", evp->id);
-    return;
+    return 0;
   }
   if (!(evcontext & EVS_CONTEXT_USER))
-    return;
+    return 0;
 
   // Sanity check
   if (!evp->data) {
     // Shouldn't happen, data should be set to the barejid.
     scr_LogPrint(LPRINT_LOGNORM, "Error in evs callback.");
-    return;
+    return 0;
   }
 
   // Ok, let's work now.
@@ -2464,6 +2547,7 @@ static void evscallback_subscription(eviqs *evp, guint evcontext)
   scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO);
   scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
   g_free(buf);
+  return 0;
 }
 
 static void decline_invitation(event_muc_invitation *invitation, char *reason)
@@ -2492,7 +2576,7 @@ static void decline_invitation(event_muc_invitation *invitation, char *reason)
   jb_reset_keepalive();
 }
 
-static void evscallback_invitation(eviqs *evp, guint evcontext)
+static int evscallback_invitation(eviqs *evp, guint evcontext)
 {
   event_muc_invitation *invitation = evp->data;
 
@@ -2500,7 +2584,7 @@ static void evscallback_invitation(eviqs *evp, guint evcontext)
   if (!invitation) {
     // Shouldn't happen.
     scr_LogPrint(LPRINT_LOGNORM, "Error in evs callback.");
-    return;
+    return 0;
   }
 
   if (evcontext == EVS_CONTEXT_TIMEOUT) {
@@ -2532,6 +2616,7 @@ evscallback_invitation_free:
   g_free(invitation->reason);
   g_free(invitation);
   evp->data = NULL;
+  return 0;
 }
 
 static void handle_packet_s10n(jconn conn, char *type, char *from,
