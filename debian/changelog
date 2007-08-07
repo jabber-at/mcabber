@@ -1,3 +1,9 @@
+mcabber (0.9.3-1~bpo.1) etch-backports; urgency=low
+
+  * Backport to etch (simple recompile).
+
+ -- Mario Iseli <mario@debian.org>  Tue, 07 Aug 2007 15:37:48 +0200
+
 mcabber (0.9.3-1) unstable; urgency=low
 
   * New upstream release.
