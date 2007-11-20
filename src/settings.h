@@ -14,6 +14,9 @@
 #define SETTINGS_TYPE_OPTION    1
 #define SETTINGS_TYPE_ALIAS     2
 #define SETTINGS_TYPE_BINDING   3
+#ifdef HAVE_LIBOTR
+#define SETTINGS_TYPE_OTR       4
+#endif
 
 #define COMMAND_CHAR    '/'
 #define COMMAND_CHARSTR "/"
@@ -41,6 +44,11 @@ void    settings_pgp_setforce(const char *bjid, guint value);
 guint   settings_pgp_getforce(const char *bjid);
 void    settings_pgp_setkeyid(const char *bjid, const char *keyid);
 const char *settings_pgp_getkeyid(const char *bjid);
+
+#ifdef HAVE_LIBOTR
+guint   settings_otr_getpolicy(const char *bjid);
+void    settings_otr_setpolicy(const char *bjid, guint value);
+#endif
 
 guint get_max_history_blocks(void);
 

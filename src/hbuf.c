@@ -38,6 +38,7 @@ typedef struct {
   // (for ex. when HBB_FLAG_PERSISTENT is set).
   struct { // hbuf_line_info
     time_t timestamp;
+    unsigned mucnicklen;
     guint  flags;
   } prefix;
 } hbuf_block;
@@ -117,21 +118,31 @@ static inline void do_wrap(GList **p_hbuf, GList *first_hbuf_elt,
 //         should be expanded before.
 // Note 2: width does not include the ending \0.
 void hbuf_add_line(GList **p_hbuf, const char *text, time_t timestamp,
-        guint prefix_flags, guint width, guint maxhbufblocks)
+        guint prefix_flags, guint width, guint maxhbufblocks,
+        unsigned mucnicklen)
 {
   GList *curr_elt;
   char *line;
+  guint hbb_blocksize, textlen;
   hbuf_block *hbuf_block_elt;
 
   if (!text) return;
 
+  textlen = strlen(text);
+  hbb_blocksize = MAX(textlen+1, HBB_BLOCKSIZE);
+
   hbuf_block_elt = g_new0(hbuf_block, 1);
   hbuf_block_elt->prefix.timestamp  = timestamp;
   hbuf_block_elt->prefix.flags      = prefix_flags;
+  hbuf_block_elt->prefix.mucnicklen = mucnicklen;
   if (!*p_hbuf) {
-    hbuf_block_elt->ptr  = g_new(char, HBB_BLOCKSIZE);
+    hbuf_block_elt->ptr  = g_new(char, hbb_blocksize);
+    if (!hbuf_block_elt->ptr) {
+      g_free(hbuf_block_elt);
+      return;
+    }
     hbuf_block_elt->flags  = HBB_FLAG_ALLOC | HBB_FLAG_PERSISTENT;
-    hbuf_block_elt->ptr_end_alloc = hbuf_block_elt->ptr + HBB_BLOCKSIZE;
+    hbuf_block_elt->ptr_end_alloc = hbuf_block_elt->ptr + hbb_blocksize;
   } else {
     hbuf_block *hbuf_b_prev;
     // Set p_hbuf to the end of the list, to speed up history loading
@@ -144,16 +155,15 @@ void hbuf_add_line(GList **p_hbuf, const char *text, time_t timestamp,
   }
   *p_hbuf = g_list_append(*p_hbuf, hbuf_block_elt);
 
-  if (strlen(text) >= HBB_BLOCKSIZE) {
-    // Too long
-    text = "[ERR:LINE_TOO_LONG]";
-    hbuf_block_elt->prefix.flags |= HBB_PREFIX_INFO;
-  }
-  if (hbuf_block_elt->ptr + strlen(text) >= hbuf_block_elt->ptr_end_alloc) {
+  if (hbuf_block_elt->ptr + textlen >= hbuf_block_elt->ptr_end_alloc) {
     // Too long for the current allocated bloc, we need another one
-    if (!maxhbufblocks) {
+    if (!maxhbufblocks || textlen >= HBB_BLOCKSIZE) {
       // No limit, let's allocate a new block
-      hbuf_block_elt->ptr  = g_new0(char, HBB_BLOCKSIZE);
+      // If the message text is big, we won't bother to reuse an old block
+      // as well (it could be too small and cause a segfault).
+      hbuf_block_elt->ptr  = g_new0(char, hbb_blocksize);
+      hbuf_block_elt->ptr_end_alloc = hbuf_block_elt->ptr + hbb_blocksize;
+      // XXX We should check the return value.
     } else {
       GList *hbuf_head, *hbuf_elt;
       hbuf_block *hbuf_b_elt;
@@ -170,10 +180,12 @@ void hbuf_add_line(GList **p_hbuf, const char *text, time_t timestamp,
       }
       // If we can't allocate a new area, reuse the previous block(s)
       if (n < maxhbufblocks) {
-        hbuf_block_elt->ptr  = g_new0(char, HBB_BLOCKSIZE);
+        hbuf_block_elt->ptr  = g_new0(char, hbb_blocksize);
+        hbuf_block_elt->ptr_end_alloc = hbuf_block_elt->ptr + hbb_blocksize;
       } else {
         // Let's use an old block, and free the extra blocks if needed
         char *allocated_block = NULL;
+        char *end_of_allocated_block = NULL;
         while (n >= maxhbufblocks) {
           int start_of_block = 1;
           for (hbuf_elt = hbuf_head; hbuf_elt; hbuf_elt = hbuf_head) {
@@ -181,28 +193,30 @@ void hbuf_add_line(GList **p_hbuf, const char *text, time_t timestamp,
             if (hbuf_b_elt->flags & HBB_FLAG_ALLOC) {
               if (start_of_block-- == 0)
                 break;
-              if (n == maxhbufblocks)
+              if (n == maxhbufblocks) {
                 allocated_block = hbuf_b_elt->ptr;
-              else
+                end_of_allocated_block = hbuf_b_elt->ptr_end_alloc;
+              } else {
                 g_free(hbuf_b_elt->ptr);
+              }
             }
             g_free(hbuf_b_elt);
             hbuf_head = *p_hbuf = g_list_delete_link(hbuf_head, hbuf_elt);
           }
           n--;
         }
-        memset(allocated_block, 0, HBB_BLOCKSIZE);
+        memset(allocated_block, 0, end_of_allocated_block-allocated_block);
         hbuf_block_elt->ptr = allocated_block;
+        hbuf_block_elt->ptr_end_alloc = end_of_allocated_block;
       }
     }
     hbuf_block_elt->flags  = HBB_FLAG_ALLOC | HBB_FLAG_PERSISTENT;
-    hbuf_block_elt->ptr_end_alloc = hbuf_block_elt->ptr + HBB_BLOCKSIZE;
   }
 
   line = hbuf_block_elt->ptr;
   // Ok, now we can copy the text..
   strcpy(line, text);
-  hbuf_block_elt->ptr_end = line + strlen(line) + 1;
+  hbuf_block_elt->ptr_end = line + textlen + 1;
 
   curr_elt = g_list_last(*p_hbuf);
 
@@ -318,16 +332,21 @@ hbb_line **hbuf_get_lines(GList *hbuf, unsigned int n)
       blk = (hbuf_block*)(hbuf->data);
       maxlen = blk->ptr_end - blk->ptr;
       *array_elt = (hbb_line*)g_new(hbb_line, 1);
-      (*array_elt)->timestamp = blk->prefix.timestamp;
-      (*array_elt)->flags     = blk->prefix.flags;
-      (*array_elt)->text      = g_strndup(blk->ptr, maxlen);
+      (*array_elt)->timestamp  = blk->prefix.timestamp;
+      (*array_elt)->flags      = blk->prefix.flags;
+      (*array_elt)->mucnicklen = blk->prefix.mucnicklen;
+      (*array_elt)->text       = g_strndup(blk->ptr, maxlen);
 
       if ((blk->flags & HBB_FLAG_PERSISTENT) && blk->prefix.flags) {
         last_persist_prefixflags = blk->prefix.flags;
       } else {
         // Propagate highlighting flags
         (*array_elt)->flags |= last_persist_prefixflags &
-                               (HBB_PREFIX_HLIGHT_OUT | HBB_PREFIX_HLIGHT);
+                               (HBB_PREFIX_HLIGHT_OUT | HBB_PREFIX_HLIGHT |
+                                HBB_PREFIX_INFO | HBB_PREFIX_IN);
+        //Continuation of a message - omit the prefix
+        (*array_elt)->flags |= HBB_PREFIX_CONT;
+        (*array_elt)->mucnicklen = 0;//The nick is in the first one
       }
 
       hbuf = g_list_next(hbuf);

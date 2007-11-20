@@ -1,2 +1,2 @@
-?package(mcabber):needs="text" section="Apps/Net"\
+?package(mcabber):needs="text" section="Applications/Network/Communication"\
   title="mcabber" command="/usr/bin/mcabber"

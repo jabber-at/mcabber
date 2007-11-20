@@ -66,13 +66,12 @@ char *hlog_get_log_jid(const char *bjid)
   struct stat bufstat;
   char *path;
   char *log_jid = NULL;
-  
+
   path = user_histo_file(bjid);
-  do {  
-    /*scr_LogPrint(LPRINT_NORMAL, "path=%s", path);*/
-    if(lstat(path, &bufstat) != 0)
+  do {
+    if (lstat(path, &bufstat) != 0)
       break;
-    if(S_ISLNK(bufstat.st_mode)) {
+    if (S_ISLNK(bufstat.st_mode)) {
       g_free(log_jid);
       log_jid = g_new(char, bufstat.st_size+1);
       readlink(path, log_jid, bufstat.st_size);
@@ -123,14 +122,15 @@ static void write_histo_line(const char *bjid,
   for (p=data ; *p ; p++)
     if (*p == '\n') len++;
 
-  /* Line format: "TI yyyymmddThh:mm:ssZ [data]"
-   * (Old format: "TI DDDDDDDDDD LLL [data])"
+  /* Line format: "TI yyyymmddThh:mm:ssZ LLL [data]"
    * T=Type, I=Info, yyyymmddThh:mm:ssZ=date, LLL=0-padded-len
    *
    * Types:
-   * - M message    Info: S (send) R (receive)
-   * - S status     Info: [_oifdna]
-   * We don't check them, we'll trust the caller.
+   * - M message    Info: S (send) R (receive) I (info)
+   * - S status     Info: [_ofdnai]
+   * We don't check them, we trust the caller.
+   * (Info messages are not sent nor received, they're generated
+   * locally by mcabber.)
    */
 
   fp = fopen(filename, "a");
@@ -193,8 +193,10 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
   // If file is large (> 3MB here), display a message to inform the user
   // (it can take a while...)
   if (!fstat(fileno(fp), &bufstat)) {
-    if (bufstat.st_size > 3145728)
-      scr_LogPrint(LPRINT_LOGNORM, "Reading <%s> history file...", bjid);
+    if (bufstat.st_size > 3145728) {
+      scr_LogPrint(LPRINT_NORMAL, "Reading <%s> history file...", bjid);
+      scr_DoUpdate();
+    }
   }
 
   max_num_of_blocks = get_max_history_blocks();
@@ -240,8 +242,8 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
     len = (guint) atoi(&data[22]);
 
     // Some checks
-    if (((type == 'M') && (info != 'S' && info != 'R')) ||
-        ((type == 'I') && (!strchr("OAIFDN", info)))) {
+    if (((type == 'M') && (info != 'S' && info != 'R' && info != 'I')) ||
+        ((type == 'S') && (!strchr("_OFDNAI", info)))) {
       if (!err) {
         scr_LogPrint(LPRINT_LOGNORM, "Error in history file format (%s), l.%u",
                      bjid, ln);
@@ -279,15 +281,18 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
 
     if (type == 'M') {
       char *converted;
-      if (info == 'S')
+      if (info == 'S') {
         prefix_flags = HBB_PREFIX_OUT | HBB_PREFIX_HLIGHT_OUT;
-      else
+      } else {
         prefix_flags = HBB_PREFIX_IN;
+        if (info == 'I')
+          prefix_flags = HBB_PREFIX_INFO;
+      }
       converted = from_utf8(&data[dataoffset+1]);
       if (converted) {
         xtext = ut_expand_tabs(converted); // Expand tabs
         hbuf_add_line(p_buddyhbuf, xtext, timestamp, prefix_flags, width,
-                      max_num_of_blocks);
+                      max_num_of_blocks, 0);
         if (xtext != converted)
           g_free(xtext);
         g_free(converted);
@@ -347,7 +352,18 @@ void hlog_enable(guint enable, const char *root_dir, guint loadfiles)
 inline void hlog_write_message(const char *bjid, time_t timestamp, int sent,
         const char *msg)
 {
-  write_histo_line(bjid, timestamp, 'M', ((sent) ? 'S' : 'R'), msg);
+  guchar info;
+  /* sent=1   message sent by mcabber
+   * sent=0   message received by mcabber
+   * sent=-1  local info message
+   */
+  if (sent == 1)
+    info = 'S';
+  else if (sent == 0)
+    info = 'R';
+  else
+    info = 'I';
+  write_histo_line(bjid, timestamp, 'M', info, msg);
 }
 
 inline void hlog_write_status(const char *bjid, time_t timestamp,

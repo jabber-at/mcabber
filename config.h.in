@@ -53,6 +53,9 @@
 /* Define to 1 if you have the <getopt.h> header file. */
 #undef HAVE_GETOPT_H
 
+/* GNU TLS */
+#undef HAVE_GNUTLS
+
 /* Define if you use GPGME to support OpenPGP */
 #undef HAVE_GPGME
 
@@ -67,6 +70,9 @@
 
 /* Define to 1 if you have the `crypto' library (-lcrypto). */
 #undef HAVE_LIBCRYPTO
+
+/* Define to 1 if you have the `otr' library (-lotr). */
+#undef HAVE_LIBOTR
 
 /* Define to 1 if you have the `panel' library (-lpanel). */
 #undef HAVE_LIBPANEL

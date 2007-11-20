@@ -2,8 +2,8 @@
  /ROSTER bottom|top|up|down|group_prev|group_next
  /ROSTER alternate|unread_first|unread_next
  /ROSTER search bud
- /ROSTER hide_offline|show_offline|toggle_offline
- /ROSTER item_lock|item_unlock
+ /ROSTER display|hide_offline|show_offline|toggle_offline
+ /ROSTER item_lock|item_unlock|item_toggle_lock
  /ROSTER hide|show|toggle
  /ROSTER note [-|text]
 
@@ -30,6 +30,11 @@
  Переместиться в следующему непрочитанному сообшению
 /roster search bud
  Найти пользователя чье имя или jid содержить значение "bud" (только в отображаемом списке контактов)
+/roster display [mask]
+ Просмотреть или обновить список контактов.
+ Маска должна содержать сокращенное значение статуса ([o]nline, [f]ree_for_chat, [d]o_not_disturb. [n]ot_available, [a]way, [_]offline).
+ Пример: "ofdna" отобразит только пользователей, подключенных к jabber.
+ "*" может быть использован для того чтобы отобразить все контакты.
 /roster hide_offline
  Скрыть недоступных пользователей
 /roster show_offline
@@ -40,6 +45,7 @@
  Закрепить пользователя из списка контактов и всегда отображать независимо от его статуса
 /roster item_unlock [jid]
  Отменить функцию /roster item_lock
+/roster item_toggle_lock [jid]
 /roster hide
  Скрыть список контактов (окно чата на весь экран)
 /roster show

@@ -528,6 +528,412 @@ AC_DEFUN([AM_PATH_GPGME_GLIB],
 ])
 
 
+dnl Autoconf macros for libgcrypt
+dnl       Copyright (C) 2002, 2004 Free Software Foundation, Inc.
+dnl
+dnl This file is free software; as a special exception the author gives
+dnl unlimited permission to copy and/or distribute it, with or without
+dnl modifications, as long as this notice is preserved.
+dnl
+dnl This file is distributed in the hope that it will be useful, but
+dnl WITHOUT ANY WARRANTY, to the extent permitted by law; without even the
+dnl implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+
+dnl AM_PATH_LIBGCRYPT([MINIMUM-VERSION,
+dnl                   [ACTION-IF-FOUND [, ACTION-IF-NOT-FOUND ]]])
+dnl Test for libgcrypt and define LIBGCRYPT_CFLAGS and LIBGCRYPT_LIBS.
+dnl MINIMUN-VERSION is a string with the version number optionalliy prefixed
+dnl with the API version to also check the API compatibility. Example:
+dnl a MINIMUN-VERSION of 1:1.2.5 won't pass the test unless the installed 
+dnl version of libgcrypt is at least 1.2.5 *and* the API number is 1.  Using
+dnl this features allows to prevent build against newer versions of libgcrypt
+dnl with a changed API.
+dnl
+AC_DEFUN([AM_PATH_LIBGCRYPT],
+[ AC_ARG_WITH(libgcrypt-prefix,
+            AC_HELP_STRING([--with-libgcrypt-prefix=PFX],
+                           [prefix where LIBGCRYPT is installed (optional)]),
+     libgcrypt_config_prefix="$withval", libgcrypt_config_prefix="")
+  if test x$libgcrypt_config_prefix != x ; then
+     if test x${LIBGCRYPT_CONFIG+set} != xset ; then
+        LIBGCRYPT_CONFIG=$libgcrypt_config_prefix/bin/libgcrypt-config
+     fi
+  fi
+
+  AC_PATH_PROG(LIBGCRYPT_CONFIG, libgcrypt-config, no)
+  tmp=ifelse([$1], ,1:1.2.0,$1)
+  if echo "$tmp" | grep ':' >/dev/null 2>/dev/null ; then
+     req_libgcrypt_api=`echo "$tmp"     | sed 's/\(.*\):\(.*\)/\1/'`
+     min_libgcrypt_version=`echo "$tmp" | sed 's/\(.*\):\(.*\)/\2/'`
+  else
+     req_libgcrypt_api=0
+     min_libgcrypt_version="$tmp"
+  fi
+
+  AC_MSG_CHECKING(for LIBGCRYPT - version >= $min_libgcrypt_version)
+  ok=no
+  if test "$LIBGCRYPT_CONFIG" != "no" ; then
+    req_major=`echo $min_libgcrypt_version | \
+               sed 's/\([[0-9]]*\)\.\([[0-9]]*\)\.\([[0-9]]*\)/\1/'`
+    req_minor=`echo $min_libgcrypt_version | \
+               sed 's/\([[0-9]]*\)\.\([[0-9]]*\)\.\([[0-9]]*\)/\2/'`
+    req_micro=`echo $min_libgcrypt_version | \
+               sed 's/\([[0-9]]*\)\.\([[0-9]]*\)\.\([[0-9]]*\)/\3/'`
+    libgcrypt_config_version=`$LIBGCRYPT_CONFIG --version`
+    major=`echo $libgcrypt_config_version | \
+               sed 's/\([[0-9]]*\)\.\([[0-9]]*\)\.\([[0-9]]*\).*/\1/'`
+    minor=`echo $libgcrypt_config_version | \
+               sed 's/\([[0-9]]*\)\.\([[0-9]]*\)\.\([[0-9]]*\).*/\2/'`
+    micro=`echo $libgcrypt_config_version | \
+               sed 's/\([[0-9]]*\)\.\([[0-9]]*\)\.\([[0-9]]*\).*/\3/'`
+    if test "$major" -gt "$req_major"; then
+        ok=yes
+    else 
+        if test "$major" -eq "$req_major"; then
+            if test "$minor" -gt "$req_minor"; then
+               ok=yes
+            else
+               if test "$minor" -eq "$req_minor"; then
+                   if test "$micro" -ge "$req_micro"; then
+                     ok=yes
+                   fi
+               fi
+            fi
+        fi
+    fi
+  fi
+  if test $ok = yes; then
+    AC_MSG_RESULT(yes)
+  else
+    AC_MSG_RESULT(no)
+  fi
+  if test $ok = yes; then
+     # If we have a recent libgcrypt, we should also check that the
+     # API is compatible
+     if test "$req_libgcrypt_api" -gt 0 ; then
+        tmp=`$LIBGCRYPT_CONFIG --api-version 2>/dev/null || echo 0`
+        if test "$tmp" -gt 0 ; then
+           AC_MSG_CHECKING([LIBGCRYPT API version])
+           if test "$req_libgcrypt_api" -eq "$tmp" ; then
+             AC_MSG_RESULT(okay)
+           else
+             ok=no
+             AC_MSG_RESULT([does not match (want=$req_libgcrypt_api got=$tmp)])
+           fi
+        fi
+     fi
+  fi
+  if test $ok = yes; then
+    LIBGCRYPT_CFLAGS=`$LIBGCRYPT_CONFIG --cflags`
+    LIBGCRYPT_LIBS=`$LIBGCRYPT_CONFIG --libs`
+    ifelse([$2], , :, [$2])
+  else
+    LIBGCRYPT_CFLAGS=""
+    LIBGCRYPT_LIBS=""
+    ifelse([$3], , :, [$3])
+  fi
+  AC_SUBST(LIBGCRYPT_CFLAGS)
+  AC_SUBST(LIBGCRYPT_LIBS)
+])
+
+dnl Autoconf macros for libgnutls-extra
+dnl $id$
+
+# Modified for LIBGNUTLS_EXTRA -- nmav
+# Configure paths for LIBGCRYPT
+# Shamelessly stolen from the one of XDELTA by Owen Taylor
+# Werner Koch   99-12-09
+
+dnl AM_PATH_LIBGNUTLS_EXTRA([MINIMUM-VERSION, [ACTION-IF-FOUND [, ACTION-IF-NOT-FOUND ]]])
+dnl Test for libgnutls-extra, and define LIBGNUTLS_EXTRA_CFLAGS and LIBGNUTLS_EXTRA_LIBS
+dnl
+AC_DEFUN([AM_PATH_LIBGNUTLS_EXTRA],
+[dnl
+dnl Get the cflags and libraries from the libgnutls-extra-config script
+dnl
+AC_ARG_WITH(libgnutls-extra-prefix,
+          [  --with-libgnutls-extra-prefix=PFX   Prefix where libgnutls-extra is installed (optional)],
+          libgnutls_extra_config_prefix="$withval", libgnutls_extra_config_prefix="")
+
+  if test x$libgnutls_extra_config_prefix != x ; then
+     if test x${LIBGNUTLS_EXTRA_CONFIG+set} != xset ; then
+        LIBGNUTLS_EXTRA_CONFIG=$libgnutls_extra_config_prefix/bin/libgnutls-extra-config
+     fi
+  fi
+
+  AC_PATH_PROG(LIBGNUTLS_EXTRA_CONFIG, libgnutls-extra-config, no)
+  min_libgnutls_version=ifelse([$1], ,0.1.0,$1)
+  AC_MSG_CHECKING(for libgnutls - version >= $min_libgnutls_version)
+  no_libgnutls=""
+  if test "$LIBGNUTLS_EXTRA_CONFIG" = "no" ; then
+    no_libgnutls=yes
+  else
+    LIBGNUTLS_EXTRA_CFLAGS=`$LIBGNUTLS_EXTRA_CONFIG $libgnutls_extra_config_args --cflags`
+    LIBGNUTLS_EXTRA_LIBS=`$LIBGNUTLS_EXTRA_CONFIG $libgnutls_extra_config_args --libs`
+    libgnutls_extra_config_version=`$LIBGNUTLS_EXTRA_CONFIG $libgnutls_extra_config_args --version`
+
+
+      ac_save_CFLAGS="$CFLAGS"
+      ac_save_LIBS="$LIBS"
+      CFLAGS="$CFLAGS $LIBGNUTLS_EXTRA_CFLAGS"
+      LIBS="$LIBS $LIBGNUTLS_EXTRA_LIBS"
+dnl
+dnl Now check if the installed libgnutls is sufficiently new. Also sanity
+dnl checks the results of libgnutls-extra-config to some extent
+dnl
+      rm -f conf.libgnutlstest
+      AC_TRY_RUN([
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <gnutls/extra.h>
+
+int
+main ()
+{
+    system ("touch conf.libgnutlstest");
+
+    if( strcmp( gnutls_extra_check_version(NULL), "$libgnutls_extra_config_version" ) )
+    {
+      printf("\n*** 'libgnutls-extra-config --version' returned %s, but LIBGNUTLS_EXTRA (%s)\n",
+             "$libgnutls_extra_config_version", gnutls_extra_check_version(NULL) );
+      printf("*** was found! If libgnutls-extra-config was correct, then it is best\n");
+      printf("*** to remove the old version of LIBGNUTLS_EXTRA. You may also be able to fix the error\n");
+      printf("*** by modifying your LD_LIBRARY_PATH enviroment variable, or by editing\n");
+      printf("*** /etc/ld.so.conf. Make sure you have run ldconfig if that is\n");
+      printf("*** required on your system.\n");
+      printf("*** If libgnutls-extra-config was wrong, set the environment variable LIBGNUTLS_EXTRA_CONFIG\n");
+      printf("*** to point to the correct copy of libgnutls-extra-config, and remove the file config.cache\n");
+      printf("*** before re-running configure\n");
+    }
+    else if ( strcmp(gnutls_extra_check_version(NULL), LIBGNUTLS_EXTRA_VERSION ) )
+    {
+      printf("\n*** LIBGNUTLS_EXTRA header file (version %s) does not match\n", LIBGNUTLS_EXTRA_VERSION);
+      printf("*** library (version %s). This is may be due to a different version of gnutls\n", gnutls_extra_check_version(NULL) );
+      printf("*** and gnutls-extra.\n");
+    }
+    else
+    {
+      if ( gnutls_extra_check_version( "$min_libgnutls_version" ) )
+      {
+        return 0;
+      }
+     else
+      {
+        printf("no\n*** An old version of LIBGNUTLS_EXTRA (%s) was found.\n",
+                gnutls_extra_check_version(NULL) );
+        printf("*** You need a version of LIBGNUTLS_EXTRA newer than %s. The latest version of\n",
+               "$min_libgnutls_version" );
+        printf("*** LIBGNUTLS_EXTRA is always available from ftp://gnutls.hellug.gr/pub/gnutls.\n");
+        printf("*** \n");
+        printf("*** If you have already installed a sufficiently new version, this error\n");
+        printf("*** probably means that the wrong copy of the libgnutls-extra-config shell script is\n");
+        printf("*** being found. The easiest way to fix this is to remove the old version\n");
+        printf("*** of LIBGNUTLS_EXTRA, but you can also set the LIBGNUTLS_EXTRA_CONFIG environment to point to the\n");
+        printf("*** correct copy of libgnutls-extra-config. (In this case, you will have to\n");
+        printf("*** modify your LD_LIBRARY_PATH enviroment variable, or edit /etc/ld.so.conf\n");
+        printf("*** so that the correct libraries are found at run-time))\n");
+      }
+    }
+  return 1;
+}
+],, no_libgnutls=yes,[echo $ac_n "cross compiling; assumed OK... $ac_c"])
+       CFLAGS="$ac_save_CFLAGS"
+       LIBS="$ac_save_LIBS"
+  fi
+
+  if test "x$no_libgnutls" = x ; then
+     AC_MSG_RESULT(yes)
+     ifelse([$2], , :, [$2])
+  else
+     if test -f conf.libgnutlstest ; then
+        :
+     else
+        AC_MSG_RESULT(no)
+     fi
+     if test "$LIBGNUTLS_EXTRA_CONFIG" = "no" ; then
+       echo "*** The libgnutls-extra-config script installed by LIBGNUTLS_EXTRA could not be found"
+       echo "*** If LIBGNUTLS_EXTRA was installed in PREFIX, make sure PREFIX/bin is in"
+       echo "*** your path, or set the LIBGNUTLS_EXTRA_CONFIG environment variable to the"
+       echo "*** full path to libgnutls-extra-config."
+     else
+       if test -f conf.libgnutlstest ; then
+        :
+       else
+          echo "*** Could not run libgnutls test program, checking why..."
+          CFLAGS="$CFLAGS $LIBGNUTLS_EXTRA_CFLAGS"
+          LIBS="$LIBS $LIBGNUTLS_EXTRA_LIBS"
+          AC_TRY_LINK([
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <gnutls/extra.h>
+],      [ return !!gnutls_extra_check_version(NULL); ],
+        [ echo "*** The test program compiled, but did not run. This usually means"
+          echo "*** that the run-time linker is not finding LIBGNUTLS_EXTRA or finding the wrong"
+          echo "*** version of LIBGNUTLS_EXTRA. If it is not finding LIBGNUTLS_EXTRA, you'll need to set your"
+          echo "*** LD_LIBRARY_PATH environment variable, or edit /etc/ld.so.conf to point"
+          echo "*** to the installed location  Also, make sure you have run ldconfig if that"
+          echo "*** is required on your system"
+          echo "***"
+          echo "*** If you have an old version installed, it is best to remove it, although"
+          echo "*** you may also be able to get things to work by modifying LD_LIBRARY_PATH"
+          echo "***" ],
+        [ echo "*** The test program failed to compile or link. See the file config.log for the"
+          echo "*** exact error that occured. This usually means LIBGNUTLS_EXTRA was incorrectly installed"
+          echo "*** or that you have moved LIBGNUTLS_EXTRA since it was installed. In the latter case, you"
+          echo "*** may want to edit the libgnutls-extra-config script: $LIBGNUTLS_EXTRA_CONFIG" ])
+          CFLAGS="$ac_save_CFLAGS"
+          LIBS="$ac_save_LIBS"
+       fi
+     fi
+     LIBGNUTLS_EXTRA_CFLAGS=""
+     LIBGNUTLS_EXTRA_LIBS=""
+     ifelse([$3], , :, [$3])
+  fi
+  rm -f conf.libgnutlstest
+  AC_SUBST(LIBGNUTLS_EXTRA_CFLAGS)
+  AC_SUBST(LIBGNUTLS_EXTRA_LIBS)
+])
+
+dnl *-*wedit:notab*-*  Please keep this as the last line.
+
+dnl
+dnl  Off-the-Record Messaging library
+dnl  Copyright (C) 2004-2007  Ian Goldberg, Chris Alexander, Nikita Borisov
+dnl                           <otr@cypherpunks.ca>
+dnl
+dnl  This library is free software; you can redistribute it and/or
+dnl  modify it under the terms of version 2.1 of the GNU Lesser General
+dnl  Public License as published by the Free Software Foundation.
+dnl
+dnl  This library is distributed in the hope that it will be useful,
+dnl  but WITHOUT ANY WARRANTY; without even the implied warranty of
+dnl  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+dnl  Lesser General Public License for more details.
+dnl
+dnl  You should have received a copy of the GNU Lesser General Public
+dnl  License along with this library; if not, write to the Free Software
+dnl  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+dnl
+
+dnl AM_PATH_LIBOTR([MINIMUM-VERSION [, ACTION-IF-FOUND [, ACTION-IF-NOT-FOUND]]])
+dnl Test for libotr, and define LIBOTR_CFLAGS and LIBOTR_LIBS as appropriate.
+dnl enables arguments --with-libotr-prefix=
+dnl                   --with-libotr-inc-prefix=
+dnl
+dnl You must already have found libgcrypt with AM_PATH_LIBGCRYPT
+dnl
+dnl Adapted from alsa.m4, originally by
+dnl      Richard Boulton <richard-alsa@tartarus.org>
+dnl      Christopher Lansdown <lansdoct@cs.alfred.edu>
+dnl      Jaroslav Kysela <perex@suse.cz>
+
+AC_DEFUN([AM_PATH_LIBOTR],
+[dnl Save the original CFLAGS, LDFLAGS, and LIBS
+libotr_save_CFLAGS="$CFLAGS"
+libotr_save_LDFLAGS="$LDFLAGS"
+libotr_save_LIBS="$LIBS"
+libotr_found=yes
+
+dnl
+dnl Get the cflags and libraries for libotr
+dnl
+AC_ARG_WITH(libotr-prefix,
+[  --with-libotr-prefix=PFX  Prefix where libotr is installed(optional)],
+[libotr_prefix="$withval"], [libotr_prefix=""])
+
+AC_ARG_WITH(libotr-inc-prefix,
+[  --with-libotr-inc-prefix=PFX  Prefix where libotr includes are (optional)],
+[libotr_inc_prefix="$withval"], [libotr_inc_prefix=""])
+
+dnl Add any special include directories
+AC_MSG_CHECKING(for libotr CFLAGS)
+if test "$libotr_inc_prefix" != "" ; then
+	LIBOTR_CFLAGS="$LIBOTR_CFLAGS -I$libotr_inc_prefix"
+	CFLAGS="$CFLAGS $LIBOTR_CFLAGS"
+fi
+AC_MSG_RESULT($LIBOTR_CFLAGS)
+
+dnl add any special lib dirs
+AC_MSG_CHECKING(for libotr LIBS)
+if test "$libotr_prefix" != "" ; then
+	LIBOTR_LIBS="$LIBOTR_LIBS -L$libotr_prefix"
+	LDFLAGS="$LDFLAGS $LIBOTR_LIBS"
+fi
+
+dnl add the libotr library
+LIBOTR_LIBS="$LIBOTR_LIBS -lotr"
+LIBS="$LIBOTR_LIBS $LIBS"
+AC_MSG_RESULT($LIBOTR_LIBS)
+
+dnl Check for a working version of libotr that is of the right version.
+min_libotr_version=ifelse([$1], ,3.0.0,$1)
+no_libotr=""
+    libotr_min_major_version=`echo $min_libotr_version | \
+           sed 's/\([[0-9]]*\).\([[0-9]]*\).\([[0-9]]*\)/\1/'`
+    libotr_min_minor_version=`echo $min_libotr_version | \
+           sed 's/\([[0-9]]*\).\([[0-9]]*\).\([[0-9]]*\)/\2/'`
+    libotr_min_sub_version=`echo $min_libotr_version | \
+           sed 's/\([[0-9]]*\).\([[0-9]]*\).\([[0-9]]*\)/\3/'`
+AC_MSG_CHECKING(for libotr headers version $libotr_min_major_version.x >= $min_libotr_version)
+
+AC_LANG_SAVE
+AC_LANG_C
+AC_TRY_COMPILE([
+#include <stdlib.h>
+#include <libotr/version.h>
+], [
+#  if(OTRL_VERSION_MAJOR != $libotr_min_major_version)
+#    error not present
+#  else
+
+#    if(OTRL_VERSION_MINOR > $libotr_min_minor_version)
+       exit(0);
+#    else
+#      if(OTRL_VERSION_MINOR < $libotr_min_minor_version)
+#        error not present
+#      endif
+
+#      if(OTRL_VERSION_SUB < $libotr_min_sub_version)
+#        error not present
+#      endif
+#    endif
+#  endif
+exit(0);
+],
+  [AC_MSG_RESULT(found.)],
+  [AC_MSG_RESULT(not present.)
+   ifelse([$3], , [AC_MSG_ERROR(Sufficiently new version of libotr not found.)])
+   libotr_found=no]
+)
+AC_LANG_RESTORE
+
+dnl Now that we know that we have the right version, let's see if we have the library and not just the headers.
+AC_CHECK_LIB([otr], [otrl_message_receiving],,
+	[ifelse([$3], , [AC_MSG_ERROR(No linkable libotr was found.)])
+	 libotr_found=no],
+	 $LIBGCRYPT_LIBS
+)
+
+LDFLAGS="$libotr_save_LDFLAGS"
+LIBS="$libotr_save_LIBS"
+
+if test "x$libotr_found" = "xyes" ; then
+   ifelse([$2], , :, [$2])
+else
+   LIBOTR_CFLAGS=""
+   LIBOTR_LIBS=""
+   ifelse([$3], , :, [$3])
+fi
+
+dnl That should be it.  Now just export our symbols:
+AC_SUBST(LIBOTR_CFLAGS)
+AC_SUBST(LIBOTR_LIBS)
+])
+
+
 # pkg.m4 - Macros to locate and utilise pkg-config.            -*- Autoconf -*-
 # 
 # Copyright © 2004 Scott James Remnant <scott@netsplit.com>.
@@ -676,7 +1082,7 @@ path to pkg-config.
 
 _PKG_TEXT
 
-To get pkg-config, see <http://www.freedesktop.org/software/pkgconfig>.])],
+To get pkg-config, see <http://pkg-config.freedesktop.org/>.])],
 		[$4])
 else
 	$1[]_CFLAGS=$pkg_cv_[]$1[]_CFLAGS

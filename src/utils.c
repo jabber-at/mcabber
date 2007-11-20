@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  * ut_* functions are derived from Cabber debug/log code.
- * from_iso8601() comes from the Gaim project.
+ * from_iso8601() comes from the Pidgin (libpurple) project.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -210,7 +210,7 @@ int to_iso8601(char *dststr, time_t timestamp)
 }
 
 //  from_iso8601(timestamp, utc)
-// This function came from the Gaim project, gaim_str_to_time().
+// This function came from the Pidgin project, gaim_str_to_time().
 // (Actually date may not be pure iso-8601)
 // Thanks, guys!
 // ** Modified by somian 10 Apr 2006 with advice from ysth.
@@ -317,10 +317,10 @@ inline void safe_usleep(unsigned int usec)
  * Check if the full JID is valid
  * Return 0 if it is valid, non zero otherwise
  */
-int check_jid_syntax(char *fjid)
+int check_jid_syntax(const char *fjid)
 {
-  char *str;
-  char *domain, *resource;
+  const char *str;
+  const char *domain, *resource;
   int domlen;
 
   if (!fjid) return 1;
@@ -458,7 +458,7 @@ char **split_arg(const char *arg, unsigned int n, int dontstriplast)
       *(arglst+i) = g_strndup(start, p-start);
       strip_arg_special_chars(*(arglst+i));
       for (start = p+1; *start && *start == ' '; start++) ;
-      p = start;
+      p = start-1;
       i++;
     }
   }

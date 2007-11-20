@@ -26,15 +26,18 @@
 #define HBB_PREFIX_NONE       (1U<<9)
 #define HBB_PREFIX_SPECIAL    (1U<<10)
 #define HBB_PREFIX_PGPCRYPT   (1U<<11)
+#define HBB_PREFIX_CONT       (1U<<12)
 
 typedef struct {
   time_t timestamp;
   guint flags;
+  unsigned mucnicklen;
   char *text;
 } hbb_line;
 
 void hbuf_add_line(GList **p_hbuf, const char *text, time_t timestamp,
-        guint prefix_flags, guint width, guint maxhbufblocks);
+        guint prefix_flags, guint width, guint maxhbufblocks,
+        unsigned mucnicklen);
 void hbuf_free(GList **p_hbuf);
 void hbuf_rebuild(GList **p_hbuf, unsigned int width);
 GList *hbuf_previous_persistent(GList *l_line);

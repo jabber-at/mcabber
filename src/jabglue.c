@@ -33,6 +33,7 @@
 #include "histolog.h"
 #include "commands.h"
 #include "pgp.h"
+#include "otr.h"
 
 #define JABBERPORT      5222
 #define JABBERSSLPORT   5223
@@ -44,7 +45,7 @@ guint AutoConnection;
 enum enum_jstate jstate;
 
 char imstatus2char[imstatus_size+1] = {
-    '_', 'o', 'i', 'f', 'd', 'n', 'a', '\0'
+    '_', 'o', 'f', 'd', 'n', 'a', 'i', '\0'
 };
 
 static time_t LastPingTime;
@@ -59,6 +60,7 @@ static void packethandler(jconn, jpacket);
 static void handle_state_events(char* from, xmlnode xmldata);
 
 static int evscallback_invitation(eviqs *evp, guint evcontext);
+
 
 static void logger(jconn j, int io, const char *buf)
 {
@@ -137,6 +139,8 @@ void jb_disconnect(void)
   if (!jc) return;
 
   if (online) {
+    // Launch pre-disconnect internal hook
+    hook_execute_internal("hook-pre-disconnect");
     // Announce it to  everyone else
     jb_setstatus(offline, NULL, "", FALSE);
     // End the XML flow
@@ -323,21 +327,41 @@ inline const char *jb_getstatusmsg()
   return mystatusmsg;
 }
 
+inline void update_last_use(void)
+{
+  iqlast = time(NULL);
+}
+
 //  insert_entity_capabilities(presence_stanza)
 // Entity Capabilities (XEP-0115)
 static void insert_entity_capabilities(xmlnode x)
 {
   xmlnode y;
   const char *ver = entity_version();
+  char *exts, *exts2;
+
+  exts = NULL;
 
   y = xmlnode_insert_tag(x, "c");
   xmlnode_put_attrib(y, "xmlns", NS_CAPS);
   xmlnode_put_attrib(y, "node", MCABBER_CAPS_NODE);
   xmlnode_put_attrib(y, "ver", ver);
 #ifdef JEP0085
-  if (!chatstates_disabled)
-    xmlnode_put_attrib(y, "ext", "csn");
+  if (!chatstates_disabled) {
+    exts2 = g_strjoin(" ", "csn", exts, NULL);
+    g_free(exts);
+    exts = exts2;
+  }
 #endif
+  if (!settings_opt_get_int("iq_last_disable")) {
+    exts2 = g_strjoin(" ", "iql", exts, NULL);
+    g_free(exts);
+    exts = exts2;
+  }
+  if (exts) {
+    xmlnode_put_attrib(y, "ext", exts);
+    g_free(exts);
+  }
 }
 
 static void roompresence(gpointer room, void *presencedata)
@@ -481,10 +505,8 @@ void jb_setstatus(enum imstatus st, const char *recipient, const char *msg,
       room_presence.msg = msg;
       foreach_buddy(ROSTER_TYPE_ROOM, &roompresence, &room_presence);
     }
-  }
 
-  if (online) {
-    // We'll need to update the roster if we switch to/from offline because
+    // We'll have to update the roster if we switch to/from offline because
     // we don't know the presences of buddies when offline...
     if (mystatus == offline || st == offline)
       update_roster = TRUE;
@@ -492,8 +514,10 @@ void jb_setstatus(enum imstatus st, const char *recipient, const char *msg,
     hk_mystatuschange(0, mystatus, st, (st != invisible ? msg : ""));
     mystatus = st;
   }
+
   if (st)
     mywantedstatus = st;
+
   if (msg != mystatusmsg) {
     g_free(mystatusmsg);
     if (*msg)
@@ -501,6 +525,9 @@ void jb_setstatus(enum imstatus st, const char *recipient, const char *msg,
     else
       mystatusmsg = NULL;
   }
+
+  if (!Autoaway)
+    update_last_use();
 
   // Update status line
   scr_UpdateMainStatus(TRUE);
@@ -527,15 +554,19 @@ static char *new_msgid(void)
   return g_strdup_printf("%u%d", msg_idn, (int)(now%10L));
 }
 
-//  jb_send_msg(jid, test, type, subject, msgid, *encrypted)
+//  jb_send_msg(jid, text, type, subject, msgid, *encrypted)
 // When encrypted is not NULL, the function set *encrypted to 1 if the
 // message has been PGP-encrypted.  If encryption enforcement is set and
 // encryption fails, *encrypted is set to -1.
 void jb_send_msg(const char *fjid, const char *text, int type,
-                 const char *subject, const char *msgid, gint *encrypted)
+                 const char *subject, const char *msgid, gint *encrypted,
+                 const char *type_overwrite)
 {
   xmlnode x;
-  gchar *strtype;
+  const gchar *strtype;
+#ifdef HAVE_LIBOTR
+  int otr_msg = 0;
+#endif
 #if defined HAVE_GPGME || defined JEP0022 || defined JEP0085
   char *rname, *barejid;
   GSList *sl_buddy;
@@ -555,12 +586,16 @@ void jb_send_msg(const char *fjid, const char *text, int type,
 
   if (!online) return;
 
-  if (type == ROSTER_TYPE_ROOM)
-    strtype = TMSG_GROUPCHAT;
-  else
-    strtype = TMSG_CHAT;
+  if (type_overwrite)
+    strtype = type_overwrite;
+  else {
+    if (type == ROSTER_TYPE_ROOM)
+      strtype = TMSG_GROUPCHAT;
+    else
+      strtype = TMSG_CHAT;
+  }
 
-#if defined HAVE_GPGME || defined JEP0022 || defined JEP0085
+#if defined HAVE_GPGME || defined HAVE_LIBOTR || defined JEP0022 || defined JEP0085
   rname = strchr(fjid, JID_RESOURCE_SEPARATOR);
   barejid = jidtodisp(fjid);
   sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
@@ -569,6 +604,25 @@ void jb_send_msg(const char *fjid, const char *text, int type,
   // which hopefully will give us the most likely resource.
   if (rname)
     rname++;
+
+#ifdef HAVE_LIBOTR
+  if (otr_enabled()) {
+    if (msgid && strcmp(msgid, "otrinject") == 0)
+      msgid = NULL;
+    else if (type == ROSTER_TYPE_USER) {
+      otr_msg = otr_send((char **)&text, barejid);
+      if (!text) {
+        g_free(barejid);
+        if (encrypted)
+          *encrypted = -1;
+        return;
+      }
+    }
+    if (otr_msg && encrypted) {
+      *encrypted = 1;
+    }
+  }
+#endif
 
 #ifdef HAVE_GPGME
   if (type == ROSTER_TYPE_USER && sl_buddy && gpg_enabled()) {
@@ -603,7 +657,7 @@ void jb_send_msg(const char *fjid, const char *text, int type,
   g_free(barejid);
 #endif // HAVE_GPGME || defined JEP0022 || defined JEP0085
 
-  x = jutil_msgnew(strtype, (char*)fjid, NULL,
+  x = jutil_msgnew((char*)strtype, (char*)fjid, NULL,
                    (enc ? "This message is PGP-encrypted." : (char*)text));
   if (subject) {
     xmlnode y;
@@ -681,6 +735,8 @@ void jb_send_msg(const char *fjid, const char *text, int type,
 jb_send_msg_no_chatstates:
   xmlnode_put_attrib(x, "id", msgid);
 
+  if (mystatus != invisible)
+    update_last_use();
   jab_send(jc, x);
   xmlnode_free(x);
 #if defined JEP0022
@@ -975,7 +1031,7 @@ void jb_addbuddy(const char *bjid, const char *name, const char *group)
 
   jb_subscr_request_auth(cleanjid);
 
-  roster_add_user(cleanjid, name, group, ROSTER_TYPE_USER, sub_pending);
+  roster_add_user(cleanjid, name, group, ROSTER_TYPE_USER, sub_pending, -1);
   g_free(cleanjid);
   buddylist_build();
 
@@ -1074,10 +1130,8 @@ void jb_request(const char *fjid, enum iqreq_type reqtype)
 
   // vCard request
   if (reqtype == iqreq_vcard) {
-    char *bjid = jidtodisp(fjid);
-    request_vcard(bjid);
-    scr_LogPrint(LPRINT_NORMAL, "Sent vCard request to <%s>", bjid);
-    g_free(bjid);
+    request_vcard(fjid);
+    scr_LogPrint(LPRINT_NORMAL, "Sent vCard request to <%s>", fjid);
     return;
   }
 
@@ -1136,7 +1190,8 @@ void jb_room_join(const char *room, const char *nickname, const char *passwd)
   room_elt = roster_find(room, jidsearch, ROSTER_TYPE_USER|ROSTER_TYPE_ROOM);
   // Add room if it doesn't already exist
   if (!room_elt) {
-    room_elt = roster_add_user(room, NULL, NULL, ROSTER_TYPE_ROOM, sub_none);
+    room_elt = roster_add_user(room, NULL, NULL, ROSTER_TYPE_ROOM,
+                               sub_none, -1);
   } else {
     // Make sure this is a room (it can be a conversion user->room)
     buddy_settype(room_elt->data, ROSTER_TYPE_ROOM);
@@ -1296,6 +1351,31 @@ void jb_room_invite(const char *room, const char *fjid, const char *reason)
   jab_send(jc, x);
   xmlnode_free(x);
   jb_reset_keepalive();
+}
+
+//  jb_is_bookmarked()
+// Return TRUE if there's a bookmark for the given jid.
+guint jb_is_bookmarked(const char *bjid)
+{
+  xmlnode x;
+
+  if (!bookmarks)
+    return FALSE;
+
+  // Walk through the storage bookmark tags
+  x = xmlnode_get_firstchild(bookmarks);
+  for ( ; x; x = xmlnode_get_nextsibling(x)) {
+    const char *fjid;
+    const char *p;
+    p = xmlnode_get_name(x);
+    // If the node is a conference item, check the jid.
+    if (p && !strcmp(p, "conference")) {
+      fjid = xmlnode_get_attrib(x, "jid");
+      if (fjid && !strcasecmp(bjid, fjid))
+        return TRUE;
+    }
+  }
+  return FALSE;
 }
 
 //  jb_get_all_storage_bookmarks()
@@ -1619,7 +1699,7 @@ static void check_signature(const char *barejid, const char *rname,
     res_pgpdata->last_sigsum = sigsum;
     if (sigsum & GPGME_SIGSUM_RED) {
       buf = g_strdup_printf("Bad signature from <%s/%s>", barejid, rname);
-      scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO);
+      scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO, 0);
       scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
       g_free(buf);
     }
@@ -1628,7 +1708,7 @@ static void check_signature(const char *barejid, const char *rname,
     if (keys_mismatch(key, expectedkey)) {
       buf = g_strdup_printf("Warning: The KeyId from <%s/%s> doesn't match "
                             "the key you set up", barejid, rname);
-      scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO);
+      scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO, 0);
       scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
       g_free(buf);
     }
@@ -1642,7 +1722,9 @@ static void gotmessage(char *type, const char *from, const char *body,
 {
   char *bjid;
   const char *rname, *s;
-  char *decrypted = NULL;
+  char *decrypted_pgp = NULL;
+  char *decrypted_otr = NULL;
+  int otr_msg = 0, free_msg = 0;
 
   bjid = jidtodisp(from);
 
@@ -1651,14 +1733,25 @@ static void gotmessage(char *type, const char *from, const char *body,
 
 #ifdef HAVE_GPGME
   if (enc && gpg_enabled()) {
-    decrypted = gpg_decrypt(enc);
-    if (decrypted) {
-      body = decrypted;
+    decrypted_pgp = gpg_decrypt(enc);
+    if (decrypted_pgp) {
+      body = decrypted_pgp;
     }
   }
   // Check signature of an unencrypted message
   if (xmldata_signed && gpg_enabled())
-    check_signature(bjid, rname, xmldata_signed, decrypted);
+    check_signature(bjid, rname, xmldata_signed, decrypted_pgp);
+#endif
+
+#ifdef HAVE_LIBOTR
+  if (otr_enabled()) {
+    decrypted_otr = (char*)body;
+    otr_msg = otr_receive(&decrypted_otr, bjid, &free_msg);
+    if (!decrypted_otr) {
+      goto gotmessage_return;
+    }
+    body = decrypted_otr;
+  }
 #endif
 
   // Check for unexpected groupchat messages
@@ -1672,7 +1765,7 @@ static void gotmessage(char *type, const char *from, const char *body,
 
     mbuf = g_strdup_printf("Unexpected groupchat packet!");
     scr_LogPrint(LPRINT_LOGNORM, "%s", mbuf);
-    scr_WriteIncomingMessage(bjid, mbuf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(bjid, mbuf, 0, HBB_PREFIX_INFO, 0);
     g_free(mbuf);
 
     // Send back an unavailable packet
@@ -1682,17 +1775,15 @@ static void gotmessage(char *type, const char *from, const char *body,
     // Make sure this is a room (it can be a conversion user->room)
     room_elt = roster_find(bjid, jidsearch, 0);
     if (!room_elt) {
-      room_elt = roster_add_user(bjid, NULL, NULL, ROSTER_TYPE_ROOM, sub_none);
+      room_elt = roster_add_user(bjid, NULL, NULL, ROSTER_TYPE_ROOM,
+                                 sub_none, -1);
     } else {
       buddy_settype(room_elt->data, ROSTER_TYPE_ROOM);
     }
 
-    g_free(bjid);
-    g_free(decrypted);
-
     buddylist_build();
     scr_DrawRoster();
-    return;
+    goto gotmessage_return;
   }
 
   // We don't call the message_in hook if 'block_unsubscribed' is true and
@@ -1703,12 +1794,17 @@ static void gotmessage(char *type, const char *from, const char *body,
       (type && strcmp(type, "chat")) ||
       ((s = settings_opt_get("server")) != NULL && !strcasecmp(bjid, s))) {
     hk_message_in(bjid, rname, timestamp, body, type,
-                  (decrypted ? TRUE : FALSE));
+                  ((decrypted_pgp || otr_msg) ? TRUE : FALSE));
   } else {
     scr_LogPrint(LPRINT_LOGNORM, "Blocked a message from <%s>", bjid);
   }
+
+gotmessage_return:
+  // Clean up and exit
   g_free(bjid);
-  g_free(decrypted);
+  g_free(decrypted_pgp);
+  if (free_msg)
+    g_free(decrypted_otr);
 }
 
 static const char *defaulterrormsg(int code)
@@ -1793,6 +1889,10 @@ void display_server_error(xmlnode x)
   s = xmlnode_get_tag_data(x, "text");
   if (s && *s) desc = s;
 
+  // If we still have no description, let's give up
+  if (!desc)
+    return;
+
   // Strip trailing newlines
   sdesc = g_strdup(desc);
   for (s = sdesc; *s; s++) ;
@@ -1845,6 +1945,7 @@ static void statehandler(jconn conn, int state)
         scr_LogPrint(LPRINT_LOGNORM, "[Jabber] Communication with the server "
                      "established");
         online = TRUE;
+        update_last_use();
         // We set AutoConnection to true after the 1st successful connection
         AutoConnection = true;
         break;
@@ -1878,6 +1979,10 @@ static time_t xml_get_timestamp(xmlnode xmldata)
   xmlnode x;
   char *p;
 
+  x = xml_get_xmlns(xmldata, NS_XMPP_DELAY);
+  if (x && !strcmp(xmlnode_get_name(x), "delay") &&
+      (p = xmlnode_get_attrib(x, "stamp")) != NULL)
+    return from_iso8601(p, 1);
   x = xml_get_xmlns(xmldata, NS_DELAY);
   if ((p = xmlnode_get_attrib(x, "stamp")) != NULL)
     return from_iso8601(p, 1);
@@ -1910,7 +2015,8 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
     // Add room if it doesn't already exist
     // It shouldn't happen, there is probably something wrong (server or
     // network issue?)
-    room_elt = roster_add_user(roomjid, NULL, NULL, ROSTER_TYPE_ROOM, sub_none);
+    room_elt = roster_add_user(roomjid, NULL, NULL, ROSTER_TYPE_ROOM,
+                               sub_none, -1);
     scr_LogPrint(LPRINT_LOGNORM, "Strange MUC presence message");
   } else {
     // Make sure this is a room (it can be a conversion user->room)
@@ -1957,7 +2063,7 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
     mbuf = g_strdup_printf("Unexpected groupchat packet!");
 
     scr_LogPrint(LPRINT_LOGNORM, "%s", mbuf);
-    scr_WriteIncomingMessage(roomjid, mbuf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(roomjid, mbuf, 0, HBB_PREFIX_INFO, 0);
     g_free(mbuf);
     // Send back an unavailable packet
     jb_setstatus(offline, roomjid, "", TRUE);
@@ -1982,9 +2088,9 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
   if (statuscode == 303 && mbnick) {
     mbuf = g_strdup_printf("%s is now known as %s", rname, mbnick);
     scr_WriteIncomingMessage(roomjid, mbuf, usttime,
-                             HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
+                             HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
     if (log_muc_conf)
-      hlog_write_message(roomjid, 0, FALSE, mbuf);
+      hlog_write_message(roomjid, 0, -1, mbuf);
     g_free(mbuf);
     buddy_resource_setname(room_elt->data, rname, mbnick);
     // Maybe it's _our_ nickname...
@@ -2067,10 +2173,10 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
     if (!we_left && settings_opt_get_int("muc_flag_joins") != 2)
       msgflags |= HBB_PREFIX_NOFLAG;
 
-    scr_WriteIncomingMessage(roomjid, mbuf, usttime, msgflags);
+    scr_WriteIncomingMessage(roomjid, mbuf, usttime, msgflags, 0);
 
     if (log_muc_conf)
-      hlog_write_message(roomjid, 0, FALSE, mbuf);
+      hlog_write_message(roomjid, 0, -1, mbuf);
 
     if (we_left) {
       scr_LogPrint(LPRINT_LOGNORM, "%s", mbuf);
@@ -2100,9 +2206,9 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
         // Note: the usttime timestamp is related to the other member,
         //       so we use 0 here.
         scr_WriteIncomingMessage(roomjid, mbuf, 0,
-                                 HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
+                                 HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
         if (log_muc_conf)
-          hlog_write_message(roomjid, 0, FALSE, mbuf);
+          hlog_write_message(roomjid, 0, -1, mbuf);
         g_free(mbuf);
         mbuf = g_strdup_printf("%s has joined", rname);
         new_member = TRUE;
@@ -2119,9 +2225,9 @@ static void handle_presence_muc(const char *from, xmlnode xmldata,
       msgflags = HBB_PREFIX_INFO;
       if (!settings_opt_get_int("muc_flag_joins"))
         msgflags |= HBB_PREFIX_NOFLAG;
-      scr_WriteIncomingMessage(roomjid, mbuf, usttime, msgflags);
+      scr_WriteIncomingMessage(roomjid, mbuf, usttime, msgflags, 0);
       if (log_muc_conf)
-        hlog_write_message(roomjid, 0, FALSE, mbuf);
+        hlog_write_message(roomjid, 0, -1, mbuf);
       g_free(mbuf);
     }
   }
@@ -2226,6 +2332,10 @@ static void handle_packet_presence(jconn conn, char *type, char *from,
   g_free(r);
 }
 
+//  got_invite(from, to, reason, passwd)
+// This function should be called when receiving an invitation from user
+// "from", to enter the room "to".  Optional reason and room password can
+// be provided.
 static void got_invite(char* from, char *to, char* reason, char* passwd)
 {
   eviqs *evn;
@@ -2245,7 +2355,7 @@ static void got_invite(char* from, char *to, char* reason, char* passwd)
   }
 
   barejid = jidtodisp(from);
-  scr_WriteIncomingMessage(barejid, sbuf->str, 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(barejid, sbuf->str, 0, HBB_PREFIX_INFO, 0);
   scr_LogPrint(LPRINT_LOGNORM, "%s", sbuf->str);
 
   evn = evs_new(EVS_TYPE_INVITATION, EVS_MAX_TIMEOUT);
@@ -2262,11 +2372,13 @@ static void got_invite(char* from, char *to, char* reason, char* passwd)
   } else {
     g_string_printf(sbuf, "Unable to create a new event!");
   }
-  scr_WriteIncomingMessage(barejid, sbuf->str, 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(barejid, sbuf->str, 0, HBB_PREFIX_INFO, 0);
   scr_LogPrint(LPRINT_LOGNORM, "%s", sbuf->str);
   g_string_free(sbuf, TRUE);
+  g_free(barejid);
 
-  // Make sure the barejid is a room in the roster
+  // Make sure the MUC room barejid is a room in the roster
+  barejid = jidtodisp(to);
   room_elt = roster_find(barejid, jidsearch, 0);
   if (room_elt)
     buddy_settype(room_elt->data, ROSTER_TYPE_ROOM);
@@ -2337,9 +2449,9 @@ static void handle_packet_message(jconn conn, char *type, char *from,
         mbuf = g_strdup_printf("%s has set the topic to: %s", r, subj);
       }
       scr_WriteIncomingMessage(s, mbuf, 0,
-                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
+                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
       if (settings_opt_get_int("log_muc_conf"))
-        hlog_write_message(s, 0, FALSE, mbuf);
+        hlog_write_message(s, 0, -1, mbuf);
       g_free(s);
       g_free(mbuf);
       // The topic is displayed in the chat status line, so refresh now.
@@ -2544,7 +2656,7 @@ static int evscallback_subscription(eviqs *evp, guint evcontext)
         jb_delbuddy(barejid);
     }
   }
-  scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(barejid, buf, 0, HBB_PREFIX_INFO, 0);
   scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
   g_free(buf);
   return 0;
@@ -2641,13 +2753,13 @@ static void handle_packet_s10n(jconn conn, char *type, char *from,
 
     buf = g_strdup_printf("<%s> wants to subscribe to your presence updates",
                           from);
-    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO, 0);
     scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
     g_free(buf);
 
     if (msg) {
       buf = g_strdup_printf("<%s> said: %s", from, msg);
-      scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO);
+      scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO, 0);
       replace_nl_with_dots(buf);
       scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
       g_free(buf);
@@ -2664,7 +2776,7 @@ static void handle_packet_s10n(jconn conn, char *type, char *from,
     } else {
       buf = g_strdup_printf("Unable to create a new event!");
     }
-    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO, 0);
     scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
     g_free(buf);
   } else if (!strcmp(type, "unsubscribe")) {
@@ -2672,14 +2784,14 @@ static void handle_packet_s10n(jconn conn, char *type, char *from,
     jb_subscr_cancel_auth(from);
     buf = g_strdup_printf("<%s> is unsubscribing from your "
                           "presence updates", from);
-    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO, 0);
     scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
     g_free(buf);
   } else if (!strcmp(type, "subscribed")) {
     /* The sender has allowed us to receive their presence */
     buf = g_strdup_printf("<%s> has allowed you to receive their "
                           "presence updates", from);
-    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO, 0);
     scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
     g_free(buf);
   } else if (!strcmp(type, "unsubscribed")) {
@@ -2689,7 +2801,7 @@ static void handle_packet_s10n(jconn conn, char *type, char *from,
     update_roster = TRUE;
     buf = g_strdup_printf("<%s> has cancelled your subscription to "
                           "their presence updates", from);
-    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO, 0);
     scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
     g_free(buf);
   } else {

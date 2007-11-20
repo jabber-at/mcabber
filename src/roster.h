@@ -11,13 +11,15 @@
 enum imstatus {
     offline,
     available,
-    invisible,
     freeforchat,
     dontdisturb,
     notavail,
     away,
+    invisible,
     imstatus_size
 };
+
+extern char imstatus2char[]; // Should match enum above
 
 enum imrole {
   role_none,
@@ -133,7 +135,7 @@ extern GList *alternate_buddy;
 void    roster_init(void);
 GSList *roster_add_group(const char *name);
 GSList *roster_add_user(const char *jid, const char *name, const char *group,
-                        guint type, enum subscr esub);
+                        guint type, enum subscr esub, gint on_server);
 GSList *roster_find(const char *jidname, enum findwhat type, guint roster_type);
 void    roster_del_user(const char *jid);
 void    roster_free(void);
@@ -156,7 +158,9 @@ void    roster_unsubscribed(const char *jid);
 void    buddylist_build(void);
 void    buddy_hide_group(gpointer rosterdata, int hide);
 void    buddylist_set_hide_offline_buddies(int hide);
-inline int buddylist_get_hide_offline_buddies(void);
+inline int buddylist_isset_filter(void);
+void    buddylist_set_filter(guchar);
+guchar  buddylist_get_filter(void);
 const char *buddy_getjid(gpointer rosterdata);
 void        buddy_setname(gpointer rosterdata, char *newname);
 const char *buddy_getname(gpointer rosterdata);
@@ -193,7 +197,9 @@ const char *buddy_getrjid(gpointer rosterdata, const char *resname);
 void    buddy_del_all_resources(gpointer rosterdata);
 void    buddy_setflags(gpointer rosterdata, guint flags, guint value);
 guint   buddy_getflags(gpointer rosterdata);
-GList  *buddy_search_jid(char *jid);
+void    buddy_setonserverflag(gpointer rosterdata, guint onserver);
+guint   buddy_getonserverflag(gpointer rosterdata);
+GList  *buddy_search_jid(const char *jid);
 GList  *buddy_search(char *string);
 void    foreach_buddy(guint roster_type,
                       void (*pfunc)(gpointer rosterdata, void *param),

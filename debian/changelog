@@ -1,3 +1,13 @@
+mcabber (0.9.5-1) unstable; urgency=low
+
+  * New upstream release.
+  * New maintainer E-Mail address.
+  * Added Homepage field to debian/control.
+  * Fix debian-rules-ignores-make-clean-error by checking if the file exists
+    if the file exists..
+
+ -- Mario Iseli <mario@debian.org>  Tue, 20 Nov 2007 13:47:26 +0100
+
 mcabber (0.9.3-1) unstable; urgency=low
 
   * New upstream release.

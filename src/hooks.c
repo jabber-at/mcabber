@@ -31,6 +31,7 @@
 #include "settings.h"
 #include "utils.h"
 #include "utf8.h"
+#include "commands.h"
 
 static char *extcmd;
 
@@ -49,6 +50,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
   guint rtype = ROSTER_TYPE_USER;
   char *wmsg = NULL, *bmsg = NULL, *mmsg = NULL;
   GSList *roster_usr;
+  unsigned mucnicklen = 0;
 
   if (encrypted)
     message_flags |= HBB_PREFIX_PGPCRYPT;
@@ -63,6 +65,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
       wmsg = bmsg = g_strdup_printf("~ %s", msg);
     } else {
       wmsg = bmsg = g_strdup_printf("<%s> %s", resname, msg);
+      mucnicklen = strlen(resname) + 2;
       if (!strncmp(msg, COMMAND_ME, strlen(COMMAND_ME)))
         wmsg = mmsg = g_strdup_printf("*%s %s", resname, msg+4);
     }
@@ -85,7 +88,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
   roster_usr = roster_find(bjid, jidsearch, 0);
   if (!roster_usr) {
     new_guy = TRUE;
-    roster_usr = roster_add_user(bjid, NULL, NULL, rtype, sub_none);
+    roster_usr = roster_add_user(bjid, NULL, NULL, rtype, sub_none, -1);
     if (!roster_usr) { // Shouldn't happen...
       scr_LogPrint(LPRINT_LOGNORM, "ERROR: unable to add buddy!");
       g_free(bmsg);
@@ -157,7 +160,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
   // Note: the hlog_write should not be called first, because in some
   // cases scr_WriteIncomingMessage() will load the history and we'd
   // have the message twice...
-  scr_WriteIncomingMessage(bjid, wmsg, timestamp, message_flags);
+  scr_WriteIncomingMessage(bjid, wmsg, timestamp, message_flags, mucnicklen);
 
   // We don't log the modified message, but the original one
   if (wmsg == mmsg)
@@ -169,7 +172,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
   //   option is off (and it is not a history line)
   if (!(message_flags & HBB_PREFIX_ERR) &&
       (!is_room || (is_groupchat && log_muc_conf && !timestamp)))
-    hlog_write_message(bjid, timestamp, FALSE, wmsg);
+    hlog_write_message(bjid, timestamp, 0, wmsg);
 
   if (settings_opt_get_int("events_ignore_active_window") &&
       current_buddy && scr_get_chatmode()) {
@@ -207,10 +210,10 @@ inline void hk_message_in(const char *bjid, const char *resname,
   }
 
   // We need to update the roster if the sender is unknown or
-  // if the sender is offline/invisible and hide_offline_buddies is set
+  // if the sender is offline/invisible and a filter is set.
   if (new_guy ||
       (buddy_getstatus(roster_usr->data, NULL) == offline &&
-       buddylist_get_hide_offline_buddies()))
+       buddylist_isset_filter()))
   {
     update_roster = TRUE;
   }
@@ -251,7 +254,7 @@ inline void hk_message_out(const char *bjid, const char *nick,
 
   // We don't log private messages
   if (!nick)
-    hlog_write_message(bjid, timestamp, TRUE, msg);
+    hlog_write_message(bjid, timestamp, 1, msg);
 
   // External command
   hk_ext_cmd(bjid, 'M', 'S', NULL);
@@ -306,7 +309,7 @@ inline void hk_statuschange(const char *bjid, const char *resname, gchar prio,
                            imstatus2char[oldstat], imstatus2char[status],
                            ((status_msg) ? status_msg : ""));
       scr_WriteIncomingMessage(bjid, bn, timestamp,
-                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
+                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
       g_free(bn);
     }
   }
@@ -327,6 +330,30 @@ inline void hk_mystatuschange(time_t timestamp, enum imstatus old_status,
                imstatus2char[old_status], imstatus2char[new_status],
                (msg ? msg : ""));
   //hlog_write_status(NULL, 0, status);
+}
+
+
+/* Internal commands */
+
+void hook_execute_internal(const char *hookname)
+{
+  const char *hook_command;
+  char *buf;
+  char *cmdline;
+
+  hook_command = settings_opt_get(hookname);
+  if (!hook_command)
+    return;
+
+  buf = g_strdup_printf("Running %s...", hookname);
+  scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
+
+  cmdline = from_utf8(hook_command);
+  if (process_command(cmdline, TRUE) == 255)
+    mcabber_set_terminate_ui();
+
+  g_free(cmdline);
+  g_free(buf);
 }
 
 
@@ -428,7 +455,8 @@ void hk_ext_cmd(const char *bjid, guchar type, guchar info, const char *data)
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
-    if (execl(extcmd, extcmd, arg_type, arg_info, bjid, arg_data, NULL) == -1) {
+    if (execl(extcmd, extcmd, arg_type, arg_info, bjid, arg_data,
+              (char *)NULL) == -1) {
       // scr_LogPrint(LPRINT_LOGNORM, "Cannot execute external command.");
       exit(1);
     }
