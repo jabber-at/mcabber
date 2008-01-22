@@ -1,3 +1,12 @@
+mcabber (0.9.5-1.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+  * --enable-otr and add Build-Depends libotr2-dev (Closes: #453729).
+  * Add Build-Depends on libaspell-dev to make --enable-aspell actually work
+    (Closes: #461977).
+
+ -- Gerfried Fuchs <rhonda@debian.at>  Tue, 22 Jan 2008 15:59:24 +0100
+
 mcabber (0.9.5-1) unstable; urgency=low
 
   * New upstream release.
