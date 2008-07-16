@@ -1,7 +1,7 @@
 /*
  * main.c
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  * Parts of this file come from Cabber <cabber@ajmacias.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -42,6 +42,7 @@
 #include "utils.h"
 #include "pgp.h"
 #include "otr.h"
+#include "fifo.h"
 
 #ifdef ENABLE_HGCSET
 # include "hgcset.h"
@@ -70,7 +71,8 @@ void mcabber_connect(void)
 {
   const char *username, *password, *resource, *servername;
   const char *proxy_host;
-  char *bjid;
+  char *dynresource = NULL;
+  char *fjid;
   int ssl;
   int sslverify = -1;
   const char *sslvopt = NULL, *cafile = NULL, *capath = NULL, *ciphers = NULL;
@@ -100,8 +102,6 @@ void mcabber_connect(void)
     scr_LogPrint(LPRINT_NORMAL, "Password has not been specified!");
     return;
   }
-  if (!resource)
-    resource = "mcabber";
 
   port    = (unsigned int) settings_opt_get_int("port");
 
@@ -125,7 +125,7 @@ void mcabber_connect(void)
     cafile = capath = ciphers = NULL;
   }
 #elif defined HAVE_GNUTLS
-  if (sslverify != 0) {
+  if (ssl && sslverify != 0) {
     scr_LogPrint(LPRINT_LOGNORM, "** Error: SSL certificate checking "
                  "is not supported yet with GnuTLS.");
     scr_LogPrint(LPRINT_LOGNORM,
@@ -139,11 +139,22 @@ void mcabber_connect(void)
   // We can't free the ca*_xp variables now, because they're not duplicated
   // in cw_set_ssl_options().
 
+  if (!resource) {
+    unsigned int tab[2];
+    srand(time(NULL));
+    tab[0] = (unsigned int) (0xffff * (rand() / (RAND_MAX + 1.0)));
+    tab[1] = (unsigned int) (0xffff * (rand() / (RAND_MAX + 1.0)));
+    dynresource = g_strdup_printf("%s.%04x%04x", PACKAGE_NAME,
+                                  tab[0], tab[1]);
+    resource = dynresource;
+  }
+
   /* Connect to server */
   scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, "Connecting to server: %s",
                servername);
   if (port)
     scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, " using port %d", port);
+  scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, " resource %s", resource);
 
   if (proxy_host) {
     int proxy_port = settings_opt_get_int("proxy_port");
@@ -160,12 +171,13 @@ void mcabber_connect(void)
     }
   }
 
-  bjid = compose_jid(username, servername, resource);
+  fjid = compose_jid(username, servername, resource);
 #if defined(HAVE_LIBOTR)
-  otr_init(bjid);
+  otr_init(fjid);
 #endif
-  jc = jb_connect(bjid, servername, port, ssl, password);
-  g_free(bjid);
+  jc = jb_connect(fjid, servername, port, ssl, password);
+  g_free(fjid);
+  g_free(dynresource);
 
   if (!jc)
     scr_LogPrint(LPRINT_LOGNORM, "Error connecting to (%s)", servername);
@@ -210,6 +222,10 @@ void sig_handler(int signum)
     mcabber_terminate("Killed by SIGTERM");
   } else if (signum == SIGINT) {
     mcabber_terminate("Killed by SIGINT");
+#ifdef USE_SIGWINCH
+  } else if (signum == SIGWINCH) {
+    ungetch(KEY_RESIZE);
+#endif
   } else {
     scr_LogPrint(LPRINT_LOGNORM, "Caught signal: %d", signum);
   }
@@ -280,7 +296,7 @@ static void compile_options(void)
 #ifdef WITH_ASPELL
   puts("Compiled with Aspell support.");
 #endif
-#ifdef DEBUG_ENABLE
+#ifdef ENABLE_DEBUG
   puts("Compiled with debugging support.");
 #endif
 }
@@ -364,6 +380,9 @@ int main(int argc, char **argv)
   signal(SIGTERM, sig_handler);
   signal(SIGINT,  sig_handler);
   signal(SIGCHLD, sig_handler);
+#ifdef USE_SIGWINCH
+  signal(SIGWINCH, sig_handler);
+#endif
   signal(SIGPIPE, SIG_IGN);
 
   /* Parse command line options */
@@ -476,6 +495,12 @@ int main(int argc, char **argv)
 
   chatstates_disabled = settings_opt_get_int("disable_chatstates");
 
+  /* Initialize FIFO named pipe */
+  fifo_init(settings_opt_get("fifo_name"));
+
+  /* Load previous roster state */
+  hlog_load_state();
+
   if (ret < 0) {
     scr_LogPrint(LPRINT_NORMAL, "No configuration file has been found.");
     scr_ShowBuddyWindow();
@@ -499,10 +524,12 @@ int main(int argc, char **argv)
         scr_DrawRoster();
 
       jb_main();
+      hk_mainloop();
     }
   }
 
   scr_TerminateCurses();
+  fifo_deinit();
 #ifdef HAVE_LIBOTR
   otr_terminate();
 #endif
@@ -512,10 +539,11 @@ int main(int argc, char **argv)
 #endif
 #ifdef HAVE_ASPELL_H
   /* Deinitialize aspell */
-  if (settings_opt_get_int("aspell_enable")) {
+  if (settings_opt_get_int("aspell_enable"))
     spellcheck_deinit();
-  }
 #endif
+  /* Save pending message state */
+  hlog_save_state();
 
   printf("\n\nThanks for using mcabber!\n");
 

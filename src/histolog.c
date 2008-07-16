@@ -1,7 +1,7 @@
 /*
  * histolog.c   -- File history handling
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,14 +26,16 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include "histolog.h"
 #include "hbuf.h"
 #include "jabglue.h"
 #include "utils.h"
-#include "logprint.h"
+#include "screen.h"
 #include "settings.h"
 #include "utils.h"
+#include "roster.h"
 
 static guint UseFileLogging;
 static guint FileLoadLogs;
@@ -157,6 +159,7 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
   char *filename;
   guchar type, info;
   char *data, *tail;
+  guint data_size;
   char *xtext;
   time_t timestamp;
   guint prefix_flags;
@@ -175,7 +178,8 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
       (settings_opt_get_int("load_muc_logs") != 1))
     return;
 
-  data = g_new(char, HBB_BLOCKSIZE+32);
+  data_size = HBB_BLOCKSIZE+32;
+  data = g_new(char, data_size);
   if (!data) {
     scr_LogPrint(LPRINT_LOGNORM, "Not enough memory to read history file");
     return;
@@ -214,12 +218,38 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
   /* See write_histo_line() for line format... */
   while (!feof(fp)) {
     guint dataoffset = 25;
+    guint noeol;
 
-    if (fgets(data, HBB_BLOCKSIZE+27, fp) == NULL)
+    if (fgets(data, data_size-1, fp) == NULL)
       break;
     ln++;
 
-    for (tail = data; *tail; tail++) ;
+    while (1) {
+      for (tail = data; *tail; tail++) ;
+      noeol = (*(tail-1) != '\n');
+      if (!noeol)
+        break;
+      /* TODO: duplicated code... could do better... */
+      if (tail == data + data_size-2) {
+        // The buffer is too small to contain the whole line.
+        // Let's allocate some more space.
+        if (!max_num_of_blocks ||
+            data_size/HBB_BLOCKSIZE < 5U*max_num_of_blocks) {
+          guint toffset = tail - data;
+          // Allocate one more block.
+          data_size = HBB_BLOCKSIZE * (1 + data_size/HBB_BLOCKSIZE);
+          data = g_renew(char, data, data_size);
+          // Update the tail pointer, as the data may have been moved.
+          tail = data + toffset;
+          if (fgets(tail, data_size-1 - (tail-data), fp) == NULL)
+            break;
+        } else {
+          scr_LogPrint(LPRINT_LOGNORM, "Line too long in history file!");
+          ln--;
+          break;
+        }
+      }
+    }
 
     type = data[0];
     info = data[1];
@@ -252,20 +282,34 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
       continue;
     }
 
-    // XXX This will fail when a message is too big
     while (len--) {
       ln++;
-      if (fgets(tail, HBB_BLOCKSIZE+27 - (tail-data), fp) == NULL)
+      if (fgets(tail, data_size-1 - (tail-data), fp) == NULL)
         break;
 
       while (*tail) tail++;
-    }
-    // Small check for too long messages
-    if (tail >= HBB_BLOCKSIZE+dataoffset+1 + data) {
-      // Maybe we will have a parse error on next, because this
-      // message is big (maybe too big).
-      scr_LogPrint(LPRINT_LOGNORM, "A message could be too big "
-                   "in history file...");
+      noeol = (*(tail-1) != '\n');
+      if (tail == data + data_size-2 && (len || noeol)) {
+        // The buffer is too small to contain the whole message.
+        // Let's allocate some more space.
+        if (!max_num_of_blocks ||
+            data_size/HBB_BLOCKSIZE < 5U*max_num_of_blocks) {
+          guint toffset = tail - data;
+          // If the line hasn't been read completely and we reallocate the
+          // buffer, we want to read one more time.
+          if (noeol)
+            len++;
+          // Allocate one more block.
+          data_size = HBB_BLOCKSIZE * (1 + data_size/HBB_BLOCKSIZE);
+          data = g_renew(char, data, data_size);
+          // Update the tail pointer, as the data may have been moved.
+          tail = data + toffset;
+        } else {
+          // There will probably be a parse error on next read, because
+          // this message hasn't been read entirely.
+          scr_LogPrint(LPRINT_LOGNORM, "Message too big in history file!");
+        }
+      }
     }
     // Remove last CR (we keep it if the line is empty, too)
     if ((tail > data+dataoffset+1) && (*(tail-1) == '\n'))
@@ -349,6 +393,11 @@ void hlog_enable(guint enable, const char *root_dir, guint loadfiles)
   }
 }
 
+guint hlog_is_enabled(void)
+{
+  return UseFileLogging;
+}
+
 inline void hlog_write_message(const char *bjid, time_t timestamp, int sent,
         const char *msg)
 {
@@ -372,6 +421,117 @@ inline void hlog_write_status(const char *bjid, time_t timestamp,
   // XXX Check status value?
   write_histo_line(bjid, timestamp, 'S', toupper(imstatus2char[status]),
           status_msg);
+}
+
+
+//  hlog_save_state()
+// If enabled, save the current state of the roster
+// (i.e. pending messages) to a temporary file.
+void hlog_save_state(void)
+{
+  gpointer unread_ptr, first_unread;
+  const char *bjid;
+  char *statefile_xp;
+  FILE *fp;
+  const char *statefile = settings_opt_get("statefile");
+
+  if (!statefile || !UseFileLogging)
+    return;
+
+  statefile_xp = expand_filename(statefile);
+  fp = fopen(statefile_xp, "w");
+  if (!fp) {
+    scr_LogPrint(LPRINT_NORMAL, "Cannot open state file [%s]",
+                 strerror(errno));
+    goto hlog_save_state_return;
+  }
+
+  if (!jb_getonline()) {
+    // We're not connected.  Let's use the unread_jids hash.
+    GList *unread_jid = unread_jid_get_list();
+    unread_ptr = unread_jid;
+    for ( ; unread_jid ; unread_jid = g_list_next(unread_jid))
+      fprintf(fp, "%s\n", (char*)unread_jid->data);
+    g_list_free(unread_ptr);
+    goto hlog_save_state_return;
+  }
+
+  if (!current_buddy) // Safety check -- shouldn't happen.
+    goto hlog_save_state_return;
+
+  // We're connected.  Let's use unread_msg().
+  unread_ptr = first_unread = unread_msg(NULL);
+  if (!first_unread)
+    goto hlog_save_state_return;
+
+  do {
+    guint type = buddy_gettype(unread_ptr);
+    if (type & (ROSTER_TYPE_USER|ROSTER_TYPE_AGENT)) {
+      bjid = buddy_getjid(unread_ptr);
+      if (bjid)
+        fprintf(fp, "%s\n", bjid);
+    }
+    unread_ptr = unread_msg(unread_ptr);
+  } while (unread_ptr && unread_ptr != first_unread);
+
+hlog_save_state_return:
+  if (fp) {
+    long filelen = ftell(fp);
+    fclose(fp);
+    if (!filelen)
+      unlink(statefile_xp);
+  }
+  g_free(statefile_xp);
+}
+
+//  hlog_load_state()
+// If enabled, load the current state of the roster
+// (i.e. pending messages) from a temporary file.
+// This function adds the JIDs to the unread_jids hash table,
+// so it should only be called at startup.
+void hlog_load_state(void)
+{
+  char bjid[1024];
+  char *statefile_xp;
+  FILE *fp;
+  const char *statefile = settings_opt_get("statefile");
+
+  if (!statefile || !UseFileLogging)
+    return;
+
+  statefile_xp = expand_filename(statefile);
+  fp = fopen(statefile_xp, "r");
+  if (fp) {
+    char *eol;
+    while (!feof(fp)) {
+      if (fgets(bjid, sizeof bjid, fp) == NULL)
+        break;
+      // Let's remove the trailing newline.
+      // Also remove whitespace, if the file as been (badly) manually modified.
+      for (eol = bjid; *eol; eol++) ;
+      for (eol--; eol >= bjid && (*eol == '\n' || *eol == ' '); *eol-- = 0) ;
+      // Safety checks...
+      if (!bjid[0])
+        continue;
+      if (check_jid_syntax(bjid)) {
+        scr_LogPrint(LPRINT_LOGNORM,
+                     "ERROR: Invalid JID in state file.  Corrupted file?");
+        break;
+      }
+      // Display a warning if there are pending messages but the user
+      // won't see them because load_log isn't set.
+      if (!FileLoadLogs) {
+        scr_LogPrint(LPRINT_LOGNORM, "WARNING: unread message from <%s>.",
+                     bjid);
+        scr_setmsgflag_if_needed(SPECIAL_BUFFER_STATUS_ID, TRUE);
+      }
+      // Add the JID to unread_jids.  It will be used when the contact is
+      // added to the roster.
+      unread_jid_add(bjid);
+    }
+    fclose(fp);
+  }
+  g_free(statefile_xp);
 }
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

@@ -1,7 +1,7 @@
 /*
  * screen.c     -- UI stuff
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  * Parts of this file come from the Cabber project <cabber@ajmacias.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,10 +25,21 @@
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
-#include <locale.h>
-#include <langinfo.h>
+
 #include <config.h>
+#include <locale.h>
 #include <assert.h>
+#ifdef USE_SIGWINCH
+# include <sys/ioctl.h>
+# include <termios.h>
+# include <unistd.h>
+#endif
+
+#ifdef HAVE_LOCALCHARSET_H
+# include <localcharset.h>
+#else
+# include <langinfo.h>
+#endif
 
 #ifdef HAVE_ASPELL_H
 # include <aspell.h>
@@ -50,7 +61,7 @@
 #define DEFAULT_ROSTER_WIDTH    24
 #define CHAT_WIN_HEIGHT (maxY-1-Log_Win_Height)
 
-char *LocaleCharSet = "C";
+const char *LocaleCharSet = "C";
 
 static unsigned short int Log_Win_Height;
 static unsigned short int Roster_Width;
@@ -139,6 +150,9 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
                        unsigned int prefix_flags, int force_show,
                        unsigned mucnicklen);
 
+inline void scr_UpdateBuddyWindow(void);
+inline void scr_set_chatmode(int enable);
+
 #ifdef HAVE_ASPELL_H
 #define ASPELLBADCHAR 5
 AspellConfig *spell_config;
@@ -156,7 +170,7 @@ static GSList *rostercolrules = NULL;
 static GHashTable *muccolors = NULL, *nickcolors = NULL;
 
 typedef struct {
-  bool manual;//Manually set?
+  bool manual; // Manually set?
   int color;
 } nickcolor;
 
@@ -237,16 +251,21 @@ static int FindColor(const char *name)
   if (result != -2)
     return result;
 
+  // Directly support 256-color values
+  result = atoi(name);
+  if (result > 0 && result < COLORS)
+    return result;
+
   scr_LogPrint(LPRINT_LOGNORM, "ERROR: Wrong color: %s", name);
   return -1;
 }
 
 static int get_user_color(const char *color)
 {
-  bool isbright = false;
+  bool isbright = FALSE;
   int cl;
   if (!strncmp(color, "bright", 6)) {
-    isbright = true;
+    isbright = TRUE;
     color += 6;
   }
   cl = color_to_color_fg(FindColorInternal(color));
@@ -283,9 +302,9 @@ void scr_MucColor(const char *muc, muccoltype type)
     g_free(muclow);
   } else {//Add or overwrite
     if (strcmp(muc, "*")) {
-      ensure_string_htable(&muccolors, g_free);
       muccoltype *value = g_new(muccoltype, 1);
       *value = type;
+      ensure_string_htable(&muccolors, g_free);
       g_hash_table_replace(muccolors, muclow, value);
     } else {
       glob_muccol = type;
@@ -304,22 +323,22 @@ void scr_MucColor(const char *muc, muccoltype type)
 void scr_MucNickColor(const char *nick, const char *color)
 {
   char *snick, *mnick;
-  bool need_update = false;
+  bool need_update = FALSE;
   snick = g_strdup_printf("<%s>", nick);
   mnick = g_strdup_printf("*%s ", nick);
   if (!strcmp(color, "-")) {//Remove the color
     if (nickcolors) {
       nickcolor *nc = g_hash_table_lookup(nickcolors, snick);
       if (nc) {//Have this nick already
-        nc->manual = false;
+        nc->manual = FALSE;
         nc = g_hash_table_lookup(nickcolors, mnick);
         assert(nc);//Must have both at the same time
-        nc->manual = false;
+        nc->manual = FALSE;
       }// Else -> no color saved, nothing to delete
     }
     g_free(snick);//They are not saved in the hash
     g_free(mnick);
-    need_update = true;
+    need_update = TRUE;
   } else if (!strcmp(color, "!")) {
     if (nickcolors) {
       g_free(g_hash_table_lookup(nickcolors, snick));
@@ -328,7 +347,7 @@ void scr_MucNickColor(const char *nick, const char *color)
     }
     g_free(snick);//They are not saved in the hash
     g_free(mnick);
-    need_update = true;
+    need_update = TRUE;
   } else {
     int cl = get_user_color(color);
     if (cl < 0) {
@@ -338,14 +357,14 @@ void scr_MucNickColor(const char *nick, const char *color)
     } else {
       nickcolor *nc = g_new(nickcolor, 1);
       ensure_string_htable(&nickcolors, NULL);
-      nc->manual = true;
+      nc->manual = TRUE;
       nc->color = cl;
       //Free the struct, if any there already
       g_free(g_hash_table_lookup(nickcolors, mnick));
       //Save the new ones
       g_hash_table_replace(nickcolors, mnick, nc);
       g_hash_table_replace(nickcolors, snick, nc);
-      need_update = true;
+      need_update = TRUE;
     }
   }
   if (need_update && chatmode &&
@@ -734,7 +753,11 @@ static int is_speckey(int key)
 void scr_InitLocaleCharSet(void)
 {
   setlocale(LC_CTYPE, "");
+#ifdef HAVE_LOCALCHARSET_H
+  LocaleCharSet = locale_charset();
+#else
   LocaleCharSet = nl_langinfo(CODESET);
+#endif
   utf8_mode = (strcmp(LocaleCharSet, "UTF-8") == 0);
 }
 
@@ -750,6 +773,14 @@ void scr_InitCurses(void)
   intrflush(stdscr, FALSE);
   start_color();
   use_default_colors();
+
+  if (settings_opt_get("escdelay")) {
+#ifdef HAVE_ESCDELAY
+    ESCDELAY = (unsigned) settings_opt_get_int("escdelay");
+#else
+    scr_LogPrint(LPRINT_LOGNORM, "ERROR: no ESCDELAY support.");
+#endif
+  }
 
   ParseColors();
 
@@ -775,7 +806,7 @@ void scr_TerminateCurses(void)
   return;
 }
 
-inline void scr_Beep(void)
+void scr_Beep(void)
 {
   beep();
 }
@@ -794,6 +825,7 @@ static const char *spectimeprefixes[] = {
 };
 
 static int timepreflengths[] = {
+  // (length of the corresponding timeprefix + 5)
   17,
   11,
   6
@@ -801,17 +833,20 @@ static int timepreflengths[] = {
 
 static const char *gettprefix()
 {
-  return timeprefixes[settings_opt_get_int("time_prefix")];
+  guint n = settings_opt_get_int("time_prefix");
+  return timeprefixes[(n < 3 ? n : 0)];
 }
 
 static const char *getspectprefix()
 {
-  return spectimeprefixes[settings_opt_get_int("time_prefix")];
+  guint n = settings_opt_get_int("time_prefix");
+  return spectimeprefixes[(n < 3 ? n : 0)];
 }
 
 static unsigned getprefixwidth()
 {
-  return timepreflengths[settings_opt_get_int("time_prefix")];
+  guint n = settings_opt_get_int("time_prefix");
+  return timepreflengths[(n < 3 ? n : 0)];
 }
 
 //  scr_LogPrint(...)
@@ -960,13 +995,14 @@ static winbuf *scr_new_buddy(const char *title, int dont_show)
 static void scr_UpdateWindow(winbuf *win_entry)
 {
   int n;
-  int width;
+  int width, prefixwidth;
   hbb_line **lines, *line;
   GList *hbuf_head;
   char date[64];
   int color;
 
   width = getmaxx(win_entry->win);
+  prefixwidth = getprefixwidth();
 
   // Should the window be empty?
   if (win_entry->bd->cleared) {
@@ -1055,36 +1091,43 @@ static void scr_UpdateWindow(winbuf *win_entry)
       }
 
       // Make sure we are at the right position
-      wmove(win_entry->win, n, getprefixwidth()-1);
+      wmove(win_entry->win, n, prefixwidth-1);
 
-      //The MUC nick - overwrite with propper color
+      // The MUC nick - overwrite with proper color
       if (line->mucnicklen) {
-        //Store the char after the nick
-        char tmp = line->text[line->mucnicklen];
-        muccoltype type = glob_muccol, *typetmp;
-        //Terminate the string after the nick
+        char *mucjid;
+        char tmp;
+        nickcolor *actual = NULL;
+        muccoltype type, *typetmp;
+
+        // Store the char after the nick
+        tmp = line->text[line->mucnicklen];
+        type = glob_muccol;
+        // Terminate the string after the nick
         line->text[line->mucnicklen] = '\0';
-        char *mucjid = g_utf8_strdown(CURRENT_JID, -1);
+        mucjid = g_utf8_strdown(CURRENT_JID, -1);
         if (muccolors) {
           typetmp = g_hash_table_lookup(muccolors, mucjid);
           if (typetmp)
             type = *typetmp;
         }
         g_free(mucjid);
-        nickcolor *actual = NULL;
         // Need to generate some random color?
         if ((type == MC_ALL) && (!nickcolors ||
             !g_hash_table_lookup(nickcolors, line->text))) {
+          char *snick, *mnick;
+          nickcolor *nc;
+          snick = g_strdup(line->text);
+          mnick = g_strdup(line->text);
+          nc = g_new(nickcolor, 1);
           ensure_string_htable(&nickcolors, NULL);
-          char *snick = g_strdup(line->text), *mnick = g_strdup(line->text);
-          nickcolor *nc = g_new(nickcolor, 1);
           nc->color = nickcols[random() % nickcolcount];
-          nc->manual = false;
+          nc->manual = FALSE;
           *snick = '<';
           snick[strlen(snick)-1] = '>';
           *mnick = '*';
           mnick[strlen(mnick)-1] = ' ';
-          //Insert them
+          // Insert them
           g_hash_table_insert(nickcolors, snick, nc);
           g_hash_table_insert(nickcolors, mnick, nc);
         }
@@ -1095,9 +1138,9 @@ static void scr_UpdateWindow(winbuf *win_entry)
            (!(line->flags & HBB_PREFIX_HLIGHT_OUT)))
           wattrset(win_entry->win, get_color(actual->color));
         wprintw(win_entry->win, "%s", line->text);
-        //Return the char
+        // Return the char
         line->text[line->mucnicklen] = tmp;
-        //Return the color back
+        // Return the color back
         wattrset(win_entry->win, get_color(color));
       }
 
@@ -1430,7 +1473,7 @@ void scr_DrawMainWindow(unsigned int fullinit)
   ver = mcabber_version();
   message = g_strdup_printf("MCabber version %s.\n", ver);
   mvwprintw(chatWnd, 0, 0, message);
-  mvwprintw(chatWnd, 1, 0, "http://www.lilotux.net/~mikael/mcabber/");
+  mvwprintw(chatWnd, 1, 0, "http://mcabber.com/");
   g_free(ver);
   g_free(message);
 
@@ -1441,7 +1484,11 @@ void scr_DrawMainWindow(unsigned int fullinit)
   if (fullinit) {
     // Enable keypad (+ special keys)
     keypad(inputWnd, TRUE);
+#ifdef __MirBSD__
+    wtimeout(inputWnd, 50 /* ms */);
+#else
     nodelay(inputWnd, TRUE);
+#endif
 
     // Create panels
     rosterPanel = new_panel(rosterWnd);
@@ -2085,7 +2132,7 @@ static void set_current_buddy(GList *newbuddy)
   // We're moving to another buddy.  We're thus inactive wrt current_buddy.
   set_chatstate(0);
   // We don't want the chatstate to be changed again right now.
-  lock_chatstate = true;
+  lock_chatstate = TRUE;
 
   prev_st = buddy_getstatus(BUDDATA(current_buddy), NULL);
   buddy_setflags(BUDDATA(current_buddy), ROSTER_FLAG_LOCK, FALSE);
@@ -2630,7 +2677,6 @@ void scr_BufferDate(time_t t)
   update_panels();
 }
 
-#ifdef DEBUG_ENABLE
 //  buffer_list()
 // key: winId/jid
 // value: winbuf structure
@@ -2655,7 +2701,6 @@ void scr_BufferList(void)
   scr_setmsgflag_if_needed(SPECIAL_BUFFER_STATUS_ID, TRUE);
   update_roster = TRUE;
 }
-#endif
 
 //  scr_set_chatmode()
 // Public function to (un)set chatmode...
@@ -2710,7 +2755,7 @@ void scr_setmsgflag_if_needed(const char *bjid, int special)
 // Public function to (un)set multimode...
 // Convention:
 //  0 = disabled / 1 = multimode / 2 = multimode verbatim (commands disabled)
-inline void scr_set_multimode(int enable, char *subject)
+void scr_set_multimode(int enable, char *subject)
 {
   g_free(multiline);
   multiline = NULL;
@@ -2726,7 +2771,7 @@ inline void scr_set_multimode(int enable, char *subject)
 
 //  scr_get_multiline()
 // Public function to get the current multi-line.
-inline const char *scr_get_multiline(void)
+const char *scr_get_multiline(void)
 {
   if (multimode && multiline)
     return multiline;
@@ -2735,7 +2780,7 @@ inline const char *scr_get_multiline(void)
 
 //  scr_get_multimode_subj()
 // Public function to get the multi-line subject, if any.
-inline const char *scr_get_multimode_subj(void)
+const char *scr_get_multimode_subj(void)
 {
   if (multimode)
     return multimode_subj;
@@ -3085,7 +3130,7 @@ void readline_do_completion(void)
 {
   int i, n;
 
-  if (scr_get_multimode() != 2) {
+  if (multimode != 2) {
     // Not in verbatim multi-line mode
     scr_handle_tab();
   } else {
@@ -3209,7 +3254,7 @@ void readline_forward_kill_iline(void)
 void readline_send_multiline(void)
 {
   // Validate current multi-line
-  if (scr_get_multimode())
+  if (multimode)
     process_command(mkcmdstr("msay send"), TRUE);
 }
 
@@ -3653,7 +3698,7 @@ void scr_Getch(keycode *kcode)
   return;
 }
 
-inline void scr_DoUpdate(void)
+void scr_DoUpdate(void)
 {
   doupdate();
 }
@@ -3702,7 +3747,7 @@ void process_key(keycode kcode)
   int key = kcode.value;
   int display_char = FALSE;
 
-  lock_chatstate = false;
+  lock_chatstate = FALSE;
 
   switch (kcode.mcode) {
     case 0:
@@ -3742,7 +3787,17 @@ void process_key(keycode kcode)
         scr_handle_CtrlC();
         break;
     case KEY_RESIZE:
+#ifdef USE_SIGWINCH
+        {
+            struct winsize size;
+            if (ioctl(STDIN_FILENO, TIOCGWINSZ, &size) != -1)
+              resizeterm(size.ws_row, size.ws_col);
+        }
         scr_Resize();
+        process_command(mkcmdstr("screen_refresh"), TRUE);
+#else
+        scr_Resize();
+#endif
         break;
     default:
         display_char = TRUE;
@@ -3750,7 +3805,19 @@ void process_key(keycode kcode)
 
 display:
   if (display_char) {
-    if (kcode.utf8 ? iswprint(key) : (isprint(key) && !is_speckey(key))) {
+    guint printable;
+
+    if (kcode.utf8) {
+      printable = iswprint(key);
+    } else {
+#ifdef __CYGWIN__
+      printable = (isprint(key) || (key >= 161 && key <= 255))
+                  && !is_speckey(key);
+#else
+      printable = isprint(key) && !is_speckey(key);
+#endif
+    }
+    if (printable) {
       char tmpLine[INPUTLINE_LENGTH+1];
 
       // Check the line isn't too long

@@ -35,7 +35,7 @@ NORMAL_UNINSTALL = :
 PRE_UNINSTALL = :
 POST_UNINSTALL = :
 bin_PROGRAMS = mcabber$(EXEEXT)
-@OTR_TRUE@am__append_1 = otr.c otr.h
+@OTR_TRUE@am__append_1 = otr.c otr.h nohtml.c nohtml.h
 subdir = src
 DIST_COMMON = $(srcdir)/Makefile.am $(srcdir)/Makefile.in COPYING
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
@@ -55,15 +55,15 @@ am__mcabber_SOURCES_DIST = main.c roster.c roster.h events.c events.h \
 	jabglue.c jabglue.h jab_iq.c jab_priv.h commands.c commands.h \
 	compl.c compl.h hbuf.c hbuf.h screen.c screen.h logprint.h \
 	settings.c settings.h hooks.c hooks.h utf8.c utf8.h histolog.c \
-	histolog.h utils.c utils.h pgp.c pgp.h help.c help.h otr.c \
-	otr.h
-@OTR_TRUE@am__objects_1 = otr.$(OBJEXT)
+	histolog.h utils.c utils.h pgp.c pgp.h fifo.c fifo.h help.c \
+	help.h otr.c otr.h nohtml.c nohtml.h
+@OTR_TRUE@am__objects_1 = otr.$(OBJEXT) nohtml.$(OBJEXT)
 am_mcabber_OBJECTS = main.$(OBJEXT) roster.$(OBJEXT) events.$(OBJEXT) \
 	jabglue.$(OBJEXT) jab_iq.$(OBJEXT) commands.$(OBJEXT) \
 	compl.$(OBJEXT) hbuf.$(OBJEXT) screen.$(OBJEXT) \
 	settings.$(OBJEXT) hooks.$(OBJEXT) utf8.$(OBJEXT) \
 	histolog.$(OBJEXT) utils.$(OBJEXT) pgp.$(OBJEXT) \
-	help.$(OBJEXT) $(am__objects_1)
+	fifo.$(OBJEXT) help.$(OBJEXT) $(am__objects_1)
 mcabber_OBJECTS = $(am_mcabber_OBJECTS)
 mcabber_LDADD = $(LDADD)
 am__DEPENDENCIES_1 =
@@ -187,7 +187,8 @@ mcabber_SOURCES = main.c roster.c roster.h events.c events.h jabglue.c \
 	jabglue.h jab_iq.c jab_priv.h commands.c commands.h compl.c \
 	compl.h hbuf.c hbuf.h screen.c screen.h logprint.h settings.c \
 	settings.h hooks.c hooks.h utf8.c utf8.h histolog.c histolog.h \
-	utils.c utils.h pgp.c pgp.h help.c help.h $(am__append_1)
+	utils.c utils.h pgp.c pgp.h fifo.c fifo.h help.c help.h \
+	$(am__append_1)
 LDADD = $(GLIB_LIBS) $(GPGME_LIBS) $(LIBOTR_LIBS) \
 	../libjabber/liblibjabber.a ../connwrap/libconnwrap.a
 
@@ -264,6 +265,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/commands.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/compl.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/events.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/fifo.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/hbuf.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/help.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/histolog.Po@am__quote@
@@ -271,6 +273,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/jab_iq.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/jabglue.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/main.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/nohtml.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/otr.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/pgp.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/roster.Po@am__quote@

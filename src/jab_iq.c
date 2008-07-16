@@ -1,7 +1,7 @@
 /*
  * jab_iq.c     -- Jabber protocol IQ-related fonctions
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  * Some parts initially came from the centericq project:
  * Copyright (C) 2002-2005 by Konstantin Klyagin <konst@konst.org.ua>
  * Some small parts come from the Pidgin project <http://pidgin.im/>
@@ -739,6 +739,7 @@ void request_vcard(const char *bjid)
 static void storage_bookmarks_parse_conference(xmlnode xmldata)
 {
   const char *fjid, *name, *autojoin;
+  const char *pstatus, *awhois;
   char *bjid;
   GSList *room_elt;
 
@@ -747,6 +748,8 @@ static void storage_bookmarks_parse_conference(xmlnode xmldata)
     return;
   name = xmlnode_get_attrib(xmldata, "name");
   autojoin = xmlnode_get_attrib(xmldata, "autojoin");
+  awhois = xmlnode_get_attrib(xmldata, "autowhois");
+  pstatus = xmlnode_get_tag_data(xmldata, "print_status");
 
   bjid = jidtodisp(fjid); // Bare jid
 
@@ -766,6 +769,25 @@ static void storage_bookmarks_parse_conference(xmlnode xmldata)
     */
   }
 
+  // Set the print_status and auto_whois values
+  if (pstatus) {
+    enum room_printstatus i;
+    for (i = status_none; i <= status_all; i++)
+      if (!strcasecmp(pstatus, strprintstatus[i]))
+        break;
+    if (i <= status_all)
+      buddy_setprintstatus(room_elt->data, i);
+  }
+  if (awhois) {
+    enum room_autowhois i = autowhois_default;
+    if (!strcmp(awhois, "1"))
+      i = autowhois_on;
+    else if (!strcmp(awhois, "0"))
+      i = autowhois_off;
+    if (i != autowhois_default)
+      buddy_setautowhois(room_elt->data, i);
+  }
+
   // Is autojoin set?
   // If it is, we'll look up for more information (nick? password?) and
   // try to join the room.
@@ -775,7 +797,7 @@ static void storage_bookmarks_parse_conference(xmlnode xmldata)
     nick = xmlnode_get_tag_data(xmldata, "nick");
     passwd = xmlnode_get_tag_data(xmldata, "password");
     if (!nick || !*nick)
-      nick = tmpnick = default_muc_nickname();
+      nick = tmpnick = default_muc_nickname(NULL);
     // Let's join now
     scr_LogPrint(LPRINT_LOGNORM, "Auto-join bookmark <%s>", bjid);
     jb_room_join(bjid, nick, passwd);
@@ -1047,11 +1069,17 @@ static void handle_iq_commands_list(jconn conn, char *from, const char *id,
   xmlnode myquery;
   jid requester_jid;
   const struct adhoc_command *command;
+  const char *node;
   bool from_self;
+
   x = jutil_iqnew(JPACKET__RESULT, NS_DISCO_ITEMS);
   xmlnode_put_attrib(x, "id", id);
   xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
   myquery = xmlnode_get_tag(x, "query");
+
+  node = xmlnode_get_attrib(xmlnode_get_tag(xmldata, "query"), "node");
+  if (node)
+    xmlnode_put_attrib(myquery, "node", node);
 
   requester_jid = jid_new(conn->p, xmlnode_get_attrib(xmldata, "from"));
   from_self = !jid_cmpx(conn->user, requester_jid, JID_USER | JID_SERVER);
@@ -1072,15 +1100,17 @@ static void handle_iq_commands_list(jconn conn, char *from, const char *id,
 
 static void xmlnode_insert_dataform_result_message(xmlnode node, char *message)
 {
-  xmlnode x = xmlnode_insert_tag(node, "x");
+  xmlnode x, field, value;
+
+  x = xmlnode_insert_tag(node, "x");
   xmlnode_put_attrib(x, "type", "result");
   xmlnode_put_attrib(x, "xmlns", "jabber:x:data");
 
-  xmlnode field = xmlnode_insert_tag(x, "field");
+  field = xmlnode_insert_tag(x, "field");
   xmlnode_put_attrib(field, "type", "text-single");
   xmlnode_put_attrib(field, "var", "message");
 
-  xmlnode value = xmlnode_insert_tag(field, "value");
+  value = xmlnode_insert_tag(field, "value");
   xmlnode_insert_cdata(value, message, -1);
 }
 
@@ -1089,7 +1119,7 @@ static char *generate_session_id(char *prefix)
   char *result;
   static int counter = 0;
   counter++;
-  // TODO better use timezone ?
+  // TODO better use timestamp?
   result = g_strdup_printf("%s-%i", prefix, counter);
   return result;
 }
@@ -1112,6 +1142,8 @@ static void handle_iq_command_set_status(jconn conn, char *from, const char *id,
   xmlnode_put_attrib(command, "xmlns", NS_COMMANDS);
 
   if (!sessionid) {
+    xmlnode value;
+
     sessionid = generate_session_id("set-status");
     xmlnode_put_attrib(command, "sessionid", sessionid);
     g_free(sessionid);
@@ -1133,7 +1165,7 @@ static void handle_iq_command_set_status(jconn conn, char *from, const char *id,
     xmlnode_put_attrib(y, "type", "hidden");
     xmlnode_put_attrib(y, "var", "FORM_TYPE");
 
-    xmlnode value = xmlnode_insert_tag(y, "value");
+    value = xmlnode_insert_tag(y, "value");
     xmlnode_insert_cdata(value, "http://jabber.org/protocol/rc", -1);
 
     y = xmlnode_insert_tag(x, "field");
@@ -1172,7 +1204,7 @@ static void handle_iq_command_set_status(jconn conn, char *from, const char *id,
       if (s->name) {
         char *status = g_strdup_printf("%s %s", s->status,
                                        message ? message : "");
-        setstatus(NULL, status);
+        cmd_setstatus(NULL, status);
         g_free(status);
         xmlnode_put_attrib(command, "status", "completed");
         xmlnode_put_attrib(iq, "type", "result");
@@ -1189,7 +1221,7 @@ static void handle_iq_command_set_status(jconn conn, char *from, const char *id,
 
 static void _callback_foreach_buddy_groupchat(gpointer rosterdata, void *param)
 {
-  xmlnode value;
+  xmlnode value, option;
   xmlnode *field;
   const char *room_jid, *nickname;
   char *desc;
@@ -1200,7 +1232,7 @@ static void _callback_foreach_buddy_groupchat(gpointer rosterdata, void *param)
   if (!nickname) return;
   field = param;
 
-  xmlnode option = xmlnode_insert_tag(*field, "option");
+  option = xmlnode_insert_tag(*field, "option");
   value = xmlnode_insert_tag(option, "value");
   xmlnode_insert_cdata(value, room_jid, -1);
   desc = g_strdup_printf("%s on %s", nickname, room_jid);
@@ -1225,6 +1257,8 @@ static void handle_iq_command_leave_groupchats(jconn conn, char *from,
   xmlnode_put_attrib(command, "xmlns", NS_COMMANDS);
 
   if (!sessionid) {
+    xmlnode title, instructions, field, value;
+
     sessionid = generate_session_id("leave-groupchats");
     xmlnode_put_attrib(command, "sessionid", sessionid);
     g_free(sessionid);
@@ -1234,18 +1268,18 @@ static void handle_iq_command_leave_groupchats(jconn conn, char *from,
     xmlnode_put_attrib(x, "type", "form");
     xmlnode_put_attrib(x, "xmlns", "jabber:x:data");
 
-    xmlnode title = xmlnode_insert_tag(x, "title");
+    title = xmlnode_insert_tag(x, "title");
     xmlnode_insert_cdata(title, "Leave groupchat(s)", -1);
 
-    xmlnode instructions = xmlnode_insert_tag(x, "instructions");
+    instructions = xmlnode_insert_tag(x, "instructions");
     xmlnode_insert_cdata(instructions, "What groupchats do you want to leave?",
                          -1);
 
-    xmlnode field = xmlnode_insert_tag(x, "field");
+    field = xmlnode_insert_tag(x, "field");
     xmlnode_put_attrib(field, "type", "hidden");
     xmlnode_put_attrib(field, "var", "FORM_TYPE");
 
-    xmlnode value = xmlnode_insert_tag(field, "value");
+    value = xmlnode_insert_tag(field, "value");
     xmlnode_insert_cdata(value, "http://jabber.org/protocol/rc", -1);
 
     field = xmlnode_insert_tag(x, "field");
@@ -1260,9 +1294,10 @@ static void handle_iq_command_leave_groupchats(jconn conn, char *from,
   {
     xmlnode form = xmlnode_get_tag(x, "x?xmlns=jabber:x:data");
     if (form) {
+      xmlnode x, gc;
+
       xmlnode_put_attrib(command, "status", "completed");
-      xmlnode gc = xmlnode_get_tag(form, "field?var=groupchats");
-      xmlnode x;
+      gc = xmlnode_get_tag(form, "field?var=groupchats");
 
       for (x = xmlnode_get_firstchild(gc) ; x ; x = xmlnode_get_nextsibling(x))
       {
@@ -1270,7 +1305,7 @@ static void handle_iq_command_leave_groupchats(jconn conn, char *from,
         if (to_leave) {
           GList* b = buddy_search_jid(to_leave);
           if (b)
-            room_leave(b->data, "Asked by remote command");
+            cmd_room_leave(b->data, "Asked by remote command");
         }
       }
       xmlnode_put_attrib(iq, "type", "result");
@@ -1319,7 +1354,7 @@ static void handle_iq_disco_items(jconn conn, char *from, const char *id,
                                   xmlnode xmldata)
 {
   xmlnode x;
-  char *node;
+  const char *node;
   x = xmlnode_get_tag(xmldata, "query");
   node = xmlnode_get_attrib(x, "node");
   if (node) {
@@ -1552,7 +1587,7 @@ static void handle_iq_time202(jconn conn, char *from, const char *id,
   time_t now_t;
   struct tm *now;
   char const *sign;
-  int diff;
+  int diff = 0;
 
   time(&now_t);
 
@@ -1569,10 +1604,15 @@ static void handle_iq_time202(jconn conn, char *from, const char *id,
 
   now = localtime(&now_t);
 
-  if (now->tm_isdst < 0)
-    diff = 0;
-  else
+  if (now->tm_isdst >= 0) {
+#if defined HAVE_TM_GMTOFF
     diff = now->tm_gmtoff;
+#elif defined HAVE_TIMEZONE
+    tzset();
+    diff = -timezone;
+#endif
+  }
+
   if (diff < 0) {
     sign = "-";
     diff = -diff;

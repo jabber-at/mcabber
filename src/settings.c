@@ -1,7 +1,7 @@
 /*
  * settings.c   -- Configuration stuff
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -97,6 +97,7 @@ int cfg_read_file(char *filename, guint mainfile)
   if (!filename) {
     // Use default config file locations
     char *home;
+    GString *sfilename;
 
     if (!mainfile) {
       scr_LogPrint(LPRINT_LOGNORM, "No file name provided");
@@ -110,28 +111,28 @@ int cfg_read_file(char *filename, guint mainfile)
       err = -1;
       goto cfg_read_file_return;
     }
-    filename = g_new(char, strlen(home)+24);
-    sprintf(filename, "%s/.mcabber/mcabberrc", home);
-    if ((fp = fopen(filename, "r")) == NULL) {
+    sfilename = g_string_new("");
+    g_string_printf(sfilename, "%s/.mcabber/mcabberrc", home);
+    if ((fp = fopen(sfilename->str, "r")) == NULL) {
       // 2nd try...
-      sprintf(filename, "%s/.mcabberrc", home);
-      if ((fp = fopen(filename, "r")) == NULL) {
+      g_string_printf(sfilename, "%s/.mcabberrc", home);
+      if ((fp = fopen(sfilename->str, "r")) == NULL) {
         fprintf(stderr, "Cannot open config file!\n");
-        g_free(filename);
+        g_string_free(sfilename, TRUE);
         err = -1;
         goto cfg_read_file_return;
       }
     }
     // Check configuration file permissions
     // As it could contain sensitive data, we make it user-readable only.
-    checkset_perm(filename, TRUE);
-    scr_LogPrint(LPRINT_LOGNORM, "Reading %s", filename);
+    checkset_perm(sfilename->str, TRUE);
+    scr_LogPrint(LPRINT_LOGNORM, "Reading %s", sfilename->str);
     // Check mcabber dir.  Here we just warn, we don't change the modes.
-    sprintf(filename, "%s/.mcabber/", home);
-    checkset_perm(filename, FALSE);
-    g_free(filename);
-    filename = NULL;
+    g_string_printf(sfilename, "%s/.mcabber/", home);
+    checkset_perm(sfilename->str, FALSE);
+    g_string_free(sfilename, TRUE);
   } else {
+    // filename was specified
     if ((fp = fopen(filename, "r")) == NULL) {
       const char *msg = "Cannot open configuration file";
       if (mainfile)
@@ -387,9 +388,13 @@ void settings_foreach(guint type, void (*pfunc)(char *k, char *v, void *param),
 //  default_muc_nickname()
 // Return the user's default nickname
 // The caller should free the string after use
-char *default_muc_nickname(void)
+char *default_muc_nickname(const char *roomid)
 {
   char *nick;
+
+  nick = (char*)jb_get_bookmark_nick(roomid);
+  if (nick)
+    return g_strdup(nick);
 
   // We try the "nickname" option, then the username part of the jid.
   nick = (char*)settings_opt_get("nickname");
