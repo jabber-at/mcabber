@@ -2,7 +2,8 @@ Source: mcabber
 Section: net
 Priority: optional
 Maintainer: Mario Iseli <mario@debian.org>
-Build-Depends: debhelper (>= 5.0.0), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, dpatch, libotr2-dev, libaspell-dev
+Uploaders: Gerfried Fuchs <rhonda@debian.at>
+Build-Depends: debhelper (>= 5.0.0), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, dpatch, libotr2-dev (>= 3.1.0), libaspell-dev, libgcrypt11-dev
 Homepage: http://www.lilotux.net/~mikael/mcabber/
 Standards-Version: 3.8.0
 

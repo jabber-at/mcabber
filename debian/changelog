@@ -1,3 +1,11 @@
+mcabber (0.9.7-0.1~bpo40+1) etch-backports; urgency=low
+
+  * Rebuild for etch-backports.
+  * Add libgcrypt11-dev to Build-Depends (see #497384)
+  * Add versioned-depends on libotr2-dev
+
+ -- Gerfried Fuchs <rhonda@debian.at>  Tue, 30 Dec 2008 13:07:49 +0100
+
 mcabber (0.9.7-0.1) unstable; urgency=low
 
   * Non-maintainer upload.
