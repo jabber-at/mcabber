@@ -20,6 +20,7 @@ void spellcheck_deinit(void);
 //static void spellcheck(char*, char*);
 #endif
 
+#include "hbuf.h"
 #include "logprint.h"
 
 #define INPUTLINE_LENGTH  1024
@@ -45,25 +46,6 @@ enum colors {
   COLOR_ROSTERNMSG,
   COLOR_INFO,
   COLOR_MSGIN,
-  //Foreground color on usual backgroud
-  //curses do not allow telling color only ->
-  //needs colorpairs
-  COLOR_BLACK_FG,
-  COLOR_RED_FG,
-  COLOR_GREEN_FG,
-  COLOR_YELLOW_FG,
-  COLOR_BLUE_FG,
-  COLOR_MAGENTA_FG,
-  COLOR_CYAN_FG,
-  COLOR_WHITE_FG,
-  COLOR_BLACK_BOLD_FG,
-  COLOR_RED_BOLD_FG,
-  COLOR_GREEN_BOLD_FG,
-  COLOR_YELLOW_BOLD_FG,
-  COLOR_BLUE_BOLD_FG,
-  COLOR_MAGENTA_BOLD_FG,
-  COLOR_CYAN_BOLD_FG,
-  COLOR_WHITE_BOLD_FG,
   COLOR_max
 };
 
@@ -129,6 +111,9 @@ void scr_append_multiline(const char *line);
 const char *scr_get_multiline(void);
 const char *scr_get_multimode_subj(void);
 
+guint scr_getprefixwidth(void);
+void  scr_line_prefix(hbb_line *line, char *prefix, guint preflen);
+
 void scr_Beep(void);
 
 bool Autoaway;
@@ -159,6 +144,7 @@ void scr_BufferPurgeAll(int);
 void scr_BufferSearch(int direction, const char *text);
 void scr_BufferPercent(int pc);
 void scr_BufferDate(time_t t);
+void scr_BufferDump(const char *file);
 void scr_RosterUnreadMessage(int);
 void scr_RosterJumpAlternate(void);
 void scr_BufferScrollUpDown(int updown, unsigned int nblines);
@@ -182,7 +168,7 @@ int  readline_accept_line(int down_history);
 void readline_cancel_completion(void);
 void readline_do_completion(void);
 void readline_refresh_screen(void);
-void readline_disable_chat_mode(void);
+void readline_disable_chat_mode(guint show_roster);
 void readline_hist_beginning_search_bwd(void);
 void readline_hist_beginning_search_fwd(void);
 void readline_hist_prev(void);

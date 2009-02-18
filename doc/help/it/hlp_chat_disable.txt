@@ -1,4 +1,5 @@
 
- /CHAT_DISABLE
+ /CHAT_DISABLE [--show-roster]
 
-Disabilita la modalit‡ chat
+Disabilita la modalit√† chat
+Con l'opzione --show-roster viene disabiltata la visualizzazione a schermo intero.

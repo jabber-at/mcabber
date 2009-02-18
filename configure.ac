@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.9.7],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.9.9],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -33,9 +33,8 @@ fi
 AC_HEADER_STDC
 AC_CHECK_HEADERS([arpa/inet.h fcntl.h locale.h netdb.h netinet/in.h stddef.h \
                   stdlib.h string.h strings.h sys/socket.h sys/time.h \
-                  syslog.h termios.h unistd.h getopt.h wchar.h wctype.h \
-                  localcharset.h])
-AC_CHECK_HEADERS([getopt.h], , AC_MSG_ERROR([Missing header file]))
+                  syslog.h termios.h wchar.h wctype.h localcharset.h])
+AC_CHECK_HEADERS([unistd.h], , AC_MSG_ERROR([Missing header file]))
 AC_VAR_TIMEZONE_EXTERNALS
 
 # Checks for typedefs, structures, and compiler characteristics.
@@ -55,8 +54,8 @@ AC_FUNC_SELECT_ARGTYPES
 AC_TYPE_SIGNAL
 AC_FUNC_STRFTIME
 AC_FUNC_VPRINTF
-AC_CHECK_FUNCS([alarm bzero gethostbyname gethostname inet_ntoa isascii \
-                memmove memset modf select setlocale socket strcasecmp \
+AC_CHECK_FUNCS([alarm arc4random bzero gethostbyname gethostname inet_ntoa \
+                isascii memmove memset modf select setlocale socket strcasecmp \
                 strchr strdup strncasecmp strrchr strstr strcasestr vsnprintf])
 
 
@@ -129,7 +128,12 @@ if test "$mc_cv_ncurses_escdelay" = yes; then
 fi
 
 # Check for glib
-AM_PATH_GLIB_2_0(2.0.0, , AC_MSG_ERROR([glib is required]),[g_list_append])
+AM_PATH_GLIB_2_0(2.14.0,
+                 [AC_DEFINE(HAVE_GLIB_REGEX, 1,
+                            [Define if GLib has regex support])],
+                 [AM_PATH_GLIB_2_0(2.0.0, , AC_MSG_ERROR([glib is required]),
+                                  [g_list_append])],
+                 [g_regex_new])
 
 # Check for gpgme
 AC_ARG_ENABLE(gpgme, AC_HELP_STRING([--disable-gpgme], [disable GPGME support]),

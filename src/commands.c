@@ -85,6 +85,7 @@ static void do_source(char *arg);
 static void do_color(char *arg);
 static void do_otr(char *arg);
 static void do_otrpolicy(char *arg);
+static void do_echo(char *arg);
 
 static void do_say_internal(char *arg, int parse_flags);
 
@@ -125,11 +126,14 @@ void cmd_init(void)
           COMPL_BUFFER, 0, &do_buffer);
   cmd_add("chat_disable", "Disable chat mode", 0, 0, &do_chat_disable);
   cmd_add("clear", "Clear the dialog window", 0, 0, &do_clear);
+  cmd_add("color", "Set coloring options", COMPL_COLOR, 0, &do_color);
   cmd_add("connect", "Connect to the server", 0, 0, &do_connect);
   cmd_add("del", "Delete the current buddy", 0, 0, &do_del);
   cmd_add("disconnect", "Disconnect from server", 0, 0, &do_disconnect);
+  cmd_add("echo", "Display a string in the log window", 0, 0, &do_echo);
   cmd_add("event", "Process an event", COMPL_EVENTSID, COMPL_EVENTS, &do_event);
-  cmd_add("group", "Change group display settings", COMPL_GROUP, 0, &do_group);
+  cmd_add("group", "Change group display settings",
+          COMPL_GROUP, COMPL_GROUPNAME, &do_group);
   cmd_add("help", "Display some help", COMPL_CMD, 0, &do_help);
   cmd_add("iline", "Manipulate input buffer", 0, 0, &do_iline);
   cmd_add("info", "Show basic info on current buddy", 0, 0, &do_info);
@@ -160,7 +164,6 @@ void cmd_init(void)
   cmd_add("status_to", "Show or set your status for one recipient",
           COMPL_JID, COMPL_STATUS, &do_status_to);
   cmd_add("version", "Show mcabber version", 0, 0, &do_version);
-  cmd_add("color", "Set coloring options", COMPL_COLOR, 0, &do_color);
 
   // Status category
   compl_add_category_word(COMPL_STATUS, "online");
@@ -213,6 +216,7 @@ void cmd_init(void)
   compl_add_category_word(COMPL_BUFFER, "scroll_unlock");
   compl_add_category_word(COMPL_BUFFER, "scroll_toggle");
   compl_add_category_word(COMPL_BUFFER, "list");
+  compl_add_category_word(COMPL_BUFFER, "save");
 
   // Group category
   compl_add_category_word(COMPL_GROUP, "fold");
@@ -1031,7 +1035,7 @@ static void do_group(char *arg)
   if (!current_buddy)
     return;
 
-  paramlst = split_arg(arg, 2, 1); // subcmd, [arg]
+  paramlst = split_arg(arg, 2, 0); // subcmd, [arg]
   subcmd = *paramlst;
   arg = *(paramlst+1);
 
@@ -1040,7 +1044,9 @@ static void do_group(char *arg)
 
   if (arg && *arg) {
     GSList *roster_elt;
-    roster_elt = roster_find(arg, namesearch, ROSTER_TYPE_GROUP);
+    char *group_utf8 = to_utf8(arg);
+    roster_elt = roster_find(group_utf8, namesearch, ROSTER_TYPE_GROUP);
+    g_free(group_utf8);
     if (roster_elt)
       group = buddy_getgroup(roster_elt->data);
   } else {
@@ -1140,8 +1146,7 @@ static int send_message_to(const char *fjid, const char *msg, const char *subj,
 
   // Network part
   jb_send_msg(fjid, msg, (isroom ? ROSTER_TYPE_ROOM : ROSTER_TYPE_USER),
-              subj, NULL, &crypted,
-              type_overwrite);
+              subj, NULL, &crypted, type_overwrite);
 
   if (crypted == -1) {
     scr_LogPrint(LPRINT_LOGNORM, "Encryption error.  Message was not sent.");
@@ -1631,6 +1636,8 @@ static void do_buffer(char *arg)
     buffer_date(arg);
   } else if (*subcmd == '%') {
     buffer_percent(subcmd+1, arg);
+  } else if (!strcasecmp(subcmd, "save")) {
+    scr_BufferDump(arg);
   } else if (!strcasecmp(subcmd, "list")) {
     scr_BufferList();
   } else {
@@ -1921,8 +1928,11 @@ static void do_rename(char *arg)
     scr_RosterUp();
   } else {
     // Rename a single buddy
-    buddy_setname(bud, name_utf8);
-    jb_updatebuddy(bjid, name_utf8, group);
+    guint del_name = 0;
+    if (!*newname || !strcmp(arg, "-"))
+      del_name = TRUE;
+    buddy_setname(bud, (del_name ? (char*)bjid : name_utf8));
+    jb_updatebuddy(bjid, (del_name ? NULL : name_utf8), group);
   }
 
   g_free(name_utf8);
@@ -2574,9 +2584,14 @@ static void room_topic(gpointer bud, char *arg)
     return;
   }
 
+  // If arg is "-", let's clear the topic
+  if (!strcmp(arg, "-"))
+    arg = NULL;
+
   arg = to_utf8(arg);
   // Set the topic
-  jb_send_msg(buddy_getjid(bud), NULL, ROSTER_TYPE_ROOM, arg, NULL, NULL, NULL);
+  jb_send_msg(buddy_getjid(bud), NULL, ROSTER_TYPE_ROOM, arg ? arg : "",
+              NULL, NULL, NULL);
   g_free(arg);
 }
 
@@ -2803,6 +2818,7 @@ static void display_all_bookmarks(void)
 {
   GSList *bm, *bmp;
   GString *sbuf;
+  struct bookmark *bm_elt;
 
   bm = jb_get_all_storage_bookmarks();
 
@@ -2815,7 +2831,17 @@ static void display_all_bookmarks(void)
                            0, HBB_PREFIX_INFO, 0);
 
   for (bmp = bm; bmp; bmp = g_slist_next(bmp)) {
-    g_string_printf(sbuf, "<%s>", (char*)bmp->data);
+    bm_elt = bmp->data;
+    g_string_printf(sbuf, "%c <%s>",
+                    (bm_elt->autojoin ? '*' : ' '), bm_elt->roomjid);
+    if (bm_elt->nick)
+      g_string_append_printf(sbuf, " (%s)", bm_elt->nick);
+    if (bm_elt->name)
+      g_string_append_printf(sbuf, " %s", bm_elt->name);
+    g_free(bm_elt->roomjid);
+    g_free(bm_elt->name);
+    g_free(bm_elt->nick);
+    g_free(bm_elt);
     scr_WriteIncomingMessage(NULL, sbuf->str,
                              0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
   }
@@ -3566,7 +3592,14 @@ static void do_screen_refresh(char *arg)
 
 static void do_chat_disable(char *arg)
 {
-  readline_disable_chat_mode();
+  guint show_roster;
+
+  if (arg && !strcasecmp(arg, "--show-roster"))
+    show_roster = 1;
+  else
+    show_roster = 0;
+
+  readline_disable_chat_mode(show_roster);
 }
 
 static void do_source(char *arg)
@@ -3606,5 +3639,12 @@ static void do_help(char *arg)
 {
   help_process(arg);
 }
+
+static void do_echo(char *arg)
+{
+  if (arg)
+    scr_print_logwindow(arg);
+}
+
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

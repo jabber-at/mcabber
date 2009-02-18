@@ -1,3 +1,12 @@
+mcabber (0.9.9-0.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+  * New upstream release.
+  * Build-Depends changes: added libgcrypt11-dev (closes: #497384), versioned
+    dependency on libotr2-dev (closes: #510200)
+
+ -- Gerfried Fuchs <rhonda@debian.at>  Wed, 18 Feb 2009 21:44:27 +0100
+
 mcabber (0.9.7-0.1) unstable; urgency=low
 
   * Non-maintainer upload.

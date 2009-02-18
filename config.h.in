@@ -18,6 +18,9 @@
 /* Define if you have the external 'altzone' variable. */
 #undef HAVE_ALTZONE
 
+/* Define to 1 if you have the `arc4random' function. */
+#undef HAVE_ARC4RANDOM
+
 /* Define to 1 if you have the <arpa/inet.h> header file. */
 #undef HAVE_ARPA_INET_H
 
@@ -53,8 +56,8 @@
 /* Define to 1 if you have the `gethostname' function. */
 #undef HAVE_GETHOSTNAME
 
-/* Define to 1 if you have the <getopt.h> header file. */
-#undef HAVE_GETOPT_H
+/* Define if GLib has regex support */
+#undef HAVE_GLIB_REGEX
 
 /* GNU TLS */
 #undef HAVE_GNUTLS
