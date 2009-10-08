@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.9.9],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.9.10],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -28,6 +28,8 @@ if test "x$GCC" = "xyes"; then
         DBGCFLAGS="-fgnu89-inline"
     fi
 fi
+
+AC_SYS_LARGEFILE
 
 # Checks for header files.
 AC_HEADER_STDC
@@ -56,7 +58,8 @@ AC_FUNC_STRFTIME
 AC_FUNC_VPRINTF
 AC_CHECK_FUNCS([alarm arc4random bzero gethostbyname gethostname inet_ntoa \
                 isascii memmove memset modf select setlocale socket strcasecmp \
-                strchr strdup strncasecmp strrchr strstr strcasestr vsnprintf])
+                strchr strdup strncasecmp strrchr strstr strcasestr vsnprintf \
+                iswblank])
 
 
 AC_CHECK_DECLS([strptime],,,
@@ -73,7 +76,7 @@ AC_ARG_ENABLE(sigwinch,
         [with_sigwinch=$with_ext_funcs])
 AC_MSG_RESULT($with_sigwinch)
 if test "$with_sigwinch" = yes; then
-    AC_DEFINE(USE_SIGWINCH, [], [Provide own SIGWINCH handler])
+    AC_DEFINE([USE_SIGWINCH], [], [Provide own SIGWINCH handler])
 fi
 
 # Checks for libraries.
@@ -123,13 +126,13 @@ AC_CACHE_CHECK([for ESCDELAY variable],
                             [mc_cv_ncurses_escdelay=no])
                ])
 if test "$mc_cv_ncurses_escdelay" = yes; then
-    AC_DEFINE(HAVE_ESCDELAY, 1,
+    AC_DEFINE([HAVE_ESCDELAY], 1,
               [Define if ncurses has ESCDELAY variable])
 fi
 
 # Check for glib
 AM_PATH_GLIB_2_0(2.14.0,
-                 [AC_DEFINE(HAVE_GLIB_REGEX, 1,
+                 [AC_DEFINE([HAVE_GLIB_REGEX], 1,
                             [Define if GLib has regex support])],
                  [AM_PATH_GLIB_2_0(2.0.0, , AC_MSG_ERROR([glib is required]),
                                   [g_list_append])],
@@ -143,7 +146,7 @@ AC_ARG_ENABLE(gpgme, AC_HELP_STRING([--disable-gpgme], [disable GPGME support]),
     ])
 
 if test x"${enable_gpgme}" != x"no"; then
-    AM_PATH_GPGME(1.0.0, AC_DEFINE(HAVE_GPGME, 1,
+    AM_PATH_GPGME(1.0.0, AC_DEFINE([HAVE_GPGME], 1,
         [Define if you use GPGME to support OpenPGP]))
 fi
 
@@ -190,23 +193,35 @@ if test "$with_ssl" != "no"; then
     else
         AC_MSG_RESULT([not found or disabled])
 
-        AM_PATH_LIBGNUTLS_EXTRA(0.0.1, [
+        PKG_PROG_PKG_CONFIG
+        PKG_CHECK_MODULES([LIBGNUTLS], [gnutls >= 1.0.0],
+                          have_gnutls=yes, have_gnutls=no)
+        if test "$have_gnutls" = "yes"; then
+            AC_DEFINE([HAVE_GNUTLS], 1, [GNU TLS])
             CXXFLAGS="$CXXFLAGS $LIBGNUTLS_CFLAGS"
-            LIBS="$LIBS $LIBGNUTLS_LIBS -lgnutls-extra -lgnutls-openssl"
-            AC_DEFINE([HAVE_GNUTLS], [], [GNU TLS])
-        ])
+            LIBS="$LIBS $LIBGNUTLS_LIBS"
+        fi
     fi
 fi
 
+# Check for Enchant stuff
+AC_ARG_ENABLE(enchant, [  --enable-enchant       enable enchant support],
+              enable_enchant=$enableval, enchant="")
 # Check for Aspell stuff
 AC_ARG_ENABLE(aspell, [  --enable-aspell         enable aspell support],
               enable_aspell=$enableval, aspell="")
-if test "x$enable_aspell" = "xyes"; then
+
+if test "x$enable_enchant" = "xyes"; then
+ PKG_CHECK_MODULES(ENCHANT, [enchant],
+   AC_DEFINE(WITH_ENCHANT, 1, [define if you want enchant support])
+ )
+else
+ if test "x$enable_aspell" = "xyes"; then
     AC_CHECK_HEADERS(aspell.h, [ have_aspell_includes=yes ])
     if test "x$have_aspell_includes" = "xyes"; then
         AC_CHECK_LIB(aspell, new_aspell_config, [ have_aspell_libs=yes ])
         if test "x$have_aspell_libs" = "xyes"; then
-            AC_DEFINE(WITH_ASPELL, 1, [define if you want aspell support])
+            AC_DEFINE([WITH_ASPELL], 1, [define if you want aspell support])
             LIBS="$LIBS -laspell"
         else
             enable_aspell=no
@@ -214,9 +229,10 @@ if test "x$enable_aspell" = "xyes"; then
     else
         enable_aspell=no
     fi
+ fi
 fi
 
-AC_DEFINE(BUILD_JABBER, 1, [build with jabber support])
+AC_DEFINE([BUILD_JABBER], 1, [build with jabber support])
 
 # Export $datadir to the source tree.
 if test x"${datadir}" != x""; then
@@ -246,7 +262,7 @@ AC_ARG_ENABLE(hgcset,
     hgcset=$enableval, hgcset="yes")
 AM_CONDITIONAL(HGCSET, [test x$hgcset = xyes])
 if test "${hgcset}" = "yes"; then
-    AC_DEFINE(ENABLE_HGCSET, 1, [Use Mercurial changeset])
+    AC_DEFINE([ENABLE_HGCSET], 1, [Use Mercurial changeset])
 fi
 
 AM_CONDITIONAL([OTR], [test x$libotr_found = xyes])
@@ -258,6 +274,7 @@ AC_CONFIG_FILES([connwrap/Makefile
                  libjabber/Makefile
                  src/Makefile
                  doc/Makefile
+                 doc/guide/Makefile
                  doc/help/Makefile
                  Makefile])
 AC_OUTPUT

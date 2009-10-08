@@ -14,7 +14,7 @@
 # include <panel.h>
 #endif
 
-#ifdef WITH_ASPELL
+#if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
 void spellcheck_init(void);
 void spellcheck_deinit(void);
 //static void spellcheck(char*, char*);
@@ -70,7 +70,8 @@ typedef struct {
     MKEY_CTRL_INS,
     MKEY_CTRL_DEL,
     MKEY_CTRL_SHIFT_HOME,
-    MKEY_CTRL_SHIFT_END
+    MKEY_CTRL_SHIFT_END,
+    MKEY_MOUSE
   } mcode;
 } keycode;
 
@@ -129,8 +130,7 @@ int chatstates_disabled;
 // For commands...
 void scr_RosterTop(void);
 void scr_RosterBottom(void);
-void scr_RosterUp(void);
-void scr_RosterDown(void);
+void scr_RosterUpDown(int updown, unsigned int n);
 void scr_RosterPrevGroup(void);
 void scr_RosterNextGroup(void);
 void scr_RosterSearch(char *);

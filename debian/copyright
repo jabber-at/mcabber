@@ -21,7 +21,7 @@ Copyright Holders: Mikael Berthe <bmikael@lists.lilotux.net>
 
 License (for the files written by Mikael Berthe)
 
-   Copyright (C) 2005-2006 Mikael Berthe <bmikael@lists.lilotux.net>
+   Copyright (C) 2005-2008 Mikael Berthe <bmikael@lists.lilotux.net>
 
    This package is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -40,8 +40,9 @@ License (for the files written by Mikael Berthe)
    Mikael Berthe has added an exception to the license which allows linking
    with OpenSSL.
 
-On Debian systems, the complete text of the GNU General
-Public License can be found in `/usr/share/common-licenses/GPL'.
+On Debian systems, the complete text of the GNU General Public License
+version 2 can be found in `/usr/share/common-licenses/GPL-2', later
+versions can be found in the same directory.
 
 License (everything not mentioned below):
 
@@ -67,9 +68,6 @@ License (everything not mentioned below):
    You should have received a copy of the GNU General Public License
    along with this package; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
-
-On Debian systems, the complete text of the GNU General
-Public License can be found in `/usr/share/common-licenses/GPL'.
 
 License (for connwrap/md5.c and connwrap/md5.h):
 

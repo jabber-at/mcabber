@@ -41,7 +41,11 @@
 # include <langinfo.h>
 #endif
 
-#ifdef HAVE_ASPELL_H
+#ifdef WITH_ENCHANT
+# include <enchant.h>
+#endif
+
+#ifdef WITH_ASPELL
 # include <aspell.h>
 #endif
 
@@ -73,7 +77,7 @@ static void scr_end_current_completion(void);
 static void scr_insert_text(const char*);
 static void scr_handle_tab(void);
 
-#ifdef HAVE_ASPELL_H
+#if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
 static void spellcheck(char *, char *);
 #endif
 
@@ -120,7 +124,7 @@ static bool roster_win_on_right;
 static time_t LastActivity;
 
 static char       inputLine[INPUTLINE_LENGTH+1];
-#ifdef HAVE_ASPELL_H
+#if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
 static char       maskLine[INPUTLINE_LENGTH+1];
 #endif
 static char      *ptr_inputline;
@@ -155,11 +159,20 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
                        unsigned int prefix_flags, int force_show,
                        unsigned mucnicklen);
 
+inline void scr_WriteMessage(const char *bjid, const char *text,
+                             time_t timestamp, guint prefix_flags,
+                             unsigned mucnicklen);
 inline void scr_UpdateBuddyWindow(void);
 inline void scr_set_chatmode(int enable);
 
-#ifdef HAVE_ASPELL_H
-#define ASPELLBADCHAR 5
+#define SPELLBADCHAR 5
+
+#ifdef WITH_ENCHANT
+EnchantBroker *spell_broker;
+EnchantDict *spell_checker;
+#endif
+
+#ifdef WITH_ASPELL
 AspellConfig *spell_config;
 AspellSpeller *spell_checker;
 #endif
@@ -730,6 +743,10 @@ void scr_InitCurses(void)
   intrflush(stdscr, FALSE);
   start_color();
   use_default_colors();
+#ifdef NCURSES_MOUSE_VERSION
+  if (settings_opt_get_int("use_mouse"))
+    mousemask(ALL_MOUSE_EVENTS, NULL);
+#endif
 
   if (settings_opt_get("escdelay")) {
 #ifdef HAVE_ESCDELAY
@@ -1952,7 +1969,10 @@ void scr_DrawRoster(void)
         foreach_group_member(BUDDATA(buddy), increment_if_buddy_not_filtered,
                              &group_count);
         snprintf(rline, 4*Roster_Width, " %c+++ %s (%i)", pending, name,
-               group_count);
+                 group_count);
+        /* Do not display the item count if there isn't enough space */
+        if (g_utf8_strlen(rline, 4*Roster_Width) >= Roster_Width)
+          snprintf(rline, 4*Roster_Width, " %c--- %s", pending, name);
       }
       else
         snprintf(rline, 4*Roster_Width, " %c--- %s", pending, name);
@@ -2028,9 +2048,9 @@ static inline void scr_LogUrls(const gchar *string)
 }
 #endif
 
-inline void scr_WriteMessage(const char *bjid, const char *text,
-                             time_t timestamp, guint prefix_flags,
-                             unsigned mucnicklen)
+void scr_WriteMessage(const char *bjid, const char *text,
+                      time_t timestamp, guint prefix_flags,
+                      unsigned mucnicklen)
 {
   char *xtext;
 
@@ -2153,7 +2173,7 @@ static inline void set_chatstate(int state)
 }
 
 #if defined JEP0022 || defined JEP0085
-inline long int scr_GetChatStatesTimeout(time_t now)
+long int scr_GetChatStatesTimeout(time_t now)
 {
   // Check if we're currently composing...
   if (chatstate != 1 || !chatstate_timestamp)
@@ -2246,20 +2266,20 @@ void scr_RosterBottom(void)
     scr_ShowBuddyWindow();
 }
 
-//  scr_RosterUp()
-// Go to the previous buddy in the buddylist
-void scr_RosterUp(void)
+//  scr_RosterUpDown(updown, n)
+// Go to the nth next buddy in the buddylist
+// (up if updown == -1, down if updown == 1)
+void scr_RosterUpDown(int updown, unsigned int n)
 {
-  set_current_buddy(g_list_previous(current_buddy));
-  if (chatmode)
-    scr_ShowBuddyWindow();
-}
+  unsigned int i;
 
-//  scr_RosterDown()
-// Go to the next buddy in the buddylist
-void scr_RosterDown(void)
-{
-  set_current_buddy(g_list_next(current_buddy));
+  if (updown < 0) {
+    for (i = 0; i < n; i++)
+      set_current_buddy(g_list_previous(current_buddy));
+  } else {
+    for (i = 0; i < n; i++)
+      set_current_buddy(g_list_next(current_buddy));
+  }
   if (chatmode)
     scr_ShowBuddyWindow();
 }
@@ -2932,7 +2952,7 @@ void scr_append_multiline(const char *line)
 
 //  scr_cmdhisto_addline()
 // Add a line to the inputLine history
-inline void scr_cmdhisto_addline(char *line)
+static inline void scr_cmdhisto_addline(char *line)
 {
   int max_histo_lines;
 
@@ -3570,12 +3590,13 @@ static inline void check_offset(int direction)
   inputline_offset = c - inputLine;
 }
 
-#ifdef HAVE_ASPELL_H
+#if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
 // prints inputLine with underlined words when misspelled
 static inline void print_checked_line(void)
 {
   char *wprint_char_fmt = "%c";
   int point;
+  int nrchar = maxX;
   char *ptrCur = inputLine + inputline_offset;
 
 #ifdef UNICODE
@@ -3586,7 +3607,7 @@ static inline void print_checked_line(void)
 
   wmove(inputWnd, 0, 0); // problem with backspace
 
-  while (*ptrCur) {
+  while (*ptrCur && nrchar-- > 0) {
     point = ptrCur - inputLine;
     if (maskLine[point])
       wattrset(inputWnd, A_UNDERLINE);
@@ -3599,8 +3620,8 @@ static inline void print_checked_line(void)
 
 static inline void refresh_inputline(void)
 {
-#ifdef HAVE_ASPELL_H
-  if (settings_opt_get_int("aspell_enable")) {
+#if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
+  if (settings_opt_get_int("spell_enable")) {
     memset(maskLine, 0, INPUTLINE_LENGTH+1);
     spellcheck(inputLine, maskLine);
   }
@@ -3734,8 +3755,19 @@ void scr_Getch(keycode *kcode)
   kcode->value = wgetch(inputWnd);
   if (utf8_mode) {
     bool ismeta = (kcode->value == 27);
+#ifdef NCURSES_MOUSE_VERSION
+    bool ismouse = (kcode->value == KEY_MOUSE);
 
+    if (ismouse) {
+      MEVENT mouse;
+      getmouse(&mouse);
+      kcode->value = mouse.bstate;
+      kcode->mcode = MKEY_MOUSE;
+      return;
+    } else if (ismeta)
+#else
     if (ismeta)
+#endif
       ks[0] = wgetch(inputWnd);
     else
       ks[0] = kcode->value;
@@ -3815,6 +3847,8 @@ static int bindcommand(keycode kcode)
     g_snprintf(asciikey, 15, "%s", asciicode);
   else if (kcode.mcode == MKEY_META)
     g_snprintf(asciikey, 15, "M%s", asciicode);
+  else if (kcode.mcode == MKEY_MOUSE)
+    g_snprintf(asciikey, 15, "p%s", asciicode);
   else
     g_snprintf(asciikey, 15, "MK%d", kcode.mcode);
 
@@ -3953,18 +3987,32 @@ display:
   return;
 }
 
-#ifdef HAVE_ASPELL_H
-// Aspell initialization
+#if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
+// initialization
 void spellcheck_init(void)
 {
-  int aspell_enable           = settings_opt_get_int("aspell_enable");
-  const char *aspell_lang     = settings_opt_get("aspell_lang");
-  const char *aspell_encoding = settings_opt_get("aspell_encoding");
+  int spell_enable            = settings_opt_get_int("spell_enable");
+  const char *spell_lang     = settings_opt_get("spell_lang");
+#ifdef WITH_ASPELL
+  const char *spell_encoding = settings_opt_get("spell_encoding");
   AspellCanHaveError *possible_err;
+#endif
 
-  if (!aspell_enable)
+  if (!spell_enable)
     return;
 
+#ifdef WITH_ENCHANT
+  if (spell_checker) {
+     enchant_broker_free_dict(spell_broker, spell_checker);
+     enchant_broker_free(spell_broker);
+     spell_checker = NULL;
+     spell_broker = NULL;
+  }
+
+  spell_broker = enchant_broker_init();
+  spell_checker = enchant_broker_request_dict(spell_broker, spell_lang);
+#endif
+#ifdef WITH_ASPELL
   if (spell_checker) {
     delete_aspell_speller(spell_checker);
     delete_aspell_config(spell_config);
@@ -3973,8 +4021,8 @@ void spellcheck_init(void)
   }
 
   spell_config = new_aspell_config();
-  aspell_config_replace(spell_config, "encoding", aspell_encoding);
-  aspell_config_replace(spell_config, "lang", aspell_lang);
+  aspell_config_replace(spell_config, "encoding", spell_encoding);
+  aspell_config_replace(spell_config, "lang", spell_lang);
   possible_err = new_aspell_speller(spell_config);
 
   if (aspell_error_number(possible_err) != 0) {
@@ -3984,23 +4032,37 @@ void spellcheck_init(void)
   } else {
     spell_checker = to_aspell_speller(possible_err);
   }
+#endif
 }
 
-// Deinitialization of Aspell spellchecker
+// Deinitialization of spellchecker
 void spellcheck_deinit(void)
 {
   if (spell_checker) {
+#ifdef WITH_ENCHANT
+    enchant_broker_free_dict(spell_broker, spell_checker);
+#endif
+#ifdef WITH_ASPELL
     delete_aspell_speller(spell_checker);
+#endif
     spell_checker = NULL;
   }
 
+#ifdef WITH_ENCHANT
+  if (spell_broker) {
+    enchant_broker_free(spell_broker);
+    spell_broker = NULL;
+  }
+#endif
+#ifdef WITH_ASPELL
   if (spell_config) {
     delete_aspell_config(spell_config);
     spell_config = NULL;
   }
+#endif
 }
 
-#define aspell_isalpha(c) (utf8_mode ? iswalpha(get_char(c)) : isalpha(*c))
+#define spell_isalpha(c) (utf8_mode ? iswalpha(get_char(c)) : isalpha(*c))
 
 // Spell checking function
 static void spellcheck(char *line, char *checked)
@@ -4014,7 +4076,7 @@ static void spellcheck(char *line, char *checked)
 
   while (*line) {
 
-    if (!aspell_isalpha(line)) {
+    if (!spell_isalpha(line)) {
       line = next_char(line);
       continue;
     }
@@ -4039,12 +4101,18 @@ static void spellcheck(char *line, char *checked)
 
     start = line;
 
-    while (aspell_isalpha(line))
+    while (spell_isalpha(line))
       line = next_char(line);
 
     if (spell_checker &&
-        aspell_speller_check(spell_checker, start, line - start) == 0)
-      memset(&checked[start - line_start], ASPELLBADCHAR, line - start);
+#ifdef WITH_ENCHANT
+        enchant_dict_check(spell_checker, start, line - start) != 0
+#endif
+#ifdef WITH_ASPELL
+        aspell_speller_check(spell_checker, start, line - start) == 0
+#endif
+    )
+      memset(&checked[start - line_start], SPELLBADCHAR, line - start);
   }
 }
 #endif

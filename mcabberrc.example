@@ -102,10 +102,10 @@ set ssl = 0
 # If your mcabber has been built with Aspell support, you can enable spell
 # checking with the following options (you can't change them once mcabber is
 # running).
-#set aspell_enable = 1
-#set aspell_lang = en_EN
-#set aspell_encoding = iso8859-1
-#set aspell_encoding = UTF-8
+#set spell_enable = 1
+#set spell_lang = en_US
+#set spell_encoding = iso8859-1
+#set spell_encoding = UTF-8
 
 # History
 # Number of lines to remember for the command line history
@@ -454,6 +454,10 @@ set escdelay = 50
 # You can specify the OTR directory with the otr_dir option
 # (default = ~/.mcabber/otr/).
 #set otr_dir = "~/.mcabber/otr/"
+#
+# You can set OTR policies from the configuration file (use /help otrpolicy
+# for the details).
+#otrpolicy default manual
 
 # Aliases
 alias me = say /me
@@ -464,10 +468,13 @@ alias notavail = status notavail
 #alias names = room names
 #alias topic = room topic
 
+# Set use_mouse to 1 to map mouse buttons like keycodes.
+#set use_mouse = 1
+
 # Key bindings
-# Ctlr-q (17) bound to /roster unread_next
+# Ctrl-q (17) bound to /roster unread_next
 bind 17 = roster unread_next
-# Ctlr-x (24) bound to /roster alternate
+# Ctrl-x (24) bound to /roster alternate
 bind 24 = roster alternate
 # F5 (269) bound to /roster toggle_offline  (centericq-like, IIRC)
 bind 269 = roster toggle_offline

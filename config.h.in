@@ -74,6 +74,9 @@
 /* Define to 1 if you have the `isascii' function. */
 #undef HAVE_ISASCII
 
+/* Define to 1 if you have the `iswblank' function. */
+#undef HAVE_ISWBLANK
+
 /* Define to 1 if you have the `charset' library (-lcharset). */
 #undef HAVE_LIBCHARSET
 
@@ -196,7 +199,7 @@
 /* Define to 1 if you have the `strstr' function. */
 #undef HAVE_STRSTR
 
-/* Define to 1 if `tm_zone' is member of `struct tm'. */
+/* Define to 1 if `struct tm' is a member of `tm_zone'. */
 #undef HAVE_STRUCT_TM_TM_ZONE
 
 /* Define to 1 if you have the <syslog.h> header file. */
@@ -270,6 +273,9 @@
 /* Define to the one symbol short name of this package. */
 #undef PACKAGE_TARNAME
 
+/* Define to the home page for this package. */
+#undef PACKAGE_URL
+
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
 
@@ -302,6 +308,15 @@
 
 /* define if you want aspell support */
 #undef WITH_ASPELL
+
+/* define if you want enchant support */
+#undef WITH_ENCHANT
+
+/* Number of bits in a file offset, on hosts where this is settable. */
+#undef _FILE_OFFSET_BITS
+
+/* Define for large files, on AIX-style hosts. */
+#undef _LARGE_FILES
 
 /* Define to empty if `const' does not conform to ANSI C. */
 #undef const

@@ -1,3 +1,20 @@
+mcabber (0.9.10-1) unstable; urgency=low
+
+  * New upstream release:
+    - fixes FTBFS problem (closes: #546681)
+    - reduces CPU usage on reconnect troubles (closes: #510545)
+  * Adding myself to Uploaders.
+  * Bump Standards-Version to 3.8.3.
+  * Raise debhelper and compat to 7, use dh_prep instead of dh_clean -k.
+  * Switched README.source from the full text to a reference to the file
+    included with the dpatch package.
+  * Updated copyright informations slightly in debian/copyright.
+  * Remove duplication of Section and Priority in binary package control file
+    stanca.
+  * Fix config.{sub,guess} handling.
+
+ -- Gerfried Fuchs <rhonda@debian.at>  Thu, 08 Oct 2009 19:37:25 +0200
+
 mcabber (0.9.9-0.1) unstable; urgency=low
 
   * Non-maintainer upload.

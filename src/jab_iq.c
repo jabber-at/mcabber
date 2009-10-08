@@ -69,6 +69,8 @@ static void handle_iq_command_leave_groupchats(jconn conn, char *from,
 
 typedef void (*adhoc_command_callback)(jconn, char*, const char*, xmlnode);
 
+inline double seconds_since_last_use(void);
+
 struct adhoc_command {
   char *name;
   char *description;
@@ -1188,10 +1190,10 @@ static void handle_iq_command_set_status(jconn conn, char *from, const char *id,
     // I do not think this is useful, user should not have to care of the
     // priority like gossip and gajim do (misc)
     y = xmlnode_insert_tag(x, "field");
-    xmlnode_put_attrib(y, "type", "text-multi");
+    xmlnode_put_attrib(y, "type", "text-single");
     xmlnode_put_attrib(y, "var", "status-message");
     xmlnode_put_attrib(y, "label", "Message");
-  } else if (!strcmp(action, "cancel")) {
+  } else if (action && !strcmp(action, "cancel")) {
     xmlnode_put_attrib(command, "status", "canceled");
   } else  { // (if sessionid and not canceled)
     y = xmlnode_get_tag(x, "x?xmlns=jabber:x:data");
@@ -1201,16 +1203,18 @@ static void handle_iq_command_set_status(jconn conn, char *from, const char *id,
                                    "value");
       message = xmlnode_get_tag_data(xmlnode_get_tag(y,
                                    "field?var=status-message"), "value");
-      for (s = adhoc_status_list; !s->name || strcmp(s->name, value); s++);
-      if (s->name) {
-        char *status = g_strdup_printf("%s %s", s->status,
-                                       message ? message : "");
-        cmd_setstatus(NULL, status);
-        g_free(status);
-        xmlnode_put_attrib(command, "status", "completed");
-        xmlnode_put_attrib(iq, "type", "result");
-        xmlnode_insert_dataform_result_message(command,
-                                               "Status has been changed");
+      if (value) {
+        for (s = adhoc_status_list; s->name && strcmp(s->name, value); s++);
+        if (s->name) {
+          char *status = g_strdup_printf("%s %s", s->status,
+                                         message ? message : "");
+          cmd_setstatus(NULL, status);
+          g_free(status);
+          xmlnode_put_attrib(command, "status", "completed");
+          xmlnode_put_attrib(iq, "type", "result");
+          xmlnode_insert_dataform_result_message(command,
+                                                 "Status has been changed");
+        }
       }
     }
   }
@@ -1293,7 +1297,7 @@ static void handle_iq_command_leave_groupchats(jconn conn, char *from,
     xmlnode_insert_tag(field, "required");
 
     foreach_buddy(ROSTER_TYPE_ROOM, &_callback_foreach_buddy_groupchat, &field);
-  } else if (!strcmp(action, "cancel")) {
+  } else if (action && !strcmp(action, "cancel")) {
     xmlnode_put_attrib(command, "status", "canceled");
   } else  { // (if sessionid and not canceled)
     xmlnode form = xmlnode_get_tag(x, "x?xmlns=jabber:x:data");
@@ -1468,7 +1472,7 @@ static void handle_iq_disco_info(jconn conn, char *from, const char *id,
   xmlnode_free(x);
 }
 
-inline double seconds_since_last_use(void)
+double seconds_since_last_use(void)
 {
   return difftime(time(NULL), iqlast);
 }
