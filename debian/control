@@ -3,14 +3,14 @@ Section: net
 Priority: optional
 Maintainer: Mario Iseli <mario@debian.org>
 Uploaders: Gerfried Fuchs <rhonda@debian.at>
-Build-Depends: debhelper (>= 7), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, dpatch, libotr2-dev (>= 3.1.0), libgcrypt11-dev, libaspell-dev
-Homepage: http://www.lilotux.net/~mikael/mcabber/
-Standards-Version: 3.8.3
+Build-Depends: debhelper (>= 7), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, libotr2-dev (>= 3.1.0), libgcrypt11-dev, libaspell-dev, libloudmouth1-dev
+Homepage: http://www.mcabber.com/
+Standards-Version: 3.8.4
 
 Package: mcabber
 Architecture: any
-Depends: ${shlibs:Depends}
-Description: Small Jabber console client
- MCabber is a Jabber text-mode client, which includes features such as
- SSL support, history logging, commands completion, and external actions
- triggers.
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: small Jabber (XMPP) console client
+ MCabber is a Jabber (XMPP) text-mode client, which includes features such as
+ SASL support, history logging, commands completion, dynamic modules and
+ external actions triggers.

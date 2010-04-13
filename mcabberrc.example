@@ -4,29 +4,27 @@
 # - Leading and trailing spaces are ignored.
 # - Empty lines and lines beginning with a '#' are ignored.
 
-# The jid will be the following: username@server
-# If your jid's domain name is different from the server name,
-# you can specify your complete jid as username.
-#
-# If password is not given, it will be interactively asked for.
-# If port is not given, default Jabber port will be used.
-#
-# Warning to GTalk users! please see the FAQ:
-# <http://wiki.mcabber.com/index.php/Frequently_Asked_Questions>
+# Please provide your Jabber (XMPP) identifier:
+set jid = yourusername@domain
 
-set username = yourusername
+# If password is not given, it will be interactively asked for.
 # Note: if the password contains leading or trailing spaces, you must
 # enclose it with quotes: set password = " example password "
 #set password = yourpassword
-set server = your.jabber.server
+
+# You can provide a server name if you want mcabber to connect
+# to a specific server.
+#set server = your.jabber.server
+
+# If port is not given, mcabber will try to find it out.
 #set port = 5222
-#
+
 # If you don't know what a resource is, do not set it.
 # Set disable_random_resource to 1 if you don't want mcabber to add a random
 # suffix to the resource name.
 #set resource = mcabber
 #set disable_random_resource = 0
-#
+
 #set priority = 3
 #set priority_away = 0
 
@@ -34,26 +32,23 @@ set server = your.jabber.server
 # presence in your roster (default: 0).
 set ignore_self_presence = 1
 
-# SSL options:
-# Set ssl non-zero to use SSL (this also sets the default port to 5223).
-# * Please note that certificate verification is NOT yet supported if
-#   mcabber is compiled with GnuTLS (only works with OpenSSL).
-#   You can use mcabber -V to check.
-# Set ssl_verify to 0 to disable certificate verification, or non-zero
-# to set desired maximum CA verification depth. Use -1 to specify an
-# unlimited depth.
-# NOTE: You probably need to set ssl_capath for SSL cert verification to work!
-# Set ssl_cafile to a path to a CA certificate file (may contain multiple
-# CA certificates).
-# Set ssl_capath to a directory containing CA certificates (use c_rehash
-# to generate hash links).
-# Set ssl_ciphers to a list of desired SSL ciphers (run "openssl ciphers"
-# for candidate values).
-set ssl = 0
-#set ssl_verify = -1
-#set ssl_cafile = /usr/share/ssl/certs/ca-bundle.crt
-#set ssl_capath =
-#set ssl_ciphers =
+# SSL/TLS options:
+# TLS is now regarded as the default encryption for connecting to jabber.
+# You can require TLS by setting tls to 1.  If your jabber server
+# still doesn't support TLS, you can use the old-style SSL by setting
+# ssl to 1.  It's not possible to use old-style SSL and TLS together.
+#set ssl = 0
+set tls = 1
+# Moreover, it's possible to check whether the fingerprint of the
+# ssl certificate matches ssl_fingerprint.
+# You can get the fingerprint of your server either with gnutls or openssl:
+# 1. gnutls-cli -p 5223 $your_server
+# 2. openssl s_client -connect $your_server:5223 | \
+#    openssl x509 -fingerprint -md5 -noout
+#set ssl_fingerprint = 97:5C:00:3F:1D:77:45:25:E2:C5:70:EC:83:C8:87:EE
+# Set ssl_ignore_checks to 1 to disable all certificate checks except the
+# fingerprint check.
+#set ssl_ignore_checks = 0
 
 # PGP support
 # Set pgp to 1 to enable OpenPGP.
@@ -70,12 +65,12 @@ set ssl = 0
 # If you don't like the default number of passphrase retries (2), you
 # can change it here.  If this number is < 0, mcabber will keep asking
 # until the passphrase is good.
-#pgp_passphrase_retries = 2
+#set pgp_passphrase_retries = 2
 
 # Conference nickname
 # This nickname is used when joining a room, when no nick is explicitly
 # specified by the user.  Note that when the nickname option is not set,
-# the username variable can be used.
+# the jid variable can be used.
 #set nickname = Abitbol
 
 # Proxy
@@ -94,9 +89,18 @@ set ssl = 0
 
 # Language
 # Help files have been translated into a few languages.
-# You can set lang to one of the following values: en (default),
-# cs, de, fr, it, nl, pl, ru, uk.
+# You can set lang to a semicolon separated list of the following
+# values: en, cs, de, fr, it, nl, pl, ru, uk. If you omit this,
+# mcabber will try to autodetect it from your locale, with fallback
+# to en.
+# You also can specify a list of directories, where help is located,
+# for example, if your mcabber is installed with another prefix than
+# your modules.
+# This may be convenient to print help not into the status buffer, but into
+# currently opened buffer. For that set help_to_current option.
 #set lang = en
+#set help_dirs = "/usr/share/mcabber/help;~/share/mcabber/help"
+#set help_to_current = 0
 
 # Aspell
 # If your mcabber has been built with Aspell support, you can enable spell
@@ -122,7 +126,7 @@ set cmdhistory_lines = 250
 # running you can use "/roster display").
 #set roster_display_filter = ofdna_
 
-# Typing notifications, Chat States, Events (JEP-22/85)
+# Typing notifications, Chat States, Events (XEP-22/85)
 # Set disable_chatstates to 1 if you don't want to use typing notifications.
 # Note: changing this option once mcabber is running has no effect.
 #set disable_chatstates = 0
@@ -164,7 +168,7 @@ set cmdhistory_lines = 250
 
 # You can specify a maximum number of data blocks per buffer (1 block contains
 # about 8kB).  The default is 0 (unlimited).  If set, this value must be > 2.
-#set max_history_blocks = 8
+set max_history_blocks = 8
 
 # IQ settings
 # Set iq_version_hide_os to 1 if you do not want to allow people to retrieve
@@ -181,6 +185,12 @@ set cmdhistory_lines = 250
 # Set iq_hide_requests to 1 if you don't want received IQ requests to be
 # displayed in the status window (default: 0).
 #set iq_hide_requests = 1
+
+# Modules
+# If mcabber is built with modules support, you can specify the path
+# to the directory where your modules reside. Though, default compiled-in
+# value should be appropriate.
+#set modules_dir = /usr/lib/mcabber/
 
 # Beep
 # Set beep_on_message to 1 if you want mcabber to beep when receiving
@@ -205,7 +215,8 @@ set cmdhistory_lines = 250
 #   $events_command MSG OUT jabber@id       (when sending a message)
 #   $events_command MSG MUC room_id [file]  (when receiving a MUC message)
 #   $events_command STATUS X jabber@id      (new buddy status is X)
-#   $events_command UNREAD N                (number of unread buddy buffers)
+#   $events_command UNREAD "N x y z"        (number of unread buddy buffers)
+#   (x=attention y=muc unread buffers z=muc unread buffers with attention sign)
 # See sample script in contrib/ directory.
 #set events_command = ~/.mcabber/eventcmd
 #
@@ -250,9 +261,11 @@ set cmdhistory_lines = 250
 
 # Traces logging
 # If you want advanced traces, please specify a file and a level here.
-# There are currently 2 traceloglog levels:
+# There are currently 4 tracelog levels:
 #  lvl 1: most events of the log window are written to the file
-#  lvl 2: debug logging (XML, etc.)
+#  lvl 2: Loudmouth verbose logging
+#  lvl 3: debug logging (XML, etc.)
+#  lvl 4: noisy debug logging (Loudmouth parser...)
 # Default is level 0, no trace logging
 #set tracelog_level = 1
 #set tracelog_file = ~/.mcabber/mcabber.log
@@ -295,6 +308,11 @@ set cmdhistory_lines = 250
 # Set 'muc_disable_nick_hl' to 1 if you don't want mcabber to color lines
 # containing your nickname in a MUC room.
 #set muc_disable_nick_hl = 0
+#
+# Set 'muc_completion_suffix' if you want mcabber to append a string to
+# suggested nicknames (only at the beginning of a line), like ":" or ",".
+# (Default: none)
+#set muc_completion_suffix = ": "
 
 # Status messages
 # The 'message' value will override all others, take care!
@@ -358,7 +376,7 @@ set escdelay = 50
 #set color_rosterselmsg = red
 #set color_rosternewmsg = red
 
-# You can color roster items by their status and JID. For example, to have
+# You can color roster items by their status and JID.  For example, to have
 # all roster items white, just all contacts from jabber.org that are away,
 # not available or do not disturb yellow, you do this:
 #
@@ -391,15 +409,15 @@ set escdelay = 50
 #set roster_win_on_right = 0
 #
 # By default, the displayed name of a contact in the roster window will
-# be the jid if no name has been specified.  You can use the following
+# be the JID if no name has been specified.  You can use the following
 # option if you only want to see the username part.
 #set roster_hide_domain = 0
 #
 # Buddy name format (in status window):
 # - 0: (default) "<jid/resource>"
-# - 1: "name <jid/resource>" (name is omitted if same as the jid)
-# - 2: "name/resource" (if the name is the same as the jid, use <jid/res>)
-# - 3: "name" (if the name is the same as the jid, use <jid/res>)
+# - 1: "name <jid/resource>" (name is omitted if same as the JID)
+# - 2: "name/resource" (if the name is the same as the JID, use <jid/res>)
+# - 3: "name" (if the name is the same as the JID, use <jid/res>)
 #set buddy_format = 2
 #
 # Time format:
@@ -409,8 +427,8 @@ set escdelay = 50
 #set time_prefix = 0
 #
 # When a contact sends "/me ", mcabber displays "*user ", where user
-# is the local part of the contact's jid.
-# If you want mcabber to display the complete bare jid (user@server.com),
+# is the local part of the contact's JID.
+# If you want mcabber to display the complete bare JID (user@server.com),
 # set 'buddy_me_fulljid' to 1 (default: 0)
 #set buddy_me_fulljid = 1
 #
@@ -422,14 +440,14 @@ set escdelay = 50
 # Values:  0: never  1: only connect/disconnect  2: all
 #set show_status_in_buffer = 1
 #
-# Set 'log_display_sender' to 1 to display the message sender's jid in the
+# Set 'log_display_sender' to 1 to display the message sender's JID in the
 # log window (default: 0, no)
 #set log_display_sender = 0
 #
 # Set 'info' to anything you'd like to see in your lower status line.
 #set info = woot
 #
-# Set 'url_regex' to a regular expression matching urls. If it matches an
+# Set 'url_regex' to a regular expression matching urls.  If it matches an
 # url in an incoming messages, it'll print it to the log window.
 #set url_regex = "(((https?|ftps?|nntp)://)|www[.][-a-z0-9.]+|(mailto:|news:))(%[0-9A-F]{2}|[-_.!~*';/?:@&=+$,#[:alnum:]])+"
 

@@ -1,3 +1,16 @@
+mcabber (0.10.0-1) unstable; urgency=low
+
+  * New upstream release, requiring now libloudmouth1-dev.
+  * Fix typo in changelog.
+  * Add ${misc:Depends} to Depends of the package.
+  * Bump to Standards-Version 3.8.4.
+  * Updated Homepage URL in control, watch and copyright files.
+  * Enhanced package description with Upstream input.
+  * Updated copyright information with Upstream input.
+  * Remove dpatch handling, patch not needed anymore.
+
+ -- Gerfried Fuchs <rhonda@debian.at>  Tue, 13 Apr 2010 07:55:17 +0200
+
 mcabber (0.9.10-1) unstable; urgency=low
 
   * New upstream release:
@@ -8,7 +21,7 @@ mcabber (0.9.10-1) unstable; urgency=low
   * Raise debhelper and compat to 7, use dh_prep instead of dh_clean -k.
   * Switched README.source from the full text to a reference to the file
     included with the dpatch package.
-  * Updated copyright informations slightly in debian/copyright.
+  * Updated copyright information slightly in debian/copyright.
   * Remove duplication of Section and Priority in binary package control file
     stanca.
   * Fix config.{sub,guess} handling.
