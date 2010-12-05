@@ -1,3 +1,12 @@
+mcabber (0.10.1-1) unstable; urgency=low
+
+  * New upstream bugfix release.
+  * Bump to Standards-Version 3.9.1.
+  * Add libasyncns-dev to Build-Depends so it doesn't FTBFS, loudmouth doesn't
+    use embedded version anymore.
+
+ -- Gerfried Fuchs <rhonda@debian.at>  Sun, 05 Dec 2010 11:57:25 +0100
+
 mcabber (0.10.0-1) unstable; urgency=low
 
   * New upstream release, requiring now libloudmouth1-dev.

@@ -36,6 +36,8 @@
 #include "utf8.h"
 #include "roster.h"
 #include "events.h"
+#include "settings.h"
+#include "logprint.h"
 
 // Completion structure
 typedef struct {
@@ -47,7 +49,7 @@ typedef struct {
 
 // Category structure
 typedef struct {
-  guint flag;
+  guint64 flag;
   GSList *words;
 } category;
 
@@ -55,13 +57,38 @@ static GSList *Categories;
 static compl *InputCompl;
 
 #ifdef MODULES_ENABLE
-guint registered_cats = COMPL_CMD|COMPL_JID|COMPL_URLJID|COMPL_NAME| \
-                        COMPL_STATUS|COMPL_FILENAME|COMPL_ROSTER|COMPL_BUFFER| \
-                        COMPL_GROUP|COMPL_GROUPNAME|COMPL_MULTILINE|COMPL_ROOM| \
-                        COMPL_RESOURCE|COMPL_AUTH|COMPL_REQUEST|COMPL_EVENTS| \
-                        COMPL_EVENTSID|COMPL_PGP|COMPL_COLOR| \
-                        COMPL_OTR|COMPL_OTRPOLICY| \
-                        0;
+static guint64 registered_cats;
+
+static inline void register_builtin_cat(guint c) {
+  registered_cats |= 1UL << (c-1);
+}
+
+void compl_init_system(void)
+{
+  // Builtin completion categories:
+  register_builtin_cat(COMPL_CMD);
+  register_builtin_cat(COMPL_JID);
+  register_builtin_cat(COMPL_URLJID);
+  register_builtin_cat(COMPL_NAME);
+  register_builtin_cat(COMPL_STATUS);
+  register_builtin_cat(COMPL_FILENAME);
+  register_builtin_cat(COMPL_ROSTER);
+  register_builtin_cat(COMPL_BUFFER);
+  register_builtin_cat(COMPL_GROUP);
+  register_builtin_cat(COMPL_GROUPNAME);
+  register_builtin_cat(COMPL_MULTILINE);
+  register_builtin_cat(COMPL_ROOM);
+  register_builtin_cat(COMPL_RESOURCE);
+  register_builtin_cat(COMPL_AUTH);
+  register_builtin_cat(COMPL_REQUEST);
+  register_builtin_cat(COMPL_EVENTS);
+  register_builtin_cat(COMPL_EVENTSID);
+  register_builtin_cat(COMPL_PGP);
+  register_builtin_cat(COMPL_COLOR);
+  register_builtin_cat(COMPL_OTR);
+  register_builtin_cat(COMPL_OTRPOLICY);
+  register_builtin_cat(COMPL_MODULE);
+}
 
 //  compl_new_category()
 // Reserves id for new completion category.
@@ -73,12 +100,12 @@ guint compl_new_category(void)
   guint i = 0;
   while ((registered_cats >> i) & 1)
     i++;
-  if (i >= 8 * sizeof (guint))
+  if (i >= 8 * sizeof (registered_cats))
     return 0;
   else {
-    guint id = 1 << i;
+    guint64 id = 1 << i;
     registered_cats |= id;
-    return id;
+    return i+1;
   }
 }
 
@@ -88,7 +115,13 @@ guint compl_new_category(void)
 // and specify exactly what you get from compl_new_category.
 void compl_del_category(guint id)
 {
-  registered_cats &= ~id;
+  if (!id) {
+    scr_log_print(LPRINT_LOGNORM, "Error: compl_del_category() - "
+                  "Invalid category.");
+    return;
+  }
+  id--;
+  registered_cats &= ~(1<<id);
 }
 #endif
 
@@ -103,17 +136,23 @@ guint new_completion(const char *prefix, GSList *compl_cat, const gchar *suffix)
 {
   compl *c;
   GSList *sl_cat;
+  gint (*cmp)(const char *s1, const char *s2, size_t n);
   size_t len = strlen(prefix);
 
   if (InputCompl) { // This should not happen, but hey...
     cancel_completion();
   }
 
+  if (settings_opt_get_int("completion_ignore_case"))
+    cmp = &strncasecmp;
+  else
+    cmp = &strncmp;
+
   c = g_new0(compl, 1);
   // Build the list of matches
   for (sl_cat = compl_cat; sl_cat; sl_cat = g_slist_next(sl_cat)) {
     char *word = sl_cat->data;
-    if (!strncasecmp(prefix, word, len)) {
+    if (!cmp(prefix, word, len)) {
       if (strlen(word) != len) {
         gchar *compval;
         if (suffix)
@@ -186,17 +225,28 @@ const char *complete()
 // Adds a keyword as a possible completion in category categ.
 void compl_add_category_word(guint categ, const gchar *word)
 {
+  guint64 catv;
   GSList *sl_cat;
   category *cat;
   char *nword;
+
+  if (!categ) {
+    scr_log_print(LPRINT_LOGNORM, "Error: compl_add_category_word() - "
+                  "Invalid category.");
+    return;
+  }
+
+  categ--;
+  catv = 1UL << categ;
+
   // Look for category
   for (sl_cat=Categories; sl_cat; sl_cat = g_slist_next(sl_cat)) {
-    if (categ == ((category*)sl_cat->data)->flag)
+    if (catv == ((category*)sl_cat->data)->flag)
       break;
   }
   if (!sl_cat) {   // Category not found, let's create it
     cat = g_new0(category, 1);
-    cat->flag = categ;
+    cat->flag = catv;
     Categories = g_slist_append(Categories, cat);
   } else
     cat = (category*)sl_cat->data;
@@ -222,12 +272,23 @@ void compl_add_category_word(guint categ, const gchar *word)
 // Removes a keyword from category categ in completion list.
 void compl_del_category_word(guint categ, const gchar *word)
 {
+  guint64 catv;
   GSList *sl_cat, *sl_elt;
   category *cat;
   char *nword;
+
+  if (!categ) {
+    scr_log_print(LPRINT_LOGNORM, "Error: compl_del_category_word() - "
+                  "Invalid category.");
+    return;
+  }
+
+  categ--;
+  catv = 1UL << categ;
+
   // Look for category
   for (sl_cat=Categories; sl_cat; sl_cat = g_slist_next(sl_cat)) {
-    if (categ == ((category*)sl_cat->data)->flag)
+    if (catv == ((category*)sl_cat->data)->flag)
       break;
   }
   if (!sl_cat) return;   // Category not found, finished!
@@ -256,18 +317,24 @@ void compl_del_category_word(guint categ, const gchar *word)
 }
 
 //  compl_get_category_list()
-// Returns a slist of all words in the categories specified by the given flags
+// Returns a slist of all words in the specified categorie.
 // Iff this function sets *dynlist to TRUE, then the caller must free the
 // whole list after use.
-GSList *compl_get_category_list(guint cat_flags, guint *dynlist)
+GSList *compl_get_category_list(guint categ, guint *dynlist)
 {
+  guint64 cat_flags;
   GSList *sl_cat;
 
-  *dynlist = FALSE;
+  if (!categ) {
+    scr_log_print(LPRINT_LOGNORM, "Error: compl_get_category_list() - "
+                  "Invalid category.");
+    return NULL;
+  }
 
-  // Look for category
-  // XXX Actually that's not that simple... cat_flags can be a combination
-  // of several flags!
+  *dynlist = FALSE;
+  cat_flags = 1UL << (categ - 1);
+
+  // Look for the category
   for (sl_cat=Categories; sl_cat; sl_cat = g_slist_next(sl_cat)) {
     if (cat_flags == ((category*)sl_cat->data)->flag)
       break;
@@ -277,16 +344,16 @@ GSList *compl_get_category_list(guint cat_flags, guint *dynlist)
 
   // Handle dynamic SLists
   *dynlist = TRUE;
-  if (cat_flags == COMPL_GROUPNAME) {
+  if (categ == COMPL_GROUPNAME) {
     return compl_list(ROSTER_TYPE_GROUP);
   }
-  if (cat_flags == COMPL_JID) {
+  if (categ == COMPL_JID) {
     return compl_list(ROSTER_TYPE_USER);
   }
-  if (cat_flags == COMPL_RESOURCE) {
+  if (categ == COMPL_RESOURCE) {
     return buddy_getresources_locale(NULL);
   }
-  if (cat_flags == COMPL_EVENTSID) {
+  if (categ == COMPL_EVENTSID) {
     GSList *compl = evs_geteventslist();
     GSList *cel;
     for (cel = compl; cel; cel = cel->next)

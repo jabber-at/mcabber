@@ -52,6 +52,7 @@ static char idnprep[1024];
 #include "utils.h"
 #include "logprint.h"
 #include "settings.h"
+#include "main.h"
 
 static int DebugEnabled;
 static char *FName;
@@ -63,6 +64,12 @@ char *jidtodisp(const char *fjid)
 {
   char *ptr;
   char *alias;
+
+  if (!fjid) {
+    scr_LogPrint(LPRINT_LOGNORM, "** jidtodisp: NULL JID, "
+                                 "this is probably a bug, please report!");
+    return NULL;
+  }
 
   alias = g_strdup(fjid);
 
@@ -160,6 +167,7 @@ static gboolean tracelog_create(void)
   FILE *fp;
   struct stat buf;
   int err;
+  char *v;
 
   fp = fopen(FName, "a");
   if (!fp) {
@@ -180,9 +188,11 @@ static gboolean tracelog_create(void)
   }
   fchmod(fileno(fp), S_IRUSR|S_IWUSR);
 
-  fputs("New trace log started.\n----------------------\n", fp);
+  v = mcabber_version();
+  fprintf(fp, "New trace log started.  MCabber version %s\n"
+              "----------------------\n", v);
+  g_free(v);
   fclose(fp);
-
   return TRUE;
 }
 

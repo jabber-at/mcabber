@@ -198,6 +198,9 @@ Currently the following events exist:
    * resource - resource of the incoming message
    * message - message body, converted to locale charset
    * groupchat - ("true" or "false")
+   * delayed - message timestamp (ISO-8601 string) or empty string if
+     the message wasn't delayed
+   * error - "true" if this is an error message
  - hook-post-message-in (HOOK_POST_MESSAGE_IN) with parameters
    * jid - sender of the incoming message
    * resource - resource of the incoming message
@@ -206,6 +209,9 @@ Currently the following events exist:
    * attention - In a MUC message, true if you've been highlighted
      In a regular message, true if the sender has requested your
      attention (only implemented for MUC currently)
+   * delayed - message timestamp (ISO-8601 string) or empty string if
+     the message wasn't delayed
+   * error - "true" if this is an error message
  - hook-message-out (HOOK_MESSAGE_OUT) with parameters
    * jid - recipient of the outgoing message
    * message - message body, converted to locale charset
@@ -231,6 +237,11 @@ Currently the following events exist:
    * attention - number of non-MUC buffers with the attention sign (!)
    * muc_unread - number of MUC buffers with the unread message flag
    * muc_attention - number of MUC buffers with the attention sign
+ - hook-subscription (HOOK_SUBSCRIPTION)
+   * type - the type of the subscription message received.  Can be one
+     of subscribe, unsubscribe, subscribed, unsubscribed.
+   * jid - sender of the incoming subscription message
+   * message - optional message sent with the request
 
 
 ------------------------------------------------------------------------

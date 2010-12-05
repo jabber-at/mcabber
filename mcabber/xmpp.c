@@ -804,8 +804,6 @@ static void check_signature(const char *barejid, const char *rname,
 
 static LmSSLResponse ssl_cb(LmSSL *ssl, LmSSLStatus status, gpointer ud)
 {
-  scr_LogPrint(LPRINT_LOGNORM, "SSL status:%d", status);
-
   switch (status) {
   case LM_SSL_STATUS_NO_CERT_FOUND:
     scr_LogPrint(LPRINT_LOGNORM, "No certificate found!");
@@ -840,6 +838,8 @@ static LmSSLResponse ssl_cb(LmSSL *ssl, LmSSLStatus status, gpointer ud)
   case LM_SSL_STATUS_GENERIC_ERROR:
     scr_LogPrint(LPRINT_LOGNORM, "Generic SSL error!");
     break;
+  default:
+    scr_LogPrint(LPRINT_LOGNORM, "SSL error:%d", status);
   }
 
   if (settings_opt_get_int("ssl_ignore_checks"))
@@ -1153,6 +1153,7 @@ static void gotmessage(LmMessageSubType type, const char *from,
   // this is a regular message from an unsubscribed user.
   // System messages (from our server) are allowed.
   if (settings_opt_get_int("block_unsubscribed") &&
+      (roster_gettype(bjid) != ROSTER_TYPE_ROOM) &&
       !(roster_getsubscription(bjid) & sub_from) &&
       (type != LM_MESSAGE_SUB_TYPE_GROUPCHAT)) {
     char *sbjid = jidtodisp(lm_connection_get_jid(lconnection));
@@ -1238,9 +1239,15 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
       // Display inside the room window
       if (r == s) {
         // No specific resource (this is certainly history)
-        mbuf = g_strdup_printf("The topic has been set to: %s", subj);
+        if (*subj)
+          mbuf = g_strdup_printf("The topic has been set to: %s", subj);
+        else
+          mbuf = g_strdup_printf("The topic has been cleared");
       } else {
-        mbuf = g_strdup_printf("%s has set the topic to: %s", r, subj);
+        if (*subj)
+          mbuf = g_strdup_printf("%s has set the topic to: %s", r, subj);
+        else
+          mbuf = g_strdup_printf("%s has cleared the topic", r);
       }
       scr_WriteIncomingMessage(s, mbuf, 0,
                                HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
@@ -1286,8 +1293,7 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
   }
 
   if (from) {
-    x = lm_message_node_find_xmlns(m->node,
-                                   "http://jabber.org/protocol/muc#user");
+    x = lm_message_node_find_xmlns(m->node, NS_MUC_USER);
     if (x && !strcmp(x->name, "x"))
       got_muc_message(from, x);
   }
@@ -1335,13 +1341,22 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
   char bpprio;
   time_t timestamp = 0L;
   LmMessageNode *muc_packet, *caps;
-  LmMessageSubType mstype;
+  LmMessageSubType mstype = lm_message_get_sub_type(m);
 
   // Check for MUC presence packet
-  muc_packet = lm_message_node_find_xmlns
-          (m->node, "http://jabber.org/protocol/muc#user");
+  muc_packet = lm_message_node_find_xmlns(m->node, NS_MUC_USER);
 
   from = lm_message_get_from(m);
+  if (!from) {
+    scr_LogPrint(LPRINT_LOGNORM, "Unexpected presence packet!");
+
+    if (mstype == LM_MESSAGE_SUB_TYPE_ERROR) {
+      display_server_error(lm_message_node_get_child(m->node, "error"),
+                           lm_message_get_from(m));
+      return LM_HANDLER_RESULT_REMOVE_MESSAGE;
+    }
+    return LM_HANDLER_RESULT_ALLOW_MORE_HANDLERS;
+  }
 
   rname = strchr(from, JID_RESOURCE_SEPARATOR);
   if (rname) rname++;
@@ -1354,7 +1369,6 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
   }
 
   bjid = jidtodisp(from);
-  mstype = lm_message_get_sub_type(m);
 
   if (mstype == LM_MESSAGE_SUB_TYPE_ERROR) {
     LmMessageNode *x;
@@ -1395,6 +1409,8 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
     ust = offline;
 
   ustmsg = lm_message_node_get_child_value(m->node, "status");
+  if (ustmsg && !*ustmsg)
+    ustmsg = NULL;
 
   // Timestamp?
   timestamp = lm_message_node_get_timestamp(m->node);
@@ -1426,6 +1442,12 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
   if (caps && ust != offline) {
     const char *ver = lm_message_node_get_attribute(caps, "ver");
     GSList *sl_buddy = NULL;
+
+    if (!ver) {
+      scr_LogPrint(LPRINT_LOGNORM, "Error: malformed caps version (%s)", bjid);
+      goto handle_presence_return;
+    }
+
     if (rname)
       sl_buddy = roster_find(bjid, jidsearch, ROSTER_TYPE_USER);
     // Only cache the caps if the user is on the roster
@@ -1454,6 +1476,7 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
     }
   }
 
+handle_presence_return:
   g_free(bjid);
   return LM_HANDLER_RESULT_REMOVE_MESSAGE;
 }
@@ -1474,6 +1497,12 @@ static LmHandlerResult handle_iq(LmMessageHandler *handler,
     return LM_HANDLER_RESULT_REMOVE_MESSAGE;
   }
 
+  if (mstype == LM_MESSAGE_SUB_TYPE_RESULT) {
+    scr_LogPrint(LPRINT_DEBUG, "Unhandled IQ result? %s",
+                 lm_message_node_to_string(m->node));
+    return LM_HANDLER_RESULT_ALLOW_MORE_HANDLERS;
+  }
+
   for (x = m->node->children; x; x=x->next) {
     xmlns = lm_message_node_get_attribute(x, "xmlns");
     if (xmlns)
@@ -1487,12 +1516,11 @@ static LmHandlerResult handle_iq(LmMessageHandler *handler,
       (mstype == LM_MESSAGE_SUB_TYPE_GET))
     send_iq_error(connection, m, XMPP_ERROR_NOT_IMPLEMENTED);
 
-  scr_LogPrint(LPRINT_DEBUG, "Unhandled IQ: %s", lm_message_node_to_string(m->node));
+  scr_LogPrint(LPRINT_DEBUG, "Unhandled IQ: %s",
+               lm_message_node_to_string(m->node));
 
-  if (mstype != LM_MESSAGE_SUB_TYPE_RESULT) {
-    scr_LogPrint(LPRINT_NORMAL, "Received unhandled IQ request from <%s>.",
-                 lm_message_get_from(m));
-  }
+  scr_LogPrint(LPRINT_NORMAL, "Received unhandled IQ request from <%s>.",
+               lm_message_get_from(m));
 
   return LM_HANDLER_RESULT_REMOVE_MESSAGE;
 }
@@ -1504,19 +1532,34 @@ static LmHandlerResult handle_s10n(LmMessageHandler *handler,
   char *r;
   char *buf;
   int newbuddy;
+  guint hook_result;
+  LmMessageSubType mstype = lm_message_get_sub_type(m);
   const char *from = lm_message_get_from(m);
-  LmMessageSubType mstype;
+  const char *msg = lm_message_node_get_child_value(m->node, "status");
 
+  if (mstype == LM_MESSAGE_SUB_TYPE_ERROR) {
+    display_server_error(lm_message_node_get_child(m->node, "error"),
+                         lm_message_get_from(m));
+    return LM_HANDLER_RESULT_REMOVE_MESSAGE;
+  }
+
+  if (!from) {
+    scr_LogPrint(LPRINT_DEBUG, "handle_s10n: Unexpected presence packet!");
+    return LM_HANDLER_RESULT_ALLOW_MORE_HANDLERS;
+  }
   r = jidtodisp(from);
 
   newbuddy = !roster_find(r, jidsearch, 0);
-  mstype = lm_message_get_sub_type(m);
+
+  hook_result = hk_subscription(mstype, r, msg);
 
   if (mstype == LM_MESSAGE_SUB_TYPE_SUBSCRIBE) {
     /* The sender wishes to subscribe to our presence */
-    const char *msg;
 
-    msg = lm_message_node_get_child_value(m->node, "status");
+    if (hook_result) {
+      g_free(r);
+      return LM_HANDLER_RESULT_REMOVE_MESSAGE;
+    }
 
     buf = g_strdup_printf("<%s> wants to subscribe to your presence updates",
                           from);
@@ -1712,8 +1755,9 @@ gint xmpp_connect(void)
   lm_message_handler_unref(handler);
 
   /* Connect to server */
-  scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, "Connecting to server: %s",
-               servername ? servername : "...");
+  scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, "Connecting to server%s%s",
+               servername ? ": " : "",
+               servername ? servername : "");
   if (!resource)
     resource = resource_prefix;
 
@@ -1736,7 +1780,7 @@ gint xmpp_connect(void)
 
   if (port)
     scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, " using port %d", port);
-  scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, " resource %s", resource);
+  scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, " with resource %s", resource);
 
   if (proxy_host) {
     int proxy_port = settings_opt_get_int("proxy_port");
@@ -1815,9 +1859,9 @@ gint xmpp_connect(void)
   return 0;
 }
 
-//  insert_entity_capabilities(presence_stanza)
+//  xmpp_insert_entity_capabilities(presence_stanza)
 // Entity Capabilities (XEP-0115)
-static void insert_entity_capabilities(LmMessageNode *x, enum imstatus status)
+void xmpp_insert_entity_capabilities(LmMessageNode *x, enum imstatus status)
 {
   LmMessageNode *y;
   const char *ver = entity_version(status);
@@ -1878,7 +1922,7 @@ void xmpp_setstatus(enum imstatus st, const char *recipient, const char *msg,
   if (isonline) {
     const char *s_msg = (st != invisible ? msg : NULL);
     m = lm_message_new_presence(st, recipient, s_msg);
-    insert_entity_capabilities(m->node, st); // Entity Capabilities (XEP-0115)
+    xmpp_insert_entity_capabilities(m->node, st); // Entity Caps (XEP-0115)
 #ifdef HAVE_GPGME
     if (!do_not_sign && gpg_enabled()) {
       char *signature;

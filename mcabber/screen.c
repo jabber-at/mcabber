@@ -163,7 +163,7 @@ typedef struct {
 } keyseq;
 
 #ifdef HAVE_GLIB_REGEX
-static GRegex *url_regex;
+static GRegex *url_regex = NULL;
 #endif
 
 GSList *keyseqlist;
@@ -808,8 +808,10 @@ void scr_terminate_curses(void)
   refresh();
   endwin();
 #ifdef HAVE_GLIB_REGEX
-  if (url_regex)
+  if (url_regex) {
     g_regex_unref(url_regex);
+    url_regex = NULL;
+  }
 #endif
   Curses = FALSE;
   return;
@@ -1375,7 +1377,8 @@ static void scr_write_in_window(const char *winId, const char *text,
   if (mucnicklen) {
     nicktmp = g_strndup(text, mucnicklen);
     nicklocaltmp = from_utf8(nicktmp);
-    mucnicklen = strlen(nicklocaltmp);
+    if (nicklocaltmp)
+      mucnicklen = strlen(nicklocaltmp);
     g_free(nicklocaltmp);
     g_free(nicktmp);
   }
@@ -3141,6 +3144,14 @@ static const char *scr_cmdhisto_next(char *mask, guint len)
   return cmdhisto_backup;
 }
 
+static char *_strmove(char *dst, const char *src)
+{
+  char *dest = dst;
+  while ((*dest++ = *src++) != '\0')
+    ;
+  return dest;
+}
+
 //  readline_transpose_chars()
 // Drag  the  character  before point forward over the character at
 // point, moving point forward as well.  If point is at the end  of
@@ -3221,10 +3232,7 @@ void readline_backward_kill_word(void)
 
   // Modify the line
   ptr_inputline = c;
-  for (;;) {
-    *c = *old++;
-    if (!*c++) break;
-  }
+  _strmove(ptr_inputline, old);
   check_offset(-1);
 }
 
@@ -3451,9 +3459,7 @@ void readline_backward_kill_char(void)
   src = ptr_inputline;
   c = prev_char(ptr_inputline, inputLine);
   ptr_inputline = c;
-  for ( ; *src ; )
-    *c++ = *src++;
-  *c = 0;
+  _strmove(ptr_inputline, src);
   check_offset(-1);
 }
 
@@ -3462,7 +3468,7 @@ void readline_forward_kill_char(void)
   if (!*ptr_inputline)
     return;
 
-  strcpy(ptr_inputline, next_char(ptr_inputline));
+  _strmove(ptr_inputline, next_char(ptr_inputline));
 }
 
 void readline_iline_start(void)
@@ -3486,7 +3492,7 @@ void readline_backward_kill_iline(void)
   if (*dest == COMMAND_CHAR && ptr_inputline != dest+1)
     dest = next_char(dest);
 
-  strcpy(dest, ptr_inputline);
+  _strmove(dest, ptr_inputline);
   ptr_inputline = dest;
   inputline_offset = 0;
 }
@@ -3613,7 +3619,12 @@ static void scr_handle_tab(void)
 
   if (!completion_started) {
     guint dynlist;
-    GSList *list = compl_get_category_list(compl_categ, &dynlist);
+    GSList *list;
+
+    if (!compl_categ)
+      return; // Nothing to complete
+
+    list = compl_get_category_list(compl_categ, &dynlist);
     if (list) {
       guint n;
       char *prefix = g_strndup(row, ptr_inputline-row);
@@ -4012,9 +4023,10 @@ void scr_process_key(keycode kcode)
 
   switch (kcode.mcode) {
     case 0:
+        // key = kcode.value;
         break;
     case MKEY_EQUIV:
-        key = kcode.value;
+        // key = kcode.value;
         break;
     case MKEY_META:
     default:
