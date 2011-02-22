@@ -321,17 +321,21 @@ int process_command(char *line)
   char *xpline;
   cmd *curcmd;
 
-  // Remove trailing spaces:
-  for (p=line ; *p ; p++)
-    ;
-  for (p-- ; p>line && (*p == ' ') ; p--)
-    *p = 0;
-
   // We do alias expansion here
   if (scr_get_multimode() != 2)
     xpline = expandalias(line);
   else
     xpline = line; // No expansion in verbatim multi-line mode
+
+  // We want to have a copy
+  if (xpline == line)
+    xpline = g_strdup(line);
+
+  // Remove trailing spaces:
+  for (p=xpline ; *p ; p++)
+    ;
+  for (p-- ; p>xpline && (*p == ' ') ; p--)
+    *p = 0;
 
   // Command "quit"?
   if ((!strncasecmp(xpline, "/quit", 5)) && (scr_get_multimode() != 2) )
@@ -342,6 +346,7 @@ int process_command(char *line)
   if ((scr_get_multimode() == 2) && (strncasecmp(xpline, "/msay ", 6))) {
     // It isn't an /msay command
     scr_append_multiline(xpline);
+    g_free(xpline);
     return 0;
   }
 
@@ -351,13 +356,13 @@ int process_command(char *line)
   if (!curcmd) {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized command.  "
                  "Please see the manual for a list of known commands.");
-    if (xpline != line) g_free(xpline);
+    g_free(xpline);
     return 0;
   }
   if (!curcmd->func) {
     scr_LogPrint(LPRINT_NORMAL,
                  "This functionality is not yet implemented, sorry.");
-    if (xpline != line) g_free(xpline);
+    g_free(xpline);
     return 0;
   }
   // Lets go to the command parameters
@@ -368,7 +373,7 @@ int process_command(char *line)
     p++;
   // Call command-specific function
   (*curcmd->func)(p);
-  if (xpline != line) g_free(xpline);
+  g_free(xpline);
   return 0;
 }
 
@@ -672,7 +677,7 @@ static void do_del(char *arg)
 static void do_group(char *arg)
 {
   gpointer group;
-  guint leave_windowbuddy;
+  guint leave_buddywindow;
 
   if (!*arg) {
     scr_LogPrint(LPRINT_NORMAL, "Missing parameter.");
@@ -687,7 +692,7 @@ static void do_group(char *arg)
   // We'll have to redraw the chat window if we're not currently on the group
   // entry itself, because it means we'll have to leave the current buddy
   // chat window.
-  leave_windowbuddy = (group != BUDDATA(current_buddy));
+  leave_buddywindow = (group != BUDDATA(current_buddy));
 
   if (!(buddy_gettype(group) & ROSTER_TYPE_GROUP)) {
     scr_LogPrint(LPRINT_NORMAL, "You need to select a group.");
@@ -708,7 +713,7 @@ static void do_group(char *arg)
 
   buddylist_build();
   update_roster = TRUE;
-  if (leave_windowbuddy) scr_ShowBuddyWindow();
+  if (leave_buddywindow) scr_ShowBuddyWindow();
 }
 
 static int send_message_to(const char *jid, const char *msg, const char *subj)
@@ -1587,7 +1592,7 @@ static void room_invite(gpointer bud, char *arg)
   roomname = buddy_getjid(bud);
   reason_utf8 = to_utf8(arg);
   jb_room_invite(roomname, jid, reason_utf8);
-  scr_LogPrint(LPRINT_LOGNORM, "Invitation sent to <%s>...", jid);
+  scr_LogPrint(LPRINT_LOGNORM, "Invitation sent to <%s>.", jid);
   g_free(reason_utf8);
   free_arg_lst(paramlst);
 }
@@ -1866,7 +1871,9 @@ static void room_unlock(gpointer bud, char *arg)
   jb_room_unlock(buddy_getjid(bud));
 }
 
-void room_whois(gpointer bud, char *arg)
+//  room_whois(..)
+// If interactive is TRUE, chatmode can be enabled.
+void room_whois(gpointer bud, char *arg, guint interactive)
 {
   char **paramlst;
   gchar *nick, *buffer;
@@ -1892,9 +1899,11 @@ void room_whois(gpointer bud, char *arg)
 
   nick = to_utf8(nick);
 
-  // Enter chat mode
-  scr_set_chatmode(TRUE);
-  scr_ShowBuddyWindow();
+  if (interactive) {
+    // Enter chat mode
+    scr_set_chatmode(TRUE);
+    scr_ShowBuddyWindow();
+  }
 
   jid = buddy_getjid(bud);
   rstatus = buddy_getstatus(bud, nick);
@@ -2025,7 +2034,7 @@ static void do_room(char *arg)
       room_topic(bud, arg);
   } else if (!strcasecmp(subcmd, "whois"))  {
     if ((arg = check_room_subcommand(arg, TRUE, bud)) != NULL)
-      room_whois(bud, arg);
+      room_whois(bud, arg, TRUE);
   } else {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
   }
@@ -2099,11 +2108,11 @@ static void do_authorization(char *arg)
   } else if (!strcasecmp(subcmd, "request"))  {
     jb_subscr_request_auth(jid_utf8);
     scr_LogPrint(LPRINT_LOGNORM,
-                 "Sent presence notification request to <%s>...", jid_utf8);
+                 "Sent presence notification request to <%s>.", jid_utf8);
   } else if (!strcasecmp(subcmd, "request_unsubscribe"))  {
     jb_subscr_request_cancel(jid_utf8);
     scr_LogPrint(LPRINT_LOGNORM,
-                 "Sent presence notification ubsubscription request to <%s>...",
+                 "Sent presence notification unsubscription request to <%s>.",
                  jid_utf8);
   } else {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
