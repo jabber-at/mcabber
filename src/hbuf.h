@@ -26,7 +26,8 @@
 #define HBB_PREFIX_NONE       (1U<<9)
 #define HBB_PREFIX_SPECIAL    (1U<<10)
 #define HBB_PREFIX_PGPCRYPT   (1U<<11)
-#define HBB_PREFIX_CONT       (1U<<12)
+#define HBB_PREFIX_OTRCRYPT   (1U<<12)
+#define HBB_PREFIX_CONT       (1U<<13)
 
 typedef struct {
   time_t timestamp;
@@ -46,6 +47,8 @@ hbb_line **hbuf_get_lines(GList *hbuf, unsigned int n);
 GList *hbuf_search(GList *hbuf, int direction, const char *string);
 GList *hbuf_jump_date(GList *hbuf, time_t t);
 GList *hbuf_jump_percent(GList *hbuf, int pc);
+
+void hbuf_dump_to_file(GList *hbuf, const char *filename);
 
 guint hbuf_get_blocks_number(GList *p_hbuf);
 

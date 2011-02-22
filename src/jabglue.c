@@ -567,9 +567,13 @@ static char *new_msgid(void)
   static guint msg_idn;
   time_t now;
   time(&now);
+#if HAVE_ARC4RANDOM
+  msg_idn += 1U + (unsigned int) (9.0 * (arc4random() / 4294967296.0));
+#else
   if (!msg_idn)
     srand(now);
   msg_idn += 1U + (unsigned int) (9.0 * (rand() / (RAND_MAX + 1.0)));
+#endif
   return g_strdup_printf("%u%d", msg_idn, (int)(now%10L));
 }
 
@@ -641,9 +645,8 @@ void jb_send_msg(const char *fjid, const char *text, int type,
         return;
       }
     }
-    if (otr_msg && encrypted) {
-      *encrypted = 1;
-    }
+    if (otr_msg && encrypted)
+      *encrypted = ENCRYPTED_OTR;
   }
 #endif
 
@@ -693,7 +696,7 @@ void jb_send_msg(const char *fjid, const char *text, int type,
     xmlnode_put_attrib(y, "xmlns", NS_ENCRYPTED);
     xmlnode_insert_cdata(y, enc, (unsigned) -1);
     if (encrypted)
-      *encrypted = 1;
+      *encrypted = ENCRYPTED_PGP;
     g_free(enc);
   }
 
@@ -1425,7 +1428,7 @@ const char *jb_get_bookmark_nick(const char *bjid)
 
 //  jb_get_all_storage_bookmarks()
 // Return a GSList with all storage bookmarks.
-// The caller should g_free the list (not the MUC jids).
+// The caller should g_free the list and its contents.
 GSList *jb_get_all_storage_bookmarks(void)
 {
   xmlnode x;
@@ -1441,10 +1444,23 @@ GSList *jb_get_all_storage_bookmarks(void)
     const char *p = xmlnode_get_name(x);
     // If the node is a conference item, let's add the note to our list.
     if (p && !strcmp(p, "conference")) {
+      struct bookmark *bm_elt;
+      const char *autojoin, *name, *nick;
       const char *fjid = xmlnode_get_attrib(x, "jid");
       if (!fjid)
         continue;
-      sl_bookmarks = g_slist_append(sl_bookmarks, (char*)fjid);
+      bm_elt = g_new0(struct bookmark, 1);
+      bm_elt->roomjid = g_strdup(fjid);
+      autojoin = xmlnode_get_attrib(x, "autojoin");
+      nick = xmlnode_get_attrib(x, "nick");
+      name = xmlnode_get_attrib(x, "name");
+      if (autojoin && !strcmp(autojoin, "1"))
+        bm_elt->autojoin = 1;
+      if (nick)
+        bm_elt->nick = g_strdup(nick);
+      if (name)
+        bm_elt->name = g_strdup(name);
+      sl_bookmarks = g_slist_append(sl_bookmarks, bm_elt);
     }
   }
   return sl_bookmarks;
@@ -1793,6 +1809,7 @@ static void gotmessage(char *type, const char *from, const char *body,
 #ifdef HAVE_LIBOTR
   if (otr_enabled()) {
     decrypted_otr = (char*)body;
+    mc_strtolower(bjid);
     otr_msg = otr_receive(&decrypted_otr, bjid, &free_msg);
     if (!decrypted_otr) {
       goto gotmessage_return;
@@ -1841,6 +1858,15 @@ static void gotmessage(char *type, const char *from, const char *body,
       (type && strcmp(type, "chat")) ||
       ((s = settings_opt_get("server")) != NULL && !strcasecmp(bjid, s))) {
     gchar *fullbody = NULL;
+    guint encrypted;
+
+    if (decrypted_pgp)
+      encrypted = ENCRYPTED_PGP;
+    else if (otr_msg)
+      encrypted = ENCRYPTED_OTR;
+    else
+      encrypted = 0;
+
     if (subject) {
       if (body)
         fullbody = g_strdup_printf("[%s]\n%s", subject, body);
@@ -1848,8 +1874,7 @@ static void gotmessage(char *type, const char *from, const char *body,
         fullbody = g_strdup_printf("[%s]\n", subject);
       body = fullbody;
     }
-    hk_message_in(bjid, rname, timestamp, body, type,
-                  ((decrypted_pgp || otr_msg) ? TRUE : FALSE));
+    hk_message_in(bjid, rname, timestamp, body, type, encrypted);
     g_free(fullbody);
   } else {
     scr_LogPrint(LPRINT_LOGNORM, "Blocked a message from <%s>", bjid);
@@ -2569,13 +2594,20 @@ static void handle_packet_message(jconn conn, char *type, char *from,
     enc = p;
 
   p = xmlnode_get_tag_data(xmldata, "subject");
-  if (p != NULL) {
+
+  if (xmlnode_get_tag(xmldata, "subject")) {
     if (!type || strcmp(type, TMSG_GROUPCHAT)) {  // Chat message
       subject = p;
     } else {                                      // Room topic
       GSList *roombuddy;
-      gchar *mbuf;
+      gchar *mbuf = NULL;
       gchar *subj = p;
+
+      // In a groupchat message, the subject can be NULL when
+      // the topic is cleared!
+      if (!p)
+        p = "";
+
       // Get the room (s) and the nickname (r)
       s = g_strdup(from);
       r = strchr(s, JID_RESOURCE_SEPARATOR);
@@ -2588,16 +2620,22 @@ static void handle_packet_message(jconn conn, char *type, char *from,
       // Display inside the room window
       if (r == s) {
         // No specific resource (this is certainly history)
-        mbuf = g_strdup_printf("The topic has been set to: %s", subj);
+        if (subj && *subj)
+          mbuf = g_strdup_printf("The topic has been set to: %s", subj);
       } else {
-        mbuf = g_strdup_printf("%s has set the topic to: %s", r, subj);
+        if (subj)
+          mbuf = g_strdup_printf("%s has set the topic to: %s", r, subj);
+        else
+          mbuf = g_strdup_printf("%s has cleared the topic", r);
       }
-      scr_WriteIncomingMessage(s, mbuf, 0,
-                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
-      if (settings_opt_get_int("log_muc_conf"))
-        hlog_write_message(s, 0, -1, mbuf);
+      if (mbuf) {
+        scr_WriteIncomingMessage(s, mbuf, 0,
+                                 HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
+        if (settings_opt_get_int("log_muc_conf"))
+          hlog_write_message(s, 0, -1, mbuf);
+        g_free(mbuf);
+      }
       g_free(s);
-      g_free(mbuf);
       // The topic is displayed in the chat status line, so refresh now.
       scr_UpdateChatStatus(TRUE);
     }

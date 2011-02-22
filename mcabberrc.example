@@ -20,8 +20,13 @@ set username = yourusername
 #set password = yourpassword
 set server = your.jabber.server
 #set port = 5222
+#
 # If you don't know what a resource is, do not set it.
+# Set disable_random_resource to 1 if you don't want mcabber to add a random
+# suffix to the resource name.
 #set resource = mcabber
+#set disable_random_resource = 0
+#
 #set priority = 3
 #set priority_away = 0
 
@@ -37,6 +42,7 @@ set ignore_self_presence = 1
 # Set ssl_verify to 0 to disable certificate verification, or non-zero
 # to set desired maximum CA verification depth. Use -1 to specify an
 # unlimited depth.
+# NOTE: You probably need to set ssl_capath for SSL cert verification to work!
 # Set ssl_cafile to a path to a CA certificate file (may contain multiple
 # CA certificates).
 # Set ssl_capath to a directory containing CA certificates (use c_rehash
@@ -89,7 +95,7 @@ set ssl = 0
 # Language
 # Help files have been translated into a few languages.
 # You can set lang to one of the following values: en (default),
-# de, fr, it, nl, pl, ru, uk.
+# cs, de, fr, it, nl, pl, ru, uk.
 #set lang = en
 
 # Aspell
@@ -171,6 +177,10 @@ set cmdhistory_lines = 250
 # (Default is 0 for both options)
 #set iq_last_disable = 0
 #set iq_last_disable_when_notavail = 1
+#
+# Set iq_hide_requests to 1 if you don't want received IQ requests to be
+# displayed in the status window (default: 0).
+#set iq_hide_requests = 1
 
 # Beep
 # Set beep_on_message to 1 if you want mcabber to beep when receiving
@@ -228,11 +238,15 @@ set cmdhistory_lines = 250
 
 # FIFO
 # mcabber can create a FIFO named pipe and listen to this pipe for commands.
-# (The FIFO support has to be compiled in.)  Default: disabled.
-# Set fifo_hide_commands to 1 if you don't want to see the FIFO commands
+# Default: disabled.
+# Set 'fifo_hide_commands' to 1 if you don't want to see the FIFO commands
 # in the log window (they will still be written to the tracelog file).
+# When FIFO  is configured, you can turn it off and on in real time with
+# the 'fifo_ignore' option (default: 0).  When set to 1, the FIFO input is
+# still read but it is discarded.
 #set fifo_name = ~/.mcabber/mcabber.fifo
 #set fifo_hide_commands = 0
+#set fifo_ignore = 0
 
 # Traces logging
 # If you want advanced traces, please specify a file and a level here.
@@ -283,7 +297,7 @@ set cmdhistory_lines = 250
 #set muc_disable_nick_hl = 0
 
 # Status messages
-# The "message" value will override all others, take care!
+# The 'message' value will override all others, take care!
 #set message = Unique message status
 #set message_avail     = I'm available
 #set message_free      = I'm free for chat
@@ -344,24 +358,24 @@ set escdelay = 50
 #set color_rosterselmsg = red
 #set color_rosternewmsg = red
 
-#You can color roster items by their status and JID. For example, to have all
-#roster items white, just all contacts from jabber.org that are away, not
-#available or do not disturb yellow, you do this:
+# You can color roster items by their status and JID. For example, to have
+# all roster items white, just all contacts from jabber.org that are away,
+# not available or do not disturb yellow, you do this:
 #
 #color roster * * white
 #color roster adn *@jabber.org yellow
 
-#You can let mcabber color nicks in MUC.
-#These colors will by used automatically:
+# You can let mcabber color nicks in MUC.
+# These colors will by used automatically:
 #set nick_colors = red green blue
-#This turns coloring of all mucs on
+# This turns coloring of all mucs on:
 #color muc * on
 #
-#If you want someone's nick to be the same all the time:
+# If you want someone's nick to be the same all the time:
 #color mucnick my_friend yellow
 
 # Style
-# Note: the "log_win_height" and "roster_width" values below can be set
+# Note: the 'log_win_height' and 'roster_width' values below can be set
 # in real time when mcabber is running.  Refresh the screen (Ctrl-l) to
 # use the new values.
 #
@@ -370,7 +384,7 @@ set escdelay = 50
 # Buddylist window width (minimum 2, default 24)
 #set roster_width=24
 #
-# The options "log_win_on_top" and "roster_win_on_right" can change the
+# The options 'log_win_on_top' and 'roster_win_on_right' can change the
 # position of the log window (top/bottom) and the position of the roster
 # (left/right).
 #set log_win_on_top = 0
@@ -394,10 +408,10 @@ set escdelay = 50
 # - 2: None
 #set time_prefix = 0
 #
-# When a contacts sends "/me ", mcabber displays "*user ", where user
+# When a contact sends "/me ", mcabber displays "*user ", where user
 # is the local part of the contact's jid.
 # If you want mcabber to display the complete bare jid (user@server.com),
-# set "buddy_me_fulljid" to 1 (default: 0)
+# set 'buddy_me_fulljid' to 1 (default: 0)
 #set buddy_me_fulljid = 1
 #
 # Display the status changes in the log window (default: 0, never)
@@ -408,9 +422,16 @@ set escdelay = 50
 # Values:  0: never  1: only connect/disconnect  2: all
 #set show_status_in_buffer = 1
 #
-# Set "log_display_sender" to 1 to display the message sender's jid in the
+# Set 'log_display_sender' to 1 to display the message sender's jid in the
 # log window (default: 0, no)
 #set log_display_sender = 0
+#
+# Set 'info' to anything you'd like to see in your lower status line.
+#set info = woot
+#
+# Set 'url_regex' to a regular expression matching urls. If it matches an
+# url in an incoming messages, it'll print it to the log window.
+#set url_regex = "(((https?|ftps?|nntp)://)|www[.][-a-z0-9.]+|(mailto:|news:))(%[0-9A-F]{2}|[-_.!~*';/?:@&=+$,#[:alnum:]])+"
 
 # Contacts PGP information
 # You can provide a PGP key to be used for a given Jabber user, or
