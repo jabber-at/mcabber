@@ -59,11 +59,11 @@
 /* Define to 1 if you have the `isascii' function. */
 #undef HAVE_ISASCII
 
-/* Define to 1 if you have the `ncurses' library (-lncurses). */
-#undef HAVE_LIBNCURSES
-
 /* Define to 1 if you have the `panel' library (-lpanel). */
 #undef HAVE_LIBPANEL
+
+/* Define to 1 if you have the `panelw' library (-lpanelw). */
+#undef HAVE_LIBPANELW
 
 /* Define to 1 if you have the `ssl' library (-lssl). */
 #undef HAVE_LIBSSL
@@ -87,8 +87,20 @@
 /* Define to 1 if you have the `modf' function. */
 #undef HAVE_MODF
 
+/* Define to 1 if you have the <ncursesw/ncurses.h> header file. */
+#undef HAVE_NCURSESW_NCURSES_H
+
+/* Define to 1 if you have the <ncursesw/panel.h> header file. */
+#undef HAVE_NCURSESW_PANEL_H
+
 /* Define to 1 if you have the <ncurses.h> header file. */
 #undef HAVE_NCURSES_H
+
+/* Define to 1 if you have the <ncurses/ncurses.h> header file. */
+#undef HAVE_NCURSES_NCURSES_H
+
+/* Define to 1 if you have the <ncurses/panel.h> header file. */
+#undef HAVE_NCURSES_PANEL_H
 
 /* Define to 1 if you have the <netdb.h> header file. */
 #undef HAVE_NETDB_H
@@ -203,6 +215,12 @@
 
 /* Define to 1 if you have the `vprintf' function. */
 #undef HAVE_VPRINTF
+
+/* Define to 1 if you have the <wchar.h> header file. */
+#undef HAVE_WCHAR_H
+
+/* Define to 1 if you have the <wctype.h> header file. */
+#undef HAVE_WCTYPE_H
 
 /* Define to 1 if the system has the type `_Bool'. */
 #undef HAVE__BOOL

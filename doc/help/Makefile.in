@@ -36,7 +36,8 @@ POST_UNINSTALL = :
 subdir = doc/help
 DIST_COMMON = $(srcdir)/Makefile.am $(srcdir)/Makefile.in
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
-am__aclocal_m4_deps = $(top_srcdir)/macros/define_dir.m4 \
+am__aclocal_m4_deps = $(top_srcdir)/macros/curslib.m4 \
+	$(top_srcdir)/macros/define_dir.m4 \
 	$(top_srcdir)/macros/glib-2.0.m4 \
 	$(top_srcdir)/macros/timezone.m4 \
 	$(top_srcdir)/macros/tm-gmtoff.m4 $(top_srcdir)/configure.ac

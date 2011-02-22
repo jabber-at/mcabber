@@ -38,7 +38,8 @@ bin_PROGRAMS = mcabber$(EXEEXT)
 subdir = src
 DIST_COMMON = $(srcdir)/Makefile.am $(srcdir)/Makefile.in COPYING
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
-am__aclocal_m4_deps = $(top_srcdir)/macros/define_dir.m4 \
+am__aclocal_m4_deps = $(top_srcdir)/macros/curslib.m4 \
+	$(top_srcdir)/macros/define_dir.m4 \
 	$(top_srcdir)/macros/glib-2.0.m4 \
 	$(top_srcdir)/macros/timezone.m4 \
 	$(top_srcdir)/macros/tm-gmtoff.m4 $(top_srcdir)/configure.ac
@@ -53,8 +54,8 @@ PROGRAMS = $(bin_PROGRAMS)
 am_mcabber_OBJECTS = main.$(OBJEXT) roster.$(OBJEXT) events.$(OBJEXT) \
 	jabglue.$(OBJEXT) jab_iq.$(OBJEXT) commands.$(OBJEXT) \
 	compl.$(OBJEXT) hbuf.$(OBJEXT) screen.$(OBJEXT) \
-	settings.$(OBJEXT) hooks.$(OBJEXT) histolog.$(OBJEXT) \
-	utils.$(OBJEXT) help.$(OBJEXT)
+	settings.$(OBJEXT) hooks.$(OBJEXT) utf8.$(OBJEXT) \
+	histolog.$(OBJEXT) utils.$(OBJEXT) help.$(OBJEXT)
 mcabber_OBJECTS = $(am_mcabber_OBJECTS)
 mcabber_LDADD = $(LDADD)
 am__DEPENDENCIES_1 =
@@ -164,10 +165,10 @@ mcabber_SOURCES = main.c roster.c roster.h events.c events.h \
 		  jabglue.c jabglue.h jab_iq.c jab_priv.h \
 		  commands.c commands.h compl.c compl.h \
 		  hbuf.c hbuf.h screen.c screen.h logprint.h \
-		  settings.c settings.h hooks.c hooks.h \
+		  settings.c settings.h hooks.c hooks.h utf8.c utf8.h \
 		  histolog.c histolog.h utils.c utils.h help.c help.h
 
-LDADD = $(GLIB_LIBS) -lncurses -lpanel \
+LDADD = $(GLIB_LIBS) \
 	../libjabber/liblibjabber.a ../connwrap/libconnwrap.a
 
 INCLUDES = $(GLIB_CFLAGS)
@@ -253,6 +254,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/roster.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/screen.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/settings.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/utf8.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/utils.Po@am__quote@
 
 .c.o:
