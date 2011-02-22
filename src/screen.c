@@ -305,7 +305,6 @@ void scr_InitCurses(void)
   intrflush(stdscr, FALSE);
   start_color();
   use_default_colors();
-  Curses = TRUE;
 
   ParseColors();
 
@@ -317,6 +316,7 @@ void scr_InitCurses(void)
   inputLine[0] = 0;
   ptr_inputline = inputLine;
 
+  Curses = TRUE;
   return;
 }
 
@@ -1088,8 +1088,6 @@ void scr_DrawRoster(void)
     return;
   }
 
-  name = g_new0(char, Roster_Width);
-
   // Update offset if necessary
   // a) Try to show as many buddylist items as possible
   i = g_list_length(buddylist) - maxy;
@@ -1101,7 +1099,6 @@ void scr_DrawRoster(void)
   i = g_list_position(buddylist, current_buddy);
   if (i == -1) { // This is bad
     scr_LogPrint(LPRINT_NORMAL, "Doh! Can't find current selected buddy!!");
-    g_free(name);
     curs_set(cursor_backup);
     return;
   } else if (i < offset) {
@@ -1110,7 +1107,8 @@ void scr_DrawRoster(void)
     offset = i + 1 - maxy;
   }
 
-  rline = g_new0(char, Roster_Width+1);
+  name = g_new0(char, 4*Roster_Width);
+  rline = g_new0(char, 4*Roster_Width+1);
 
   buddy = buddylist;
   rOffset = offset;
@@ -1170,7 +1168,7 @@ void scr_DrawRoster(void)
     }
 
     if (Roster_Width > 7)
-      strncpy(name, buddy_getname(BUDDATA(buddy)), Roster_Width-7);
+      g_utf8_strncpy(name, buddy_getname(BUDDATA(buddy)), Roster_Width-7);
     else
       name[0] = 0;
 
@@ -1196,7 +1194,7 @@ void scr_DrawRoster(void)
         }
       }
 
-      snprintf(rline, Roster_Width,
+      snprintf(rline, 4*Roster_Width,
                " %c%c%c%c %s", pending, sepleft, status, sepright, name);
     }
 
