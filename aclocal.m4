@@ -15,8 +15,8 @@
 # Owen Taylor     1997-2001
 
 dnl AM_PATH_GLIB_2_0([MINIMUM-VERSION, [ACTION-IF-FOUND [, ACTION-IF-NOT-FOUND [, MODULES]]]])
-dnl Test for GLIB, and define GLIB_CFLAGS and GLIB_LIBS, if gmodule, gobject or 
-dnl gthread is specified in MODULES, pass to pkg-config
+dnl Test for GLIB, and define GLIB_CFLAGS and GLIB_LIBS, if gmodule, gobject,
+dnl gthread, or gio is specified in MODULES, pass to pkg-config
 dnl
 AC_DEFUN([AM_PATH_GLIB_2_0],
 [dnl 
@@ -41,10 +41,13 @@ AC_ARG_ENABLE(glibtest, [  --disable-glibtest      do not try to compile and run
          gthread) 
              pkg_config_args="$pkg_config_args gthread-2.0"
          ;;
+         gio*) 
+             pkg_config_args="$pkg_config_args $module-2.0"
+         ;;
       esac
   done
 
-  PKG_PROG_PKG_CONFIG([0.7])
+  PKG_PROG_PKG_CONFIG([0.16])
 
   no_glib=""
 
@@ -604,7 +607,7 @@ AC_DEFUN([AM_PATH_LIBGCRYPT],
     fi
   fi
   if test $ok = yes; then
-    AC_MSG_RESULT(yes)
+    AC_MSG_RESULT([yes ($libgcrypt_config_version)])
   else
     AC_MSG_RESULT(no)
   fi
@@ -616,10 +619,10 @@ AC_DEFUN([AM_PATH_LIBGCRYPT],
         if test "$tmp" -gt 0 ; then
            AC_MSG_CHECKING([LIBGCRYPT API version])
            if test "$req_libgcrypt_api" -eq "$tmp" ; then
-             AC_MSG_RESULT(okay)
+             AC_MSG_RESULT([okay])
            else
              ok=no
-             AC_MSG_RESULT([does not match (want=$req_libgcrypt_api got=$tmp)])
+             AC_MSG_RESULT([does not match. want=$req_libgcrypt_api got=$tmp])
            fi
         fi
      fi

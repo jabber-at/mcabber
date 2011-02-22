@@ -1,7 +1,7 @@
 /*
  * utils.c      -- Various utility functions
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  * ut_* functions are derived from Cabber debug/log code.
  * from_iso8601() comes from the Pidgin (libpurple) project.
  *
@@ -135,11 +135,11 @@ int checkset_perm(const char *name, unsigned int setmode)
   struct stat buf;
 
 #ifdef __CYGWIN__
-  // Permission checking isn't efficent on Cygwin
+  // Permission checking isn't efficient on Cygwin
   return 0;
 #endif
 
-  fd = lstat(name, &buf);
+  fd = stat(name, &buf);
   if (fd == -1) return -1;
 
   if (buf.st_uid != geteuid()) {
@@ -203,7 +203,7 @@ int to_iso8601(char *dststr, time_t timestamp)
   tm_time = gmtime(&timestamp);
 
   ret = snprintf(dststr, 19, "%.4d%02d%02dT%02d:%02d:%02dZ",
-        1900+tm_time->tm_year, tm_time->tm_mon+1, tm_time->tm_mday,
+        (int)(1900+tm_time->tm_year), tm_time->tm_mon+1, tm_time->tm_mday,
         tm_time->tm_hour, tm_time->tm_min, tm_time->tm_sec);
 
   return ((ret == -1) ? -1 : 0);
@@ -222,6 +222,7 @@ time_t from_iso8601(const char *timestamp, int utc)
   char *c;
   int tzoff = 0;
   int hms_succ = 0;
+  int tmpyear;
 
   time(&retval);
   localtime_r(&retval, &t);
@@ -233,7 +234,8 @@ time_t from_iso8601(const char *timestamp, int utc)
   c = buf;
 
   /* 4 digit year */
-  if (!sscanf(c, "%04d", &t.tm_year)) return 0;
+  if (!sscanf(c, "%04d", &tmpyear)) return 0;
+  t.tm_year = tmpyear;
   c+=4;
   if (*c == '-')
     c++;
@@ -299,15 +301,6 @@ time_t from_iso8601(const char *timestamp, int utc)
   retval += tzoff;
 
   return retval;
-}
-
-// Should only be used for delays < 1s
-inline void safe_usleep(unsigned int usec)
-{
-  struct timespec req;
-  req.tv_sec = 0;
-  req.tv_nsec = (long)usec * 1000L;
-  nanosleep(&req, NULL);
 }
 
 /**
@@ -402,20 +395,16 @@ void strip_arg_special_chars(char *s)
         instring = !instring;
         strcpy(p, p+1);
         p--;
-      } else {
+      } else
         escape = FALSE;
-      }
     } else if (*p == '\\') {
       if (!escape) {
-        if (*(p+1) == '"') {
-          strcpy(p, p+1);
-          p--;
-        }
-        escape = TRUE;
-      } else {
-        escape = FALSE;
+        strcpy(p, p+1);
+        p--;
       }
-    }
+      escape = !escape;
+    } else
+      escape = FALSE;
   }
 }
 

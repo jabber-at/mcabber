@@ -1,7 +1,7 @@
 /*
  * hbuf.c       -- History buffer implementation
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -412,7 +412,6 @@ GList *hbuf_jump_percent(GList *hbuf, int pc)
   return g_list_nth(hbuf, pc*hlen/100);
 }
 
-#ifdef DEBUG_ENABLE
 //  hbuf_get_blocks_number()
 // Returns the number of allocated hbuf_block's.
 guint hbuf_get_blocks_number(GList *hbuf)
@@ -427,6 +426,5 @@ guint hbuf_get_blocks_number(GList *hbuf)
   }
   return count;
 }
-#endif
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

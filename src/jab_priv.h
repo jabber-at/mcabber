@@ -7,7 +7,7 @@
 #include "events.h"
 
 /* XEP-0115 (Entity Capabilities) node */
-#define MCABBER_CAPS_NODE   "http://mcabber.lilotux.net/caps"
+#define MCABBER_CAPS_NODE   "http://mcabber.com/caps"
 
 #define JABBER_AGENT_GROUP  "Jabber Agents"
 
@@ -38,7 +38,6 @@ const char *entity_version(void);
 
 extern time_t iqlast;           /* last message/status change time */
 
-char *jidtodisp(const char *fjid);
 void handle_packet_iq(jconn conn, char *type, char *from, xmlnode xmldata);
 void display_server_error(xmlnode x);
 eviqs *iqs_new(guint8 type, const char *ns, const char *prefix, time_t timeout);

@@ -3,7 +3,7 @@
 
 #include <config.h>
 
-extern char *LocaleCharSet;
+extern const char *LocaleCharSet;
 
 #define to_utf8(s)   ((s) ? g_locale_to_utf8((s),   -1, NULL,NULL,NULL) : NULL)
 #define from_utf8(s) ((s) ? g_convert_with_fallback((s), -1, LocaleCharSet, \
@@ -26,11 +26,9 @@ const char *ut_get_tmpdir(void);
 int    to_iso8601(char *dststr, time_t timestamp);
 time_t from_iso8601(const char *timestamp, int utc);
 
-inline void safe_usleep(unsigned int usec); /* Only for delays < 1s */
-
 int check_jid_syntax(const char *fjid);
 
-inline void mc_strtolower(char *str);
+void mc_strtolower(char *str);
 
 void strip_arg_special_chars(char *s);
 char **split_arg(const char *arg, unsigned int n, int dontstriplast);

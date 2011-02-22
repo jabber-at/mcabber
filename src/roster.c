@@ -1,7 +1,7 @@
 /*
  * roster.c     -- Local roster implementation
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,21 +23,36 @@
 
 #include "roster.h"
 #include "utils.h"
+#include "hooks.h"
 
+extern void hlog_save_state(void);
 
-char *strrole[] = { /* Should match enum in roster.h */
+char *strrole[] = {   /* Should match enum in roster.h */
   "none",
   "moderator",
   "participant",
   "visitor"
 };
 
-char *straffil[] = { /* Should match enum roster.h */
+char *straffil[] = {  /* Should match enum in roster.h */
   "none",
   "owner",
   "admin",
   "member",
   "outcast"
+};
+
+char *strprintstatus[] = {  /* Should match enum in roster.h */
+  "default",
+  "none",
+  "in_and_out",
+  "all"
+};
+
+char *strautowhois[] = {    /* Should match enum in roster.h */
+  "default",
+  "off",
+  "on",
 };
 
 /* Resource structure */
@@ -76,6 +91,8 @@ typedef struct {
   gchar *nickname;
   gchar *topic;
   guint inside_room;
+  guint print_status;
+  guint auto_whois;
 
   /* on_server is TRUE if the item is present on the server roster */
   guint on_server;
@@ -103,8 +120,7 @@ GList *alternate_buddy;
 
 static roster roster_special;
 
-void unread_jid_add(const char *jid);
-int  unread_jid_del(const char *jid);
+static int  unread_jid_del(const char *jid);
 
 #define DFILTER_ALL     63
 #define DFILTER_ONLINE  62
@@ -432,11 +448,12 @@ void roster_del_user(const char *jid)
   if (roster_usr->flags & ROSTER_FLAG_MSG)
     unread_jid_add(roster_usr->jid);
 
+  sl_group = roster_usr->list;
+
   // Let's free roster_usr memory (jid, name, status message...)
   free_roster_user_data(roster_usr);
 
   // That's a little complex, we need to dereference twice
-  sl_group = ((roster*)sl_user->data)->list;
   sl_group_listptr = &((roster*)(sl_group->data))->list;
   *sl_group_listptr = g_slist_delete_link(*sl_group_listptr, sl_user);
 
@@ -574,6 +591,7 @@ void roster_msg_setflag(const char *jid, guint special, guint value)
   GSList *sl_user;
   roster *roster_usr, *roster_grp;
   int new_roster_item = FALSE;
+  guint unread_list_modified = FALSE;
 
   if (special) {
     //sl_user = roster_find(jid, namesearch, ROSTER_TYPE_SPECIAL);
@@ -606,6 +624,8 @@ void roster_msg_setflag(const char *jid, guint special, guint value)
   roster_usr = (roster*)sl_user->data;
   roster_grp = (roster*)roster_usr->list->data;
   if (value) {
+    if (!(roster_usr->flags & ROSTER_FLAG_MSG))
+      unread_list_modified = TRUE;
     // Message flag is TRUE.  This is easy, we just have to set both flags
     // to TRUE...
     roster_usr->flags |= ROSTER_FLAG_MSG;
@@ -616,6 +636,8 @@ void roster_msg_setflag(const char *jid, guint special, guint value)
   } else {
     // Message flag is FALSE.
     guint msg = FALSE;
+    if (roster_usr->flags & ROSTER_FLAG_MSG)
+      unread_list_modified = TRUE;
     roster_usr->flags &= ~ROSTER_FLAG_MSG;
     if (unread_list) {
       GSList *node = g_slist_find(unread_list, roster_usr);
@@ -644,6 +666,13 @@ void roster_msg_setflag(const char *jid, guint special, guint value)
 
   if (buddylist && (new_roster_item || !g_list_find(buddylist, roster_usr)))
     buddylist_build();
+
+  if (unread_list_modified) {
+    guint unread_count = g_slist_length(unread_list);
+    hlog_save_state();
+    /* Call external command */
+    hk_ext_cmd("", 'U', (guchar)MIN(255, unread_count), NULL);
+  }
 }
 
 const char *roster_getname(const char *jid)
@@ -779,7 +808,7 @@ void buddylist_set_hide_offline_buddies(int hide)
   }
 }
 
-inline int buddylist_isset_filter(void)
+int buddylist_isset_filter(void)
 {
   return (display_filter != DFILTER_ALL);
 }
@@ -887,9 +916,9 @@ void buddy_hide_group(gpointer rosterdata, int hide)
 
 const char *buddy_getjid(gpointer rosterdata)
 {
+  roster *roster_usr = rosterdata;
   if (!rosterdata)
     return NULL;
-  roster *roster_usr = rosterdata;
   return roster_usr->jid;
 }
 
@@ -1024,6 +1053,30 @@ const char *buddy_gettopic(gpointer rosterdata)
 {
   roster *roster_usr = rosterdata;
   return roster_usr->topic;
+}
+
+void buddy_setprintstatus(gpointer rosterdata, enum room_printstatus pstatus)
+{
+  roster *roster_usr = rosterdata;
+  roster_usr->print_status = pstatus;
+}
+
+enum room_printstatus buddy_getprintstatus(gpointer rosterdata)
+{
+  roster *roster_usr = rosterdata;
+  return roster_usr->print_status;
+}
+
+void buddy_setautowhois(gpointer rosterdata, enum room_autowhois awhois)
+{
+  roster *roster_usr = rosterdata;
+  roster_usr->auto_whois = awhois;
+}
+
+enum room_autowhois buddy_getautowhois(gpointer rosterdata)
+{
+  roster *roster_usr = rosterdata;
+  return roster_usr->auto_whois;
 }
 
 //  buddy_getgroupname()
@@ -1501,11 +1554,36 @@ void unread_jid_add(const char *jid)
 
 //  unread_jid_del(jid)
 // Return TRUE if jid is found in the table (and remove it), FALSE if not
-int unread_jid_del(const char *jid)
+static int unread_jid_del(const char *jid)
 {
   if (!unread_jids)
     return FALSE;
   return g_hash_table_remove(unread_jids, jid);
+}
+
+// Helper function for unread_jid_get_list()
+static void add_to_unreadjids(gpointer key, gpointer value, gpointer udata)
+{
+  GList **listp = udata;
+  *listp = g_list_append(*listp, key);
+}
+
+//  unread_jid_get_list()
+// Return the JID list.
+// The content of the list should not be modified or freed.
+// The caller should call g_list_free() after use.
+GList *unread_jid_get_list(void)
+{
+  GList *list = NULL;
+
+  if (!unread_jids)
+    return NULL;
+
+  // g_hash_table_get_keys() is only in glib >= 2.14
+  //return g_hash_table_get_keys(unread_jids);
+
+  g_hash_table_foreach(unread_jids, add_to_unreadjids, &list);
+  return list;
 }
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */
