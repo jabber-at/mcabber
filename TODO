@@ -1,23 +1,21 @@
 
 BUGS:
 
-* mcabber does not work with gnutls
-* renaming a MUC room should update the bookmark, not add a roster entry
+* SSL certificate verification does not work with gnutls
+* Unicode JIDs are not supported
 
 
 TODO:
 
 * Improve the completion system
-* XEP-0202: Entity Time
-* XEP-0203: Delayed Delivery (replaces -0091)
-* Connect hook
-* Macros
-* OTR encryption?
+* Use new Entity Time specs (XEP-0202) if possible in
+ /request time.
+* Enable /roster search for offline (hidden) buddies (hidden groups, etc.)
 * Show number of online contacts in folded groups
 * Publish personal information
-* Colors for presence
 * MUC: advanced settings for room creation
 * MUC: display roles of room members
+* MUC: ignore patterns
 * "Offline roster" (when disconnected)
 * Maybe cache iq:version and show version in /info, if available
 * Sort roster by status
@@ -27,6 +25,14 @@ TODO:
   See XEP-0191: Simple Communications Blocking
 * Use DNS _xmpp-client._tcp service
 * Mouse support?
+* Human-readable key binding config?
+* Possibility to hide log window(?)
+* Copy highlighted messages to the [status] window (or another one)
+* Improve /info, esp. in MUC rooms
+* Update the terminal's title
+  (Can this be done from an event script?)
+* Message filters
+* Data Forms
 
 * File transfer? :)
 
@@ -39,12 +45,4 @@ TODO:
   - /server register|unregister
   - /search <jid>|name
     (server search)
-  - Per room settings?
-    /room setopt [+|-]autowhois ?
-    /room setopt [+|-]'flag_joins' ?
-  - A command (display?) to display only a few states in the roster
-    . /roster display of      Display avail/ffc people
-    . /roster display -       Display nobody (but incoming messages)
-    . /roster display ofdna   == hide_offline
-    . /roster display ofdna_  == default behaviour
-    (Or roster mask)
+  - /buffer save file

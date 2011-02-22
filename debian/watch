@@ -1,2 +1,2 @@
 version=3
-http://www.lilotux.net/~mikael/mcabber/files/mcabber-(.*)\.tar\.bz2
+http://www.lilotux.net/~mikael/mcabber/files/mcabber-([0-9.]+)\.tar\.bz2

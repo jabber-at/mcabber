@@ -1,9 +1,9 @@
 /*
  * utils.c      -- Various utility functions
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  * ut_* functions are derived from Cabber debug/log code.
- * from_iso8601() comes from the Gaim project.
+ * from_iso8601() comes from the Pidgin (libpurple) project.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -135,11 +135,11 @@ int checkset_perm(const char *name, unsigned int setmode)
   struct stat buf;
 
 #ifdef __CYGWIN__
-  // Permission checking isn't efficent on Cygwin
+  // Permission checking isn't efficient on Cygwin
   return 0;
 #endif
 
-  fd = lstat(name, &buf);
+  fd = stat(name, &buf);
   if (fd == -1) return -1;
 
   if (buf.st_uid != geteuid()) {
@@ -203,14 +203,14 @@ int to_iso8601(char *dststr, time_t timestamp)
   tm_time = gmtime(&timestamp);
 
   ret = snprintf(dststr, 19, "%.4d%02d%02dT%02d:%02d:%02dZ",
-        1900+tm_time->tm_year, tm_time->tm_mon+1, tm_time->tm_mday,
+        (int)(1900+tm_time->tm_year), tm_time->tm_mon+1, tm_time->tm_mday,
         tm_time->tm_hour, tm_time->tm_min, tm_time->tm_sec);
 
   return ((ret == -1) ? -1 : 0);
 }
 
 //  from_iso8601(timestamp, utc)
-// This function came from the Gaim project, gaim_str_to_time().
+// This function came from the Pidgin project, gaim_str_to_time().
 // (Actually date may not be pure iso-8601)
 // Thanks, guys!
 // ** Modified by somian 10 Apr 2006 with advice from ysth.
@@ -222,6 +222,7 @@ time_t from_iso8601(const char *timestamp, int utc)
   char *c;
   int tzoff = 0;
   int hms_succ = 0;
+  int tmpyear;
 
   time(&retval);
   localtime_r(&retval, &t);
@@ -233,7 +234,8 @@ time_t from_iso8601(const char *timestamp, int utc)
   c = buf;
 
   /* 4 digit year */
-  if (!sscanf(c, "%04d", &t.tm_year)) return 0;
+  if (!sscanf(c, "%04d", &tmpyear)) return 0;
+  t.tm_year = tmpyear;
   c+=4;
   if (*c == '-')
     c++;
@@ -301,15 +303,6 @@ time_t from_iso8601(const char *timestamp, int utc)
   return retval;
 }
 
-// Should only be used for delays < 1s
-inline void safe_usleep(unsigned int usec)
-{
-  struct timespec req;
-  req.tv_sec = 0;
-  req.tv_nsec = (long)usec * 1000L;
-  nanosleep(&req, NULL);
-}
-
 /**
  * Derived from libjabber/jid.c, because the libjabber version is not
  * really convenient for our usage.
@@ -317,10 +310,10 @@ inline void safe_usleep(unsigned int usec)
  * Check if the full JID is valid
  * Return 0 if it is valid, non zero otherwise
  */
-int check_jid_syntax(char *fjid)
+int check_jid_syntax(const char *fjid)
 {
-  char *str;
-  char *domain, *resource;
+  const char *str;
+  const char *domain, *resource;
   int domlen;
 
   if (!fjid) return 1;
@@ -402,20 +395,16 @@ void strip_arg_special_chars(char *s)
         instring = !instring;
         strcpy(p, p+1);
         p--;
-      } else {
+      } else
         escape = FALSE;
-      }
     } else if (*p == '\\') {
       if (!escape) {
-        if (*(p+1) == '"') {
-          strcpy(p, p+1);
-          p--;
-        }
-        escape = TRUE;
-      } else {
-        escape = FALSE;
+        strcpy(p, p+1);
+        p--;
       }
-    }
+      escape = !escape;
+    } else
+      escape = FALSE;
   }
 }
 
@@ -458,7 +447,7 @@ char **split_arg(const char *arg, unsigned int n, int dontstriplast)
       *(arglst+i) = g_strndup(start, p-start);
       strip_arg_special_chars(*(arglst+i));
       for (start = p+1; *start && *start == ' '; start++) ;
-      p = start;
+      p = start-1;
       i++;
     }
   }

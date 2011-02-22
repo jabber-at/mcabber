@@ -5,17 +5,20 @@
 #include "jabglue.h"
 
 
-inline void hk_message_in(const char *bjid, const char *resname,
+void hk_mainloop(void);
+void hk_message_in(const char *bjid, const char *resname,
                           time_t timestamp, const char *msg, const char *type,
                           guint encrypted);
-inline void hk_message_out(const char *bjid, const char *nickname,
+void hk_message_out(const char *bjid, const char *nickname,
                            time_t timestamp, const char *msg, guint encrypted);
-inline void hk_statuschange(const char *bjid, const char *resname, gchar prio,
+void hk_statuschange(const char *bjid, const char *resname, gchar prio,
                             time_t timestamp, enum imstatus status,
                             char const *status_msg);
-inline void hk_mystatuschange(time_t timestamp,
+void hk_mystatuschange(time_t timestamp,
                               enum imstatus old_status,
                               enum imstatus new_status, const char *msg);
+
+void hook_execute_internal(const char *hookname);
 
 void hk_ext_cmd_init(const char *command);
 void hk_ext_cmd(const char *bjid, guchar type, guchar info, const char *data);

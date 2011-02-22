@@ -22,9 +22,6 @@ void spellcheck_deinit(void);
 
 #include "logprint.h"
 
-// Length of the timestamp & flag prefix in the chat buffer window
-#define PREFIX_WIDTH    17
-
 #define INPUTLINE_LENGTH  1024
 
 // Only used in screen.c; this is the maximum line number
@@ -46,6 +43,27 @@ enum colors {
   COLOR_ROSTERSEL,
   COLOR_ROSTERSELNMSG,
   COLOR_ROSTERNMSG,
+  COLOR_INFO,
+  COLOR_MSGIN,
+  //Foreground color on usual backgroud
+  //curses do not allow telling color only ->
+  //needs colorpairs
+  COLOR_BLACK_FG,
+  COLOR_RED_FG,
+  COLOR_GREEN_FG,
+  COLOR_YELLOW_FG,
+  COLOR_BLUE_FG,
+  COLOR_MAGENTA_FG,
+  COLOR_CYAN_FG,
+  COLOR_WHITE_FG,
+  COLOR_BLACK_BOLD_FG,
+  COLOR_RED_BOLD_FG,
+  COLOR_GREEN_BOLD_FG,
+  COLOR_YELLOW_BOLD_FG,
+  COLOR_BLUE_BOLD_FG,
+  COLOR_MAGENTA_BOLD_FG,
+  COLOR_CYAN_BOLD_FG,
+  COLOR_WHITE_BOLD_FG,
   COLOR_max
 };
 
@@ -74,12 +92,17 @@ typedef struct {
   } mcode;
 } keycode;
 
+typedef enum {
+  MC_ALL,
+  MC_PRESET,
+  MC_OFF,
+  MC_REMOVE
+} muccoltype;
+
 void scr_init_bindings(void);
 
 void scr_Getch(keycode *kcode);
-int process_key(keycode kcode);
-
-inline void scr_DoUpdate(void);
+void process_key(keycode kcode);
 
 void scr_InitLocaleCharSet(void);
 void scr_InitCurses(void);
@@ -90,22 +113,25 @@ void scr_UpdateMainStatus(int forceupdate);
 void scr_UpdateChatStatus(int forceupdate);
 void scr_RosterVisibility(int status);
 void scr_WriteIncomingMessage(const char *jidfrom, const char *text,
-                              time_t timestamp, guint prefix);
+                              time_t timestamp, guint prefix,
+                              unsigned mucnicklen);
 void scr_WriteOutgoingMessage(const char *jidto,   const char *text,
                               guint prefix);
 void scr_ShowBuddyWindow(void);
 int  scr_BuddyBufferExists(const char *jid);
-inline void scr_UpdateBuddyWindow(void);
-inline void scr_set_chatmode(int enable);
-inline int  scr_get_chatmode(void);
-inline void scr_set_multimode(int enable, char *subject);
-inline int  scr_get_multimode(void);
+void scr_UpdateBuddyWindow(void);
+void scr_set_chatmode(int enable);
+int  scr_get_chatmode(void);
+void scr_set_multimode(int enable, char *subject);
+int  scr_get_multimode(void);
 void scr_setmsgflag_if_needed(const char *jid, int special);
 void scr_append_multiline(const char *line);
-inline const char *scr_get_multiline(void);
-inline const char *scr_get_multimode_subj(void);
+const char *scr_get_multiline(void);
+const char *scr_get_multimode_subj(void);
 
-inline void scr_Beep(void);
+void scr_Beep(void);
+
+bool Autoaway;
 
 long int scr_GetAutoAwayTimeout(time_t now);
 void scr_CheckAutoAway(int activity);
@@ -124,10 +150,11 @@ void scr_RosterPrevGroup(void);
 void scr_RosterNextGroup(void);
 void scr_RosterSearch(char *);
 void scr_RosterJumpJid(char *);
+void scr_RosterDisplay(const char *);
 void scr_BufferTopBottom(int topbottom);
 void scr_BufferClear(void);
 void scr_BufferScrollLock(int lock);
-void scr_BufferPurge(int);
+void scr_BufferPurge(int, const char*);
 void scr_BufferPurgeAll(int);
 void scr_BufferSearch(int direction, const char *text);
 void scr_BufferPercent(int pc);
@@ -135,10 +162,12 @@ void scr_BufferDate(time_t t);
 void scr_RosterUnreadMessage(int);
 void scr_RosterJumpAlternate(void);
 void scr_BufferScrollUpDown(int updown, unsigned int nblines);
-
-#ifdef DEBUG_ENABLE
+bool scr_RosterColor(const char *status, const char *wildcard,
+                     const char *color);
+void scr_RosterClearColor(void);
+void scr_MucColor(const char *muc, muccoltype type);
+void scr_MucNickColor(const char *nick, const char *color);
 void scr_BufferList(void);
-#endif
 
 void readline_transpose_chars(void);
 void readline_forward_kill_word(void);

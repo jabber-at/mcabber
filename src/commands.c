@@ -1,7 +1,7 @@
 /*
  * commands.c   -- user commands handling
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +20,9 @@
  */
 
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "commands.h"
 #include "help.h"
@@ -32,6 +35,8 @@
 #include "utils.h"
 #include "settings.h"
 #include "events.h"
+#include "otr.h"
+#include "utf8.h"
 
 #define IMSTATUS_AWAY           "away"
 #define IMSTATUS_ONLINE         "online"
@@ -77,6 +82,11 @@ static void do_iline(char *arg);
 static void do_screen_refresh(char *arg);
 static void do_chat_disable(char *arg);
 static void do_source(char *arg);
+static void do_color(char *arg);
+static void do_otr(char *arg);
+static void do_otrpolicy(char *arg);
+
+static void do_say_internal(char *arg, int parse_flags);
 
 // Global variable for the commands list
 static GSList *Commands;
@@ -127,6 +137,9 @@ void cmd_init(void)
           0, &do_move);
   cmd_add("msay", "Send a multi-lines message to the selected buddy",
           COMPL_MULTILINE, 0, &do_msay);
+  cmd_add("otr", "Manage OTR settings", COMPL_OTR, COMPL_JID, &do_otr);
+  cmd_add("otrpolicy", "Manage OTR policies", COMPL_JID, COMPL_OTRPOLICY,
+          &do_otrpolicy);
   cmd_add("pgp", "Manage PGP settings", COMPL_PGP, COMPL_JID, &do_pgp);
   cmd_add("quit", "Exit the software", 0, 0, NULL);
   cmd_add("rawxml", "Send a raw XML string", 0, 0, &do_rawxml);
@@ -147,6 +160,7 @@ void cmd_init(void)
   cmd_add("status_to", "Show or set your status for one recipient",
           COMPL_JID, COMPL_STATUS, &do_status_to);
   cmd_add("version", "Show mcabber version", 0, 0, &do_version);
+  cmd_add("color", "Set coloring options", COMPL_COLOR, 0, &do_color);
 
   // Status category
   compl_add_category_word(COMPL_STATUS, "online");
@@ -157,6 +171,7 @@ void cmd_init(void)
   compl_add_category_word(COMPL_STATUS, "notavail");
   compl_add_category_word(COMPL_STATUS, "away");
   compl_add_category_word(COMPL_STATUS, "offline");
+  compl_add_category_word(COMPL_STATUS, "message");
 
   // Roster category
   compl_add_category_word(COMPL_ROSTER, "bottom");
@@ -168,11 +183,13 @@ void cmd_init(void)
   compl_add_category_word(COMPL_ROSTER, "hide");
   compl_add_category_word(COMPL_ROSTER, "show");
   compl_add_category_word(COMPL_ROSTER, "toggle");
+  compl_add_category_word(COMPL_ROSTER, "display");
   compl_add_category_word(COMPL_ROSTER, "hide_offline");
   compl_add_category_word(COMPL_ROSTER, "show_offline");
   compl_add_category_word(COMPL_ROSTER, "toggle_offline");
   compl_add_category_word(COMPL_ROSTER, "item_lock");
   compl_add_category_word(COMPL_ROSTER, "item_unlock");
+  compl_add_category_word(COMPL_ROSTER, "item_toggle_lock");
   compl_add_category_word(COMPL_ROSTER, "alternate");
   compl_add_category_word(COMPL_ROSTER, "search");
   compl_add_category_word(COMPL_ROSTER, "unread_first");
@@ -195,6 +212,7 @@ void cmd_init(void)
   compl_add_category_word(COMPL_BUFFER, "scroll_lock");
   compl_add_category_word(COMPL_BUFFER, "scroll_unlock");
   compl_add_category_word(COMPL_BUFFER, "scroll_toggle");
+  compl_add_category_word(COMPL_BUFFER, "list");
 
   // Group category
   compl_add_category_word(COMPL_GROUP, "fold");
@@ -224,7 +242,9 @@ void cmd_init(void)
   compl_add_category_word(COMPL_ROOM, "privmsg");
   compl_add_category_word(COMPL_ROOM, "remove");
   compl_add_category_word(COMPL_ROOM, "role");
+  compl_add_category_word(COMPL_ROOM, "setopt");
   compl_add_category_word(COMPL_ROOM, "topic");
+  compl_add_category_word(COMPL_ROOM, "unban");
   compl_add_category_word(COMPL_ROOM, "unlock");
   compl_add_category_word(COMPL_ROOM, "whois");
 
@@ -251,19 +271,40 @@ void cmd_init(void)
   compl_add_category_word(COMPL_PGP, "force");
   compl_add_category_word(COMPL_PGP, "info");
   compl_add_category_word(COMPL_PGP, "setkey");
+
+  // OTR category
+  compl_add_category_word(COMPL_OTR, "start");
+  compl_add_category_word(COMPL_OTR, "stop");
+  compl_add_category_word(COMPL_OTR, "fingerprint");
+  compl_add_category_word(COMPL_OTR, "smpq");
+  compl_add_category_word(COMPL_OTR, "smpr");
+  compl_add_category_word(COMPL_OTR, "smpa");
+  compl_add_category_word(COMPL_OTR, "info");
+  compl_add_category_word(COMPL_OTR, "key");
+
+  // OTR Policy category
+  compl_add_category_word(COMPL_OTRPOLICY, "plain");
+  compl_add_category_word(COMPL_OTRPOLICY, "manual");
+  compl_add_category_word(COMPL_OTRPOLICY, "opportunistic");
+  compl_add_category_word(COMPL_OTRPOLICY, "always");
+
+  // Color category
+  compl_add_category_word(COMPL_COLOR, "roster");
+  compl_add_category_word(COMPL_COLOR, "muc");
+  compl_add_category_word(COMPL_COLOR, "mucnick");
 }
 
 //  expandalias(line)
 // If there is one, expand the alias in line and returns a new allocated line
 // If no alias is found, returns line
-// Note : if the returned pointer is different from line, the caller should
-//        g_free() the pointer after use
-char *expandalias(char *line)
+// Note: if the returned pointer is different from line, the caller should
+//       g_free() the pointer after use
+char *expandalias(const char *line)
 {
   const char *p1, *p2;
   char *word;
   const gchar *value;
-  char *newline = line;
+  char *newline = (char*)line;
 
   // Ignore leading COMMAND_CHAR
   for (p1 = line ; *p1 == COMMAND_CHAR ; p1++)
@@ -271,19 +312,13 @@ char *expandalias(char *line)
   // Locate the end of the word
   for (p2 = p1 ; *p2 && (*p2 != ' ') ; p2++)
     ;
-  // Extract the word
+  // Extract the word and look for an alias in the list
   word = g_strndup(p1, p2-p1);
-
-  // Look for an alias in the list
   value = settings_get(SETTINGS_TYPE_ALIAS, (const char*)word);
-  if (value) {
-    // There is an alias to expand
-    newline = g_new(char, strlen(value)+strlen(p2)+2);
-    *newline = COMMAND_CHAR;
-    strcpy(newline+1, value);
-    strcat(newline, p2);
-  }
   g_free(word);
+
+  if (value)
+    newline = g_strdup_printf("%c%s%s", COMMAND_CHAR, value, p2);
 
   return newline;
 }
@@ -318,70 +353,27 @@ cmd *cmd_get(const char *command)
   return NULL;
 }
 
-//  send_message(msg)
-// Write the message in the buddy's window and send the message on
-// the network.
-static void send_message(const char *msg, const char *subj)
-{
-  const char *bjid;
-  gint crypted;
-
-  if (!jb_getonline()) {
-    scr_LogPrint(LPRINT_NORMAL, "You are not connected.");
-    return;
-  }
-
-  if (!current_buddy) {
-    scr_LogPrint(LPRINT_NORMAL, "No buddy is currently selected.");
-    return;
-  }
-
-  bjid = CURRENT_JID;
-  if (!bjid) {
-    scr_LogPrint(LPRINT_NORMAL, "No buddy is currently selected.");
-    return;
-  }
-
-  // Network part
-  jb_send_msg(bjid, msg, buddy_gettype(BUDDATA(current_buddy)), subj, NULL,
-              &crypted);
-
-  if (crypted == -1) {
-    scr_LogPrint(LPRINT_LOGNORM, "Encryption error.  Message was not sent.");
-    return;
-  }
-
-  // Hook
-  if (buddy_gettype(BUDDATA(current_buddy)) != ROSTER_TYPE_ROOM) {
-    // local part (UI, logging, etc.)
-    gchar *hmsg;
-    if (subj)
-      hmsg = g_strdup_printf("[%s]\n%s", subj, msg);
-    else
-      hmsg = (char*)msg;
-    hk_message_out(bjid, NULL, 0, hmsg, crypted);
-    if (hmsg != msg) g_free(hmsg);
-  }
-}
-
 //  process_command(line, iscmd)
 // Process a command line.
 // If iscmd is TRUE, process the command even if verbatim mmode is set;
 // it is intended to be used for key bindings.
 // Return 255 if this is the /quit command, and 0 for the other commands.
-int process_command(char *line, guint iscmd)
+int process_command(const char *line, guint iscmd)
 {
   char *p;
   char *xpline;
   cmd *curcmd;
 
+  if (!line)
+    return 0;
+
   // We do alias expansion here
   if (iscmd || scr_get_multimode() != 2)
     xpline = expandalias(line);
   else
-    xpline = line; // No expansion in verbatim multi-line mode
+    xpline = (char*)line; // No expansion in verbatim multi-line mode
 
-  // We want to have a copy
+  // We want to use a copy
   if (xpline == line)
     xpline = g_strdup(line);
 
@@ -398,6 +390,12 @@ int process_command(char *line, guint iscmd)
       g_free(xpline);
       return 255;
     }
+  } else if (iscmd && !strncasecmp(xpline, "quit", 4) &&
+             (!xpline[4] || xpline[4] == ' ')) {
+    // If iscmd is true we can have the command without the command prefix
+    // character (usually '/').
+    g_free(xpline);
+    return 255;
   }
 
   // If verbatim multi-line mode, we check if another /msay command is typed
@@ -442,7 +440,7 @@ int process_command(char *line, guint iscmd)
 // If this isn't a command, this is a message and it is sent to the
 // currently selected buddy.
 // Return 255 if the line is the /quit command, or 0.
-int process_line(char *line)
+int process_line(const char *line)
 {
   if (!*line) { // User only pressed enter
     if (scr_get_multimode()) {
@@ -450,9 +448,13 @@ int process_line(char *line)
       return 0;
     }
     if (current_buddy) {
-      // Enter chat mode
-      scr_set_chatmode(TRUE);
-      scr_ShowBuddyWindow();
+      if (buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_GROUP)
+	do_group("toggle");
+      else {
+        // Enter chat mode
+        scr_set_chatmode(TRUE);
+        scr_ShowBuddyWindow();
+      }
     }
     return 0;
   }
@@ -462,7 +464,7 @@ int process_line(char *line)
     if (scr_get_multimode())
       scr_append_multiline(line);
     else
-      do_say(line);
+      do_say_internal((char*)line, 0);
     return 0;
   }
 
@@ -470,8 +472,9 @@ int process_line(char *line)
   return process_command(line, FALSE);
 }
 
-// Helper routine for buffer item_{lock,unlock}
-static void roster_buddylock(char *bjid, bool lock)
+// Helper routine for buffer item_{lock,unlock,toggle_lock}
+// "lock" values: 1=lock 0=unlock -1=invert
+static void roster_buddylock(char *bjid, int lock)
 {
   gpointer bud = NULL;
   bool may_need_refresh = FALSE;
@@ -504,10 +507,13 @@ static void roster_buddylock(char *bjid, bool lock)
 
   // Update the ROSTER_FLAG_USRLOCK flag
   if (bud) {
+    if (lock == -1)
+      lock = !(buddy_getflags(bud) & ROSTER_FLAG_USRLOCK);
     buddy_setflags(bud, ROSTER_FLAG_USRLOCK, lock);
-    if (may_need_refresh)
+    if (may_need_refresh) {
       buddylist_build();
       update_roster = TRUE;
+    }
   }
 }
 
@@ -520,7 +526,7 @@ static void display_and_free_note(struct annotation *note, const char *winId)
   gchar tbuf[128];
   GString *sbuf;
   guint msg_flag = HBB_PREFIX_INFO;
-  /* We use the flag prefix_info for the first line, and prefix_none
+  /* We use the flag prefix_info for the first line, and prefix_cont
      for the other lines, for better readability */
 
   if (!note)
@@ -531,8 +537,8 @@ static void display_and_free_note(struct annotation *note, const char *winId)
   if (!winId) {
     // We're writing to the status window, so let's show the jid too.
     g_string_printf(sbuf, "Annotation on <%s>", note->jid);
-    scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag);
-    msg_flag = HBB_PREFIX_NONE;
+    scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag, 0);
+    msg_flag = HBB_PREFIX_INFO | HBB_PREFIX_CONT;
   }
 
   // If we have the creation date, display it
@@ -540,8 +546,8 @@ static void display_and_free_note(struct annotation *note, const char *winId)
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S",
              localtime(&note->cdate));
     g_string_printf(sbuf, "Note created  %s", tbuf);
-    scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag);
-    msg_flag = HBB_PREFIX_NONE;
+    scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag, 0);
+    msg_flag = HBB_PREFIX_INFO | HBB_PREFIX_CONT;
   }
   // If we have the modification date, display it
   // unless it's the same as the creation date
@@ -549,12 +555,12 @@ static void display_and_free_note(struct annotation *note, const char *winId)
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S",
              localtime(&note->mdate));
     g_string_printf(sbuf, "Note modified %s", tbuf);
-    scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag);
-    msg_flag = HBB_PREFIX_NONE;
+    scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag, 0);
+    msg_flag = HBB_PREFIX_INFO | HBB_PREFIX_CONT;
   }
   // Note text
   g_string_printf(sbuf, "Note: %s", note->text);
-  scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag);
+  scr_WriteIncomingMessage(winId, sbuf->str, 0, msg_flag, 0);
 
   g_string_free(sbuf, TRUE);
   g_free(note->text);
@@ -618,7 +624,7 @@ static void roster_note(char *arg)
       display_and_free_note(note, bjid);
     } else {
       scr_WriteIncomingMessage(bjid, "This item doesn't have a note.", 0,
-                               HBB_PREFIX_INFO);
+                               HBB_PREFIX_INFO, 0);
     }
   }
 }
@@ -667,10 +673,14 @@ static void do_roster(char *arg)
     buddylist_set_hide_offline_buddies(-1);
     buddylist_build();
     update_roster = TRUE;
+  } else if (!strcasecmp(subcmd, "display")) {
+    scr_RosterDisplay(arg);
   } else if (!strcasecmp(subcmd, "item_lock")) {
-    roster_buddylock(arg, TRUE);
+    roster_buddylock(arg, 1);
   } else if (!strcasecmp(subcmd, "item_unlock")) {
-    roster_buddylock(arg, FALSE);
+    roster_buddylock(arg, 0);
+  } else if (!strcasecmp(subcmd, "item_toggle_lock")) {
+    roster_buddylock(arg, -1);
   } else if (!strcasecmp(subcmd, "unread_first")) {
     scr_RosterUnreadMessage(0);
   } else if (!strcasecmp(subcmd, "unread_next")) {
@@ -701,11 +711,89 @@ static void do_roster(char *arg)
   free_arg_lst(paramlst);
 }
 
-//  setstatus(recipient, arg)
+void do_color(char *arg)
+{
+  char **paramlst;
+  char *subcmd;
+
+  paramlst = split_arg(arg, 2, 1); // subcmd, arg
+  subcmd = *paramlst;
+  arg = *(paramlst+1);
+
+  if (!subcmd || !*subcmd) {
+    scr_LogPrint(LPRINT_NORMAL, "Missing parameter.");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (!strcasecmp(subcmd, "roster")) {
+    char *status, *wildcard, *color;
+    char **arglist = split_arg(arg, 3, 0);
+
+    status = *arglist;
+    wildcard = to_utf8(arglist[1]);
+    color = arglist[2];
+
+    if (status && !strcmp(status, "clear")) { // Not a color command, clear all
+      scr_RosterClearColor();
+      update_roster = TRUE;
+    } else {
+      if (!status || !*status || !wildcard || !*wildcard || !color || !*color) {
+        scr_LogPrint(LPRINT_NORMAL, "Missing argument");
+      } else {
+        update_roster = scr_RosterColor(status, wildcard, color)
+                        || update_roster;
+      }
+    }
+    free_arg_lst(arglist);
+    g_free(wildcard);
+  } else if (!strcasecmp(subcmd, "muc")) {
+    char **arglist = split_arg(arg, 2, 0);
+    char *free_muc = to_utf8(*arglist);
+    const char *muc = free_muc, *mode = arglist[1];
+    if (!muc || !*muc)
+      scr_LogPrint(LPRINT_NORMAL, "What MUC?");
+    else {
+      if (!strcmp(muc, "."))
+        if (!(muc = CURRENT_JID))
+          scr_LogPrint(LPRINT_NORMAL, "No JID selected");
+      if (muc) {
+        if (check_jid_syntax(muc) && strcmp(muc, "*"))
+          scr_LogPrint(LPRINT_NORMAL, "Not a JID");
+        else {
+          if (!mode || !*mode || !strcasecmp(mode, "on"))
+            scr_MucColor(muc, MC_ALL);
+          else if (!strcasecmp(mode, "preset"))
+            scr_MucColor(muc, MC_PRESET);
+          else if (!strcasecmp(mode, "off"))
+            scr_MucColor(muc, MC_OFF);
+          else if (!strcmp(mode, "-"))
+            scr_MucColor(muc, MC_REMOVE);
+          else
+            scr_LogPrint(LPRINT_NORMAL, "Unknown coloring mode");
+        }
+      }
+    }
+    free_arg_lst(arglist);
+    g_free(free_muc);
+  } else if (!strcasecmp(subcmd, "mucnick")) {
+    char **arglist = split_arg(arg, 2, 0);
+    const char *nick = *arglist, *color = arglist[1];
+    if (!nick || !*nick || !color || !*color)
+      scr_LogPrint(LPRINT_NORMAL, "Missing argument");
+    else
+      scr_MucNickColor(nick, color);
+    free_arg_lst(arglist);
+  } else
+    scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
+  free_arg_lst(paramlst);
+}
+
+//  cmd_setstatus(recipient, arg)
 // Set your Jabber status.
 // - if recipient is not NULL, the status is sent to this contact only
 // - arg must be "status message" (message is optional)
-void setstatus(const char *recipient, const char *arg)
+void cmd_setstatus(const char *recipient, const char *arg)
 {
   char **paramlst;
   char *status;
@@ -717,7 +805,13 @@ void setstatus(const char *recipient, const char *arg)
     return;
   }
 
-  paramlst = split_arg(arg, 2, 0); // status, message
+  // It makes sense to reset autoaway before changing the status
+  // (esp. for FIFO or remote commands) or the behaviour could be
+  // unexpected...
+  if (!recipient)
+    scr_CheckAutoAway(TRUE);
+
+  paramlst = split_arg(arg, 2, 1); // status, message
   status = *paramlst;
   msg = *(paramlst+1);
 
@@ -734,7 +828,15 @@ void setstatus(const char *recipient, const char *arg)
   else if (!strcasecmp(status, IMSTATUS_DONOTDISTURB))  st = dontdisturb;
   else if (!strcasecmp(status, IMSTATUS_NOTAVAILABLE))  st = notavail;
   else if (!strcasecmp(status, IMSTATUS_FREE4CHAT))     st = freeforchat;
-  else {
+  else if (!strcasecmp(status, "message")) {
+    if (!msg || !*msg) {
+      // We want a message.  If there's none, we give up.
+      scr_LogPrint(LPRINT_NORMAL, "Missing parameter.");
+      free_arg_lst(paramlst);
+      return;
+    }
+    st = jb_getstatus();  // Preserve current status
+  } else {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized status!");
     free_arg_lst(paramlst);
     return;
@@ -764,7 +866,7 @@ static void do_status(char *arg)
     return;
   }
   arg = to_utf8(arg);
-  setstatus(NULL, arg);
+  cmd_setstatus(NULL, arg);
   g_free(arg);
 }
 
@@ -818,7 +920,7 @@ static void do_status_to(char *arg)
     msg = to_utf8(msg);
     cmdline = g_strdup_printf("%s %s", st, msg);
     scr_LogPrint(LPRINT_LOGNORM, "Sending to <%s> /status %s", fjid, cmdline);
-    setstatus(fjid, cmdline);
+    cmd_setstatus(fjid, cmdline);
     g_free(msg);
     g_free(cmdline);
     g_free(jid_utf8);
@@ -906,7 +1008,7 @@ static void do_del(char *arg)
   }
 
   // Close the buffer
-  scr_BufferPurge(1);
+  scr_BufferPurge(1, NULL);
 
   scr_LogPrint(LPRINT_LOGNORM, "Removing <%s>...", bjid);
   jb_delbuddy(bjid);
@@ -915,8 +1017,11 @@ static void do_del(char *arg)
 
 static void do_group(char *arg)
 {
-  gpointer group;
+  gpointer group = NULL;
   guint leave_buddywindow;
+  char **paramlst;
+  char *subcmd;
+  enum { group_toggle = -1, group_unfold = 0, group_fold = 1 } group_state = 0;
 
   if (!*arg) {
     scr_LogPrint(LPRINT_NORMAL, "Missing parameter.");
@@ -926,44 +1031,72 @@ static void do_group(char *arg)
   if (!current_buddy)
     return;
 
-  group = buddy_getgroup(BUDDATA(current_buddy));
+  paramlst = split_arg(arg, 2, 1); // subcmd, [arg]
+  subcmd = *paramlst;
+  arg = *(paramlst+1);
+
+  if (!subcmd || !*subcmd)
+    goto do_group_return;   // Should not happen anyway
+
+  if (arg && *arg) {
+    GSList *roster_elt;
+    roster_elt = roster_find(arg, namesearch, ROSTER_TYPE_GROUP);
+    if (roster_elt)
+      group = buddy_getgroup(roster_elt->data);
+  } else {
+    group = buddy_getgroup(BUDDATA(current_buddy));
+  }
   if (!group)
-    return;
+    goto do_group_return;
 
   // We'll have to redraw the chat window if we're not currently on the group
   // entry itself, because it means we'll have to leave the current buddy
   // chat window.
-  leave_buddywindow = (group != BUDDATA(current_buddy));
+  leave_buddywindow = (group != BUDDATA(current_buddy) &&
+                       group == buddy_getgroup(BUDDATA(current_buddy)));
+
 
   if (!(buddy_gettype(group) & ROSTER_TYPE_GROUP)) {
     scr_LogPrint(LPRINT_NORMAL, "You need to select a group.");
-    return;
+    goto do_group_return;
   }
 
-  if (!strcasecmp(arg, "expand") || !strcasecmp(arg, "unfold")) {
-    buddy_setflags(group, ROSTER_FLAG_HIDE, FALSE);
-  } else if (!strcasecmp(arg, "shrink") || !strcasecmp(arg, "fold")) {
-    buddy_setflags(group, ROSTER_FLAG_HIDE, TRUE);
-  } else if (!strcasecmp(arg, "toggle")) {
-    buddy_setflags(group, ROSTER_FLAG_HIDE,
-            !(buddy_getflags(group) & ROSTER_FLAG_HIDE));
-  } else {
+  if (!strcasecmp(subcmd, "expand") || !strcasecmp(subcmd, "unfold"))
+    group_state = group_unfold;
+  else if (!strcasecmp(subcmd, "shrink") || !strcasecmp(subcmd, "fold"))
+    group_state = group_fold;
+  else if (!strcasecmp(subcmd, "toggle"))
+    group_state = group_toggle;
+  else {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
-    return;
+    goto do_group_return;
   }
+
+  if (group_state != group_unfold && leave_buddywindow)
+    scr_RosterPrevGroup();
+
+  buddy_hide_group(group, group_state);
 
   buddylist_build();
   update_roster = TRUE;
-  if (leave_buddywindow) scr_ShowBuddyWindow();
+
+do_group_return:
+  free_arg_lst(paramlst);
 }
 
-static int send_message_to(const char *fjid, const char *msg, const char *subj)
+static int send_message_to(const char *fjid, const char *msg, const char *subj,
+                           const char *type_overwrite, bool quiet)
 {
   char *bare_jid, *rp;
   char *hmsg;
   gint crypted;
   gint retval = 0;
+  int isroom;
 
+  if (!jb_getonline()) {
+    scr_LogPrint(LPRINT_NORMAL, "You are not connected.");
+    return 1;
+  }
   if (!fjid || !*fjid) {
     scr_LogPrint(LPRINT_NORMAL, "You must specify a Jabber ID.");
     return 1;
@@ -980,18 +1113,24 @@ static int send_message_to(const char *fjid, const char *msg, const char *subj)
 
   // We must use the bare jid in hk_message_out()
   rp = strchr(fjid, JID_RESOURCE_SEPARATOR);
-  if (rp) bare_jid = g_strndup(fjid, rp - fjid);
-  else   bare_jid = (char*)fjid;
+  if (rp)
+    bare_jid = g_strndup(fjid, rp - fjid);
+  else
+    bare_jid = (char*)fjid;
 
-  // Jump to window, create one if needed
-  scr_RosterJumpJid(bare_jid);
+  if (!quiet) {
+    // Jump to window, create one if needed
+    scr_RosterJumpJid(bare_jid);
+  }
 
   // Check if we're sending a message to a conference room
   // If not, we must make sure rp is NULL, for hk_message_out()
+  isroom = !!roster_find(bare_jid, jidsearch, ROSTER_TYPE_ROOM);
   if (rp) {
-    if (roster_find(bare_jid, jidsearch, ROSTER_TYPE_ROOM)) rp++;
+    if (isroom) rp++;
     else rp = NULL;
   }
+  isroom = isroom && (!rp || !*rp);
 
   // local part (UI, logging, etc.)
   if (subj)
@@ -1000,7 +1139,9 @@ static int send_message_to(const char *fjid, const char *msg, const char *subj)
     hmsg = (char*)msg;
 
   // Network part
-  jb_send_msg(fjid, msg, ROSTER_TYPE_USER, subj, NULL, &crypted);
+  jb_send_msg(fjid, msg, (isroom ? ROSTER_TYPE_ROOM : ROSTER_TYPE_USER),
+              subj, NULL, &crypted,
+              type_overwrite);
 
   if (crypted == -1) {
     scr_LogPrint(LPRINT_LOGNORM, "Encryption error.  Message was not sent.");
@@ -1009,7 +1150,8 @@ static int send_message_to(const char *fjid, const char *msg, const char *subj)
   }
 
   // Hook
-  hk_message_out(bare_jid, rp, 0, hmsg, crypted);
+  if (!isroom)
+    hk_message_out(bare_jid, rp, 0, hmsg, crypted);
 
 send_message_to_return:
   if (hmsg != msg) g_free(hmsg);
@@ -1017,9 +1159,52 @@ send_message_to_return:
   return retval;
 }
 
-static void do_say(char *arg)
+//  send_message(msg, subj, type_overwrite)
+// Write the message in the buddy's window and send the message on
+// the network.
+static void send_message(const char *msg, const char *subj,
+                         const char *type_overwrite)
+{
+  const char *bjid;
+
+  if (!current_buddy) {
+    scr_LogPrint(LPRINT_NORMAL, "No buddy is currently selected.");
+    return;
+  }
+
+  bjid = CURRENT_JID;
+  if (!bjid) {
+    scr_LogPrint(LPRINT_NORMAL, "No buddy is currently selected.");
+    return;
+  }
+
+  send_message_to(bjid, msg, subj, type_overwrite, FALSE);
+}
+
+static const char *scan_mtype(char **arg)
+{
+  //Try splitting it
+  char **parlist = split_arg(*arg, 2, 1);
+  const char *result = NULL;
+  //Is it any good parameter?
+  if (parlist && *parlist) {
+    if (!strcmp("-n", *parlist)) {
+      result = TMSG_NORMAL;
+    } else if (!strcmp("-h", *parlist)) {
+      result = TMSG_HEADLINE;
+    }
+    if (result || (!strcmp("--", *parlist)))
+      *arg += strlen(*arg) - (parlist[1] ? strlen(parlist[1]) : 0);
+  }
+  //Anything found? -> skip it
+  free_arg_lst(parlist);
+  return result;
+}
+
+static void do_say_internal(char *arg, int parse_flags)
 {
   gpointer bud;
+  const char *msgtype = NULL;
 
   scr_set_chatmode(TRUE);
   scr_ShowBuddyWindow();
@@ -1038,9 +1223,15 @@ static void do_say(char *arg)
   }
 
   buddy_setflags(bud, ROSTER_FLAG_LOCK, TRUE);
+  if (parse_flags)
+    msgtype = scan_mtype(&arg);
   arg = to_utf8(arg);
-  send_message(arg, NULL);
+  send_message(arg, NULL, msgtype);
   g_free(arg);
+}
+
+static void do_say(char *arg) {
+  do_say_internal(arg, 1);
 }
 
 static void do_msay(char *arg)
@@ -1119,12 +1310,14 @@ static void do_msay(char *arg)
   if (!strcasecmp(subcmd, "send_to")) {
     int err = FALSE;
     gchar *msg_utf8;
+    const char *msg_type = scan_mtype(&arg);
     // Let's send to the specified JID.  We leave now if there
     // has been an error (so we don't leave multi-line mode).
     arg = to_utf8(arg);
     msg_utf8 = to_utf8(scr_get_multiline());
     if (msg_utf8) {
-      err = send_message_to(arg, msg_utf8, scr_get_multimode_subj());
+      err = send_message_to(arg, msg_utf8, scr_get_multimode_subj(), msg_type,
+                            FALSE);
       g_free(msg_utf8);
     }
     g_free(arg);
@@ -1149,7 +1342,7 @@ static void do_msay(char *arg)
     buddy_setflags(bud, ROSTER_FLAG_LOCK, TRUE);
     msg_utf8 = to_utf8(scr_get_multiline());
     if (msg_utf8) {
-      send_message(msg_utf8, scr_get_multimode_subj());
+      send_message(msg_utf8, scr_get_multimode_subj(), scan_mtype(&arg));
       g_free(msg_utf8);
     }
   }
@@ -1159,30 +1352,159 @@ do_msay_return:
   free_arg_lst(paramlst);
 }
 
+//  load_message_from_file(filename)
+// Read the whole content of a file.
+// The data are converted to UTF8, they should be freed by the caller after
+// use.
+char *load_message_from_file(const char *filename)
+{
+  FILE *fd;
+  struct stat buf;
+  char *msgbuf, *msgbuf_utf8;
+  char *p;
+  char *next_utf8_char;
+  size_t len;
+
+  fd = fopen(filename, "r");
+
+  if (!fd || fstat(fileno(fd), &buf)) {
+    scr_LogPrint(LPRINT_LOGNORM, "Cannot open message file (%s)", filename);
+    return NULL;
+  }
+  if (!buf.st_size || buf.st_size >= HBB_BLOCKSIZE) {
+    if (!buf.st_size)
+      scr_LogPrint(LPRINT_LOGNORM, "Message file is empty (%s)", filename);
+    else
+      scr_LogPrint(LPRINT_LOGNORM, "Message file is too big (%s)", filename);
+    fclose(fd);
+    return NULL;
+  }
+
+  msgbuf = g_new0(char, HBB_BLOCKSIZE);
+  len = fread(msgbuf, 1, HBB_BLOCKSIZE-1, fd);
+  fclose(fd);
+
+  next_utf8_char = msgbuf;
+
+  // Check there is no binary data.  It must be a *message* file!
+  for (p = msgbuf ; *p ; p++) {
+    if (utf8_mode) {
+      if (p == next_utf8_char) {
+        if (!iswprint(get_char(p)) && *p != '\n' && *p != '\t')
+          break;
+        next_utf8_char = next_char(p);
+      }
+    } else {
+      unsigned char sc = *p;
+      if (!iswprint(sc) && sc != '\n' && sc != '\t')
+        break;
+    }
+  }
+
+  if (*p || (size_t)(p-msgbuf) != len) { // We're not at the End Of Line...
+    scr_LogPrint(LPRINT_LOGNORM, "Message file contains "
+                 "invalid characters (%s)", filename);
+    g_free(msgbuf);
+    return NULL;
+  }
+
+  // p is now at the EOL
+  // Let's strip trailing newlines
+  if (p > msgbuf)
+    p--;
+  while (p > msgbuf && *p == '\n')
+    *p-- = 0;
+
+  // It could be empty, once the trailing newlines are gone
+  if (p == msgbuf && *p == '\n') {
+    scr_LogPrint(LPRINT_LOGNORM, "Message file is empty (%s)", filename);
+    g_free(msgbuf);
+    return NULL;
+  }
+
+  msgbuf_utf8 = to_utf8(msgbuf);
+
+  if (!msgbuf_utf8 && msgbuf)
+    scr_LogPrint(LPRINT_LOGNORM, "Message file charset conversion error (%s)",
+                 filename);
+  g_free(msgbuf);
+  return msgbuf_utf8;
+}
+
 static void do_say_to(char *arg)
 {
   char **paramlst;
   char *fjid, *msg;
+  char *file = NULL;
+  const char *msg_type = NULL;
+  bool quiet = FALSE;
 
   if (!jb_getonline()) {
     scr_LogPrint(LPRINT_NORMAL, "You are not connected.");
     return;
   }
 
-  paramlst = split_arg(arg, 2, 1); // jid, message
-  fjid = *paramlst;
-  msg = *(paramlst+1);
+  msg_type = scan_mtype(&arg);
+  paramlst = split_arg(arg, 2, 1); // jid, message (or option, jid, message)
 
-  if (!fjid || !strcmp(fjid, ".")) {
+  if (!*paramlst) {  // No parameter?
     scr_LogPrint(LPRINT_NORMAL, "Please specify a Jabber ID.");
     free_arg_lst(paramlst);
     return;
   }
 
-  fjid = to_utf8(fjid);
-  msg = to_utf8(msg);
+  // Check for an option parameter
+  while (TRUE) {
+    if (!strcmp(*paramlst, "-q")) {
+      char **oldparamlst = paramlst;
+      paramlst = split_arg(*(oldparamlst+1), 2, 1); // jid, message
+      free_arg_lst(oldparamlst);
+      quiet = TRUE;
+    } else if (!strcmp(*paramlst, "-f")) {
+      char **oldparamlst = paramlst;
+      paramlst = split_arg(*(oldparamlst+1), 2, 1); // filename, jid
+      free_arg_lst(oldparamlst);
+      file = g_strdup(*paramlst);
+      // One more parameter shift...
+      oldparamlst = paramlst;
+      paramlst = split_arg(*(oldparamlst+1), 2, 1); // jid, nothing
+      free_arg_lst(oldparamlst);
+    } else
+      break;
+  }
 
-  send_message_to(fjid, msg, NULL);
+  fjid = *paramlst;
+  msg = *(paramlst+1);
+
+  if (!strcmp(fjid, ".")) {
+    // Send the message to the current buddy
+    if (current_buddy)
+      fjid = (char*)buddy_getjid(BUDDATA(current_buddy));
+    if (!fjid) {
+      scr_LogPrint(LPRINT_NORMAL, "Please specify a Jabber ID.");
+      free_arg_lst(paramlst);
+      return;
+    }
+  } else if (check_jid_syntax(fjid)) {
+    scr_LogPrint(LPRINT_NORMAL, "Please specify a valid Jabber ID.");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  fjid = to_utf8(fjid);
+  if (!file) {
+    msg = to_utf8(msg);
+  } else {
+    char *filename_xp;
+    if (msg)
+      scr_LogPrint(LPRINT_NORMAL, "say_to: extra parameter ignored.");
+    filename_xp = expand_filename(file);
+    msg = load_message_from_file(filename_xp);
+    g_free(filename_xp);
+    g_free(file);
+  }
+
+  send_message_to(fjid, msg, NULL, msg_type, quiet);
 
   g_free(fjid);
   g_free(msg);
@@ -1284,11 +1606,11 @@ static void do_buffer(char *arg)
   } else if (!strcasecmp(subcmd, "clear")) {
     scr_BufferClear();
   } else if (!strcasecmp(subcmd, "close")) {
-    scr_BufferPurge(1);
+    scr_BufferPurge(1, arg);
   } else if (!strcasecmp(subcmd, "close_all")) {
     scr_BufferPurgeAll(1);
   } else if (!strcasecmp(subcmd, "purge")) {
-    scr_BufferPurge(0);
+    scr_BufferPurge(0, arg);
   } else if (!strcasecmp(subcmd, "scroll_lock")) {
     scr_BufferScrollLock(1);
   } else if (!strcasecmp(subcmd, "scroll_unlock")) {
@@ -1309,10 +1631,8 @@ static void do_buffer(char *arg)
     buffer_date(arg);
   } else if (*subcmd == '%') {
     buffer_percent(subcmd+1, arg);
-#ifdef DEBUG_ENABLE
   } else if (!strcasecmp(subcmd, "list")) {
     scr_BufferList();
-#endif
   } else {
     scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
   }
@@ -1329,7 +1649,7 @@ static void do_info(char *arg)
 {
   gpointer bud;
   const char *bjid, *name;
-  guint type;
+  guint type, on_srv;
   char *buffer;
   enum subscr esub;
 
@@ -1341,6 +1661,7 @@ static void do_info(char *arg)
   name   = buddy_getname(bud);
   type   = buddy_gettype(bud);
   esub   = buddy_getsubscription(bud);
+  on_srv = buddy_getonserverflag(bud);
 
   buffer = g_new(char, 4096);
 
@@ -1353,17 +1674,22 @@ static void do_info(char *arg)
     scr_ShowBuddyWindow();
 
     snprintf(buffer, 4095, "jid:  <%s>", bjid);
-    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
     if (name) {
       snprintf(buffer, 4095, "Name: %s", name);
-      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
     }
 
     if (type == ROSTER_TYPE_USER)       bstr = "user";
     else if (type == ROSTER_TYPE_ROOM)  bstr = "chatroom";
     else if (type == ROSTER_TYPE_AGENT) bstr = "agent";
     snprintf(buffer, 127, "Type: %s", bstr);
-    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
+
+    if (!on_srv) {
+      scr_WriteIncomingMessage(bjid, "(Local item, not on the server)",
+                               0, HBB_PREFIX_INFO, 0);
+    }
 
     if (esub == sub_both)     bstr = "both";
     else if (esub & sub_from) bstr = "from";
@@ -1372,7 +1698,7 @@ static void do_info(char *arg)
     snprintf(buffer, 64, "Subscription: %s", bstr);
     if (esub & sub_pending)
       strcat(buffer, " (pending)");
-    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
 
     resources = buddy_getresources(bud);
     if (!resources && type == ROSTER_TYPE_USER) {
@@ -1380,7 +1706,7 @@ static void do_info(char *arg)
       const char *rst_msg = buddy_getstatusmsg(bud, "");
       if (rst_msg) {
         snprintf(buffer, 4095, "Last status message: %s", rst_msg);
-        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
       }
     }
     for (p_res = resources ; p_res ; p_res = g_slist_next(p_res)) {
@@ -1398,35 +1724,39 @@ static void do_info(char *arg)
 
       snprintf(buffer, 4095, "Resource: [%c] (%d) %s", imstatus2char[rstatus],
                rprio, (char*)p_res->data);
-      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
       if (rst_msg) {
         snprintf(buffer, 4095, "Status message: %s", rst_msg);
-        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+        scr_WriteIncomingMessage(bjid, buffer,
+                                 0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
       }
       if (rst_time) {
         char tbuf[128];
 
         strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", localtime(&rst_time));
         snprintf(buffer, 127, "Status timestamp: %s", tbuf);
-        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+        scr_WriteIncomingMessage(bjid, buffer,
+                                 0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
       }
 #ifdef HAVE_GPGME
       if (rpgp && rpgp->sign_keyid) {
         snprintf(buffer, 4095, "PGP key id: %s", rpgp->sign_keyid);
-        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+        scr_WriteIncomingMessage(bjid, buffer,
+                                 0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
         if (rpgp->last_sigsum) {
           gpgme_sigsum_t ss = rpgp->last_sigsum;
           snprintf(buffer, 4095, "Last PGP signature: %s",
                   (ss & GPGME_SIGSUM_GREEN ? "good":
                    (ss & GPGME_SIGSUM_RED ? "bad" : "unknown")));
-          scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+          scr_WriteIncomingMessage(bjid, buffer,
+                                   0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
         }
       }
 #endif
       g_free(p_res->data);
     }
     g_slist_free(resources);
-  } else {
+  } else {  /* Item has no jid */
     if (name) scr_LogPrint(LPRINT_NORMAL, "Name: %s", name);
     scr_LogPrint(LPRINT_NORMAL, "Type: %s",
                  type == ROSTER_TYPE_GROUP ? "group" :
@@ -1445,7 +1775,7 @@ static void do_info(char *arg)
       g_free(note->jid);
       g_free(note);
       scr_WriteIncomingMessage(bjid, "(This item has an annotation)", 0,
-                               HBB_PREFIX_INFO);
+                               HBB_PREFIX_INFO, 0);
     }
   }
 }
@@ -1456,13 +1786,15 @@ static void room_names(gpointer bud, char *arg)
   const char *bjid;
   char *buffer;
   GSList *resources, *p_res;
-  enum { style_normal = 0, style_short, style_quiet } style = 0;
+  enum { style_normal = 0, style_detail, style_short, style_quiet } style = 0;
 
   if (*arg) {
     if (!strcasecmp(arg, "--short"))
       style = style_short;
     else if (!strcasecmp(arg, "--quiet"))
       style = style_quiet;
+    else if (!strcasecmp(arg, "--detail"))
+      style = style_detail;
     else {
       scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
       return;
@@ -1477,7 +1809,7 @@ static void room_names(gpointer bud, char *arg)
 
   buffer = g_new(char, 4096);
   strncpy(buffer, "Room members:", 127);
-  scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
 
   resources = buddy_getresources(bud);
   for (p_res = resources ; p_res ; p_res = g_slist_next(p_res)) {
@@ -1491,15 +1823,29 @@ static void room_names(gpointer bud, char *arg)
       snprintf(buffer, 4095, "[%c] %s%s%s", imstatus2char[rstatus],
                (char*)p_res->data,
                rst_msg ? " -- " : "", rst_msg ? rst_msg : "");
-      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
     } else {
-      // (Style "normal" or "quiet")
+      // (Style "normal", "detail" or "quiet")
       snprintf(buffer, 4095, "[%c] %s", imstatus2char[rstatus],
                (char*)p_res->data);
-      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
-      if (rst_msg && style == style_normal) {
+      scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
+      if (rst_msg && style != style_quiet) {
         snprintf(buffer, 4095, "Status message: %s", rst_msg);
-        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+        scr_WriteIncomingMessage(bjid, buffer,
+                                 0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
+      }
+      if (style == style_detail) {
+        enum imrole role = buddy_getrole(bud, p_res->data);
+        enum imaffiliation affil = buddy_getaffil(bud, p_res->data);
+
+        snprintf(buffer, 4095, "Role: %s", strrole[role]);
+        scr_WriteIncomingMessage(bjid, buffer,
+                                 0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
+        if (affil != affil_none) {
+          snprintf(buffer, 4095, "Affiliat.: %s", straffil[affil]);
+          scr_WriteIncomingMessage(bjid, buffer,
+                                   0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
+        }
       }
     }
     g_free(p_res->data);
@@ -1524,7 +1870,7 @@ static void do_rename(char *arg)
 {
   gpointer bud;
   const char *bjid, *group;
-  guint type;
+  guint type, on_srv;
   char *newname, *p;
   char *name_utf8;
 
@@ -1532,9 +1878,10 @@ static void do_rename(char *arg)
     return;
   bud = BUDDATA(current_buddy);
 
-  bjid  = buddy_getjid(bud);
-  group = buddy_getgroupname(bud);
-  type  = buddy_gettype(bud);
+  bjid   = buddy_getjid(bud);
+  group  = buddy_getgroupname(bud);
+  type   = buddy_gettype(bud);
+  on_srv = buddy_getonserverflag(bud);
 
   if (type & ROSTER_TYPE_SPECIAL) {
     scr_LogPrint(LPRINT_NORMAL, "You can't rename this item.");
@@ -1544,6 +1891,17 @@ static void do_rename(char *arg)
   if (!*arg && !(type & ROSTER_TYPE_GROUP)) {
     scr_LogPrint(LPRINT_NORMAL, "Please specify a new name.");
     return;
+  }
+
+  if (!(type & ROSTER_TYPE_GROUP) && !on_srv) {
+    scr_LogPrint(LPRINT_NORMAL,
+                 "Note: this item will be added to your server roster.");
+    // If this is a MUC room w/o bookmark, let's give a small hint...
+    if (!jb_is_bookmarked(bjid)) {
+      scr_LogPrint(LPRINT_NORMAL,
+                   "You should add a room bookmark or it will not be "
+                   "recognized as a MUC room next time you run mcabber.");
+    }
   }
 
   newname = g_strdup(arg);
@@ -1608,9 +1966,21 @@ static void do_move(char *arg)
 
   group_utf8 = to_utf8(newgroupname);
   if (strcmp(oldgroupname, group_utf8)) {
+    guint msgflag;
+
     jb_updatebuddy(bjid, name, *group_utf8 ? group_utf8 : NULL);
     scr_RosterUp();
+
+    // If the buddy has a pending message flag,
+    // we remove it temporarily in order to reset the global group
+    // flag.  We set it back once the buddy is in the new group,
+    // which will update the new group's flag.
+    msgflag = buddy_getflags(bud) & ROSTER_FLAG_MSG;
+    if (msgflag)
+      roster_msg_setflag(bjid, FALSE, FALSE);
     buddy_setgroup(bud, group_utf8);
+    if (msgflag)
+      roster_msg_setflag(bjid, FALSE, TRUE);
   }
 
   g_free(group_utf8);
@@ -1859,7 +2229,7 @@ static void room_join(gpointer bud, char *arg)
   // If no nickname is provided with the /join command,
   // we try to get a default nickname.
   if (!nick || !*nick)
-    nick = default_muc_nickname();
+    nick = default_muc_nickname(roomname);
   else
     nick = to_utf8(nick);
   // If we still have no nickname, give up
@@ -1991,7 +2361,8 @@ static void room_role(gpointer bud, char *arg)
 static void room_ban(gpointer bud, char *arg)
 {
   char **paramlst;
-  gchar *fjid;
+  gchar *fjid, *bjid;
+  const gchar *banjid;
   gchar *jid_utf8, *reason_utf8;
   struct role_affil ra;
   const char *roomid = buddy_getjid(bud);
@@ -2009,13 +2380,57 @@ static void room_ban(gpointer bud, char *arg)
   ra.type = type_affil;
   ra.val.affil = affil_outcast;
 
-  jid_utf8 = to_utf8(fjid);
+  bjid = jidtodisp(fjid);
+  jid_utf8 = to_utf8(bjid);
+
+  // If the argument doesn't look like a jid, we'll try to find a matching
+  // nickname.
+  if (!strchr(bjid, JID_DOMAIN_SEPARATOR) || check_jid_syntax(bjid)) {
+    const gchar *tmp;
+    // We want the initial argument, so the fjid variable, because
+    // we don't want to strip a resource-like string from the nickname!
+    g_free(jid_utf8);
+    jid_utf8 = to_utf8(fjid);
+    tmp = buddy_getrjid(bud, jid_utf8);
+    if (!tmp) {
+      scr_LogPrint(LPRINT_NORMAL, "Wrong JID or nickname");
+      goto room_ban_return;
+    }
+    banjid = jidtodisp(tmp);
+  } else
+    banjid = jid_utf8;
+
+  scr_LogPrint(LPRINT_NORMAL, "Requesting a ban for %s", banjid);
+
   reason_utf8 = to_utf8(arg);
-  jb_room_setattrib(roomid, jid_utf8, NULL, ra, reason_utf8);
-  g_free(jid_utf8);
+  jb_room_setattrib(roomid, banjid, NULL, ra, reason_utf8);
   g_free(reason_utf8);
 
+room_ban_return:
+  g_free(bjid);
+  g_free(jid_utf8);
   free_arg_lst(paramlst);
+}
+
+// The expected argument is a Jabber id
+static void room_unban(gpointer bud, char *arg)
+{
+  gchar *fjid = arg;
+  gchar *jid_utf8;
+  struct role_affil ra;
+  const char *roomid = buddy_getjid(bud);
+
+  if (!fjid || !*fjid) {
+    scr_LogPrint(LPRINT_NORMAL, "Please specify a Jabber ID.");
+    return;
+  }
+
+  ra.type = type_affil;
+  ra.val.affil = affil_none;
+
+  jid_utf8 = to_utf8(fjid);
+  jb_room_setattrib(roomid, jid_utf8, NULL, ra, NULL);
+  g_free(jid_utf8);
 }
 
 // The expected argument is a nickname
@@ -2049,7 +2464,7 @@ static void room_kick(gpointer bud, char *arg)
   free_arg_lst(paramlst);
 }
 
-void room_leave(gpointer bud, char *arg)
+void cmd_room_leave(gpointer bud, char *arg)
 {
   gchar *roomid, *desc;
   const char *nickname;
@@ -2086,7 +2501,9 @@ static void room_nick(gpointer bud, char *arg)
     mc_strtolower(roomname_tmp);
     roomname = to_utf8(roomname_tmp);
     g_free(roomname_tmp);
+
     nick = to_utf8(arg);
+    strip_arg_special_chars(nick);
 
     jb_room_join(roomname, nick, NULL);
     g_free(roomname);
@@ -2097,7 +2514,7 @@ static void room_nick(gpointer bud, char *arg)
 static void room_privmsg(gpointer bud, char *arg)
 {
   char **paramlst;
-  gchar *nick, *cmdline;
+  gchar *fjid, *nick, *fjid_utf8, *msg;
 
   paramlst = split_arg(arg, 2, 1); // nickname, message
   nick = *paramlst;
@@ -2110,9 +2527,13 @@ static void room_privmsg(gpointer bud, char *arg)
     return;
   }
 
-  cmdline = g_strdup_printf("%s/%s %s", buddy_getjid(bud), nick, arg);
-  do_say_to(cmdline);
-  g_free(cmdline);
+  fjid = g_strdup_printf("%s/%s", buddy_getjid(bud), nick);
+  fjid_utf8 = to_utf8(fjid);
+  msg = to_utf8(arg);
+  send_message_to(fjid_utf8, msg, NULL, NULL, FALSE);
+  g_free(fjid);
+  g_free(fjid_utf8);
+  g_free(msg);
   free_arg_lst(paramlst);
 }
 
@@ -2138,8 +2559,6 @@ static void room_remove(gpointer bud, char *arg)
 
 static void room_topic(gpointer bud, char *arg)
 {
-  gchar *msg;
-
   if (!buddy_getinsideroom(bud)) {
     scr_LogPrint(LPRINT_NORMAL, "You are not in this room.");
     return;
@@ -2157,10 +2576,8 @@ static void room_topic(gpointer bud, char *arg)
 
   arg = to_utf8(arg);
   // Set the topic
-  msg = g_strdup_printf("%s has set the topic to: %s", mkcmdstr("me"), arg);
-  jb_send_msg(buddy_getjid(bud), msg, ROSTER_TYPE_ROOM, arg, NULL, NULL);
+  jb_send_msg(buddy_getjid(bud), NULL, ROSTER_TYPE_ROOM, arg, NULL, NULL, NULL);
   g_free(arg);
-  g_free(msg);
 }
 
 static void room_destroy(gpointer bud, char *arg)
@@ -2186,9 +2603,77 @@ static void room_unlock(gpointer bud, char *arg)
   jb_room_unlock(buddy_getjid(bud));
 }
 
-//  room_whois(..)
+static void room_setopt(gpointer bud, char *arg)
+{
+  char **paramlst;
+  char *param, *value;
+  enum { opt_none = 0, opt_printstatus, opt_autowhois } option = 0;
+
+  paramlst = split_arg(arg, 2, 1); // param, value
+  param = *paramlst;
+  value = *(paramlst+1);
+  if (!param) {
+    scr_LogPrint(LPRINT_NORMAL, "Please specify a room option.");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (!strcasecmp(param, "print_status"))
+    option = opt_printstatus;
+  else if (!strcasecmp(param, "auto_whois"))
+    option = opt_autowhois;
+  else {
+    scr_LogPrint(LPRINT_NORMAL, "Wrong option!");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  // If no value is given, display the current value
+  if (!value) {
+    const char *strval;
+    if (option == opt_printstatus)
+      strval = strprintstatus[buddy_getprintstatus(bud)];
+    else
+      strval = strautowhois[buddy_getautowhois(bud)];
+    scr_LogPrint(LPRINT_NORMAL, "%s is set to: %s", param, strval);
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (option == opt_printstatus) {
+    enum room_printstatus eval;
+    if (!strcasecmp(value, "none"))
+      eval = status_none;
+    else if (!strcasecmp(value, "in_and_out"))
+      eval = status_in_and_out;
+    else if (!strcasecmp(value, "all"))
+      eval = status_all;
+    else {
+      eval = status_default;
+      if (strcasecmp(value, "default") != 0)
+        scr_LogPrint(LPRINT_NORMAL, "Unrecognized value, assuming default...");
+    }
+    buddy_setprintstatus(bud, eval);
+  } else if (option == opt_autowhois) {
+    enum room_autowhois eval;
+    if (!strcasecmp(value, "on"))
+      eval = autowhois_on;
+    else if (!strcasecmp(value, "off"))
+      eval = autowhois_off;
+    else {
+      eval = autowhois_default;
+      if (strcasecmp(value, "default") != 0)
+        scr_LogPrint(LPRINT_NORMAL, "Unrecognized value, assuming default...");
+    }
+    buddy_setautowhois(bud, eval);
+  }
+
+  free_arg_lst(paramlst);
+}
+
+//  cmd_room_whois(..)
 // If interactive is TRUE, chatmode can be enabled.
-void room_whois(gpointer bud, char *arg, guint interactive)
+void cmd_room_whois(gpointer bud, char *arg, guint interactive)
 {
   char **paramlst;
   gchar *nick, *buffer;
@@ -2199,6 +2684,7 @@ void room_whois(gpointer bud, char *arg, guint interactive)
   enum imrole role;
   enum imaffiliation affil;
   time_t rst_time;
+  guint msg_flag = HBB_PREFIX_INFO;
 
   paramlst = split_arg(arg, 1, 0); // nickname
   nick = *paramlst;
@@ -2215,7 +2701,8 @@ void room_whois(gpointer bud, char *arg, guint interactive)
     // Enter chat mode
     scr_set_chatmode(TRUE);
     scr_ShowBuddyWindow();
-  }
+  } else
+    msg_flag |= HBB_PREFIX_NOFLAG;
 
   bjid = buddy_getjid(bud);
   rstatus = buddy_getstatus(bud, nick);
@@ -2239,32 +2726,32 @@ void room_whois(gpointer bud, char *arg, guint interactive)
   buffer = g_new(char, 4096);
 
   snprintf(buffer, 4095, "Whois [%s]", nick);
-  scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(bjid, buffer, 0, msg_flag, 0);
   snprintf(buffer, 4095, "Status   : [%c] %s", imstatus2char[rstatus],
            rst_msg);
-  scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+  scr_WriteIncomingMessage(bjid, buffer, 0, msg_flag | HBB_PREFIX_CONT, 0);
 
   if (rst_time) {
     char tbuf[128];
 
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", localtime(&rst_time));
     snprintf(buffer, 127, "Timestamp: %s", tbuf);
-    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+    scr_WriteIncomingMessage(bjid, buffer, 0, msg_flag | HBB_PREFIX_CONT, 0);
   }
 
   if (realjid) {
     snprintf(buffer, 4095, "JID      : <%s>", realjid);
-    scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+    scr_WriteIncomingMessage(bjid, buffer, 0, msg_flag | HBB_PREFIX_CONT, 0);
   }
 
   snprintf(buffer, 4095, "Role     : %s", strrole[role]);
-  scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+  scr_WriteIncomingMessage(bjid, buffer, 0, msg_flag | HBB_PREFIX_CONT, 0);
   snprintf(buffer, 4095, "Affiliat.: %s", straffil[affil]);
-  scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+  scr_WriteIncomingMessage(bjid, buffer, 0, msg_flag | HBB_PREFIX_CONT, 0);
   snprintf(buffer, 4095, "Priority : %d", rprio);
-  scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_NONE);
+  scr_WriteIncomingMessage(bjid, buffer, 0, msg_flag | HBB_PREFIX_CONT, 0);
 
-  scr_WriteIncomingMessage(bjid, "End of WHOIS", 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(bjid, "End of WHOIS", 0, msg_flag, 0);
 
   g_free(buffer);
   g_free(nick);
@@ -2275,6 +2762,8 @@ static void room_bookmark(gpointer bud, char *arg)
 {
   const char *roomid;
   const char *name = NULL, *nick = NULL;
+  enum room_autowhois autowhois = 0;
+  enum room_printstatus printstatus = 0;
   enum { bm_add = 0, bm_del = 1 } action = 0;
   int autojoin = 0;
 
@@ -2302,9 +2791,12 @@ static void room_bookmark(gpointer bud, char *arg)
   if (action == bm_add) {
     name = buddy_getname(bud);
     nick = buddy_getnickname(bud);
+    printstatus = buddy_getprintstatus(bud);
+    autowhois   = buddy_getautowhois(bud);
   }
 
-  jb_set_storage_bookmark(roomid, name, nick, NULL, autojoin);
+  jb_set_storage_bookmark(roomid, name, nick, NULL, autojoin,
+                          printstatus, autowhois);
 }
 
 static void display_all_bookmarks(void)
@@ -2319,11 +2811,13 @@ static void display_all_bookmarks(void)
 
   sbuf = g_string_new("");
 
-  scr_WriteIncomingMessage(NULL, "List of MUC bookmarks:", 0, HBB_PREFIX_INFO);
+  scr_WriteIncomingMessage(NULL, "List of MUC bookmarks:",
+                           0, HBB_PREFIX_INFO, 0);
 
   for (bmp = bm; bmp; bmp = g_slist_next(bmp)) {
     g_string_printf(sbuf, "<%s>", (char*)bmp->data);
-    scr_WriteIncomingMessage(NULL, sbuf->str, 0, HBB_PREFIX_NONE);
+    scr_WriteIncomingMessage(NULL, sbuf->str,
+                             0, HBB_PREFIX_INFO | HBB_PREFIX_CONT, 0);
   }
 
   scr_setmsgflag_if_needed(SPECIAL_BUFFER_STATUS_ID, TRUE);
@@ -2381,12 +2875,15 @@ static void do_room(char *arg)
   } else if (!strcasecmp(subcmd, "ban"))  {
     if ((arg = check_room_subcommand(arg, TRUE, bud)) != NULL)
       room_ban(bud, arg);
+  } else if (!strcasecmp(subcmd, "unban"))  {
+    if ((arg = check_room_subcommand(arg, TRUE, bud)) != NULL)
+      room_unban(bud, arg);
   } else if (!strcasecmp(subcmd, "kick"))  {
     if ((arg = check_room_subcommand(arg, TRUE, bud)) != NULL)
       room_kick(bud, arg);
   } else if (!strcasecmp(subcmd, "leave"))  {
     if ((arg = check_room_subcommand(arg, FALSE, bud)) != NULL)
-      room_leave(bud, arg);
+      cmd_room_leave(bud, arg);
   } else if (!strcasecmp(subcmd, "names"))  {
     if ((arg = check_room_subcommand(arg, FALSE, bud)) != NULL)
       room_names(bud, arg);
@@ -2405,12 +2902,15 @@ static void do_room(char *arg)
   } else if (!strcasecmp(subcmd, "unlock"))  {
     if ((arg = check_room_subcommand(arg, FALSE, bud)) != NULL)
       room_unlock(bud, arg);
+  } else if (!strcasecmp(subcmd, "setopt"))  {
+    if ((arg = check_room_subcommand(arg, FALSE, bud)) != NULL)
+      room_setopt(bud, arg);
   } else if (!strcasecmp(subcmd, "topic"))  {
     if ((arg = check_room_subcommand(arg, FALSE, bud)) != NULL)
       room_topic(bud, arg);
   } else if (!strcasecmp(subcmd, "whois"))  {
     if ((arg = check_room_subcommand(arg, TRUE, bud)) != NULL)
-      room_whois(bud, arg, TRUE);
+      cmd_room_whois(bud, arg, TRUE);
   } else if (!strcasecmp(subcmd, "bookmark"))  {
     if (!arg && !buddy_getjid(BUDDATA(current_buddy)) &&
         buddy_gettype(BUDDATA(current_buddy)) == ROSTER_TYPE_SPECIAL)
@@ -2747,16 +3247,16 @@ static void do_pgp(char *arg)
           if (settings_pgp_getkeyid(fjid)) {
             g_string_printf(sbuf, "PGP Encryption key id: %s",
                             settings_pgp_getkeyid(fjid));
-            scr_WriteIncomingMessage(fjid, sbuf->str, 0, HBB_PREFIX_INFO);
+            scr_WriteIncomingMessage(fjid, sbuf->str, 0, HBB_PREFIX_INFO, 0);
           }
           disabled = settings_pgp_getdisabled(fjid);
           g_string_printf(sbuf, "PGP encryption is %s",
                           (disabled ?  "disabled" : "enabled"));
-          scr_WriteIncomingMessage(fjid, sbuf->str, 0, HBB_PREFIX_INFO);
+          scr_WriteIncomingMessage(fjid, sbuf->str, 0, HBB_PREFIX_INFO, 0);
           if (!disabled && settings_pgp_getforce(fjid)) {
             scr_WriteIncomingMessage(fjid,
                                      "Encryption enforced (no negotiation)",
-                                     0, HBB_PREFIX_INFO);
+                                     0, HBB_PREFIX_INFO, 0);
           }
           g_string_free(sbuf, TRUE);
           break;
@@ -2768,6 +3268,236 @@ static void do_pgp(char *arg)
   }
 
   free_arg_lst(paramlst);
+}
+
+static void do_otr(char *arg)
+{
+#ifdef HAVE_LIBOTR
+  char **paramlst;
+  char *fjid, *subcmd, *keyid;
+  enum {
+    otr_none,
+    otr_start,
+    otr_stop,
+    otr_fpr,
+    otr_smpq,
+    otr_smpr,
+    otr_smpa,
+    otr_k,
+    otr_info
+  } op = 0;
+
+  if (!otr_enabled()) {
+    scr_LogPrint(LPRINT_LOGNORM,
+                 "Warning: OTR hasn't been enabled -- command ignored.");
+    return;
+  }
+
+  paramlst = split_arg(arg, 3, 0); // subcmd, jid, [key]
+  subcmd = *paramlst;
+  fjid = *(paramlst+1);
+  keyid = *(paramlst+2);
+
+  if (!subcmd)
+    fjid = NULL;
+  if (!fjid)
+    keyid = NULL;
+
+  if (subcmd) {
+    if (!strcasecmp(subcmd, "start"))
+      op = otr_start;
+    else if (!strcasecmp(subcmd, "stop"))
+      op = otr_stop;
+    else if (!strcasecmp(subcmd, "fingerprint"))
+      op = otr_fpr;
+    else if (!strcasecmp(subcmd, "smpq"))
+      op = otr_smpq;
+    else if (!strcasecmp(subcmd, "smpr"))
+      op = otr_smpr;
+    else if (!strcasecmp(subcmd, "smpa"))
+      op = otr_smpa;
+    else if (!strcasecmp(subcmd, "key"))
+      op = otr_k;
+    else if (!strcasecmp(subcmd, "info"))
+      op = otr_info;
+  }
+
+  if (!op) {
+    scr_LogPrint(LPRINT_NORMAL, "Unrecognized or missing parameter!");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (op == otr_k)
+    otr_key();
+  else {
+    // Allow special jid "" or "." (current buddy)
+    if (fjid && (!*fjid || !strcmp(fjid, ".")))
+      fjid = NULL;
+
+    if (fjid) {
+      // The JID has been specified.  Quick check...
+      if (check_jid_syntax(fjid) || !strchr(fjid, '@')) {
+        scr_LogPrint(LPRINT_NORMAL|LPRINT_NOTUTF8,
+                     "<%s> is not a valid Jabber ID.", fjid);
+        fjid = NULL;
+      } else {
+        // Convert jid to lowercase and strip resource
+        char *p;
+        for (p = fjid; *p && *p != JID_RESOURCE_SEPARATOR; p++)
+          *p = tolower(*p);
+        if (*p == JID_RESOURCE_SEPARATOR)
+          *p = '\0';
+      }
+    } else {
+      gpointer bud = NULL;
+      if (current_buddy)
+        bud = BUDDATA(current_buddy);
+      if (bud) {
+        guint type = buddy_gettype(bud);
+        if (type & ROSTER_TYPE_USER)  // Is it a user?
+          fjid = (char*)buddy_getjid(bud);
+        else
+          scr_LogPrint(LPRINT_NORMAL, "The selected item should be a user.");
+      }
+    }
+
+    if (fjid) { // fjid is actually a bare jid...
+      switch (op) {
+        case otr_start:
+          otr_establish(fjid);          break;
+        case otr_stop:
+          otr_disconnect(fjid);         break;
+        case otr_fpr:
+          otr_fingerprint(fjid, keyid); break;
+        case otr_smpq:
+          otr_smp_query(fjid, keyid);   break;
+        case otr_smpr:
+          otr_smp_respond(fjid, keyid); break;
+        case otr_smpa:
+          otr_smp_abort(fjid);          break;
+        case otr_info:
+          otr_print_info(fjid);         break;
+        default:
+          break;
+      }
+    } else
+      scr_LogPrint(LPRINT_NORMAL, "Please specify a valid Jabber ID.");
+  }
+  free_arg_lst(paramlst);
+
+#else
+  scr_LogPrint(LPRINT_NORMAL, "Please recompile mcabber with libotr enabled.");
+#endif /* HAVE_LIBOTR */
+}
+
+#ifdef HAVE_LIBOTR
+static char * string_for_otrpolicy(enum otr_policy p)
+{
+  switch (p) {
+    case plain:         return "plain";
+    case opportunistic: return "opportunistic";
+    case manual:        return "manual";
+    case always:        return "always";
+    default:            return "unknown";
+  }
+}
+
+static void dump_otrpolicy(char * k, char * v, void * nothing)
+{
+  scr_LogPrint(LPRINT_NORMAL|LPRINT_NOTUTF8, "otrpolicy for %s: %s", k,
+               string_for_otrpolicy(*(enum otr_policy*)v));
+}
+#endif
+
+static void do_otrpolicy(char *arg)
+{
+#ifdef HAVE_LIBOTR
+  char **paramlst;
+  char *fjid, *policy;
+  enum otr_policy p;
+
+  paramlst = split_arg(arg, 2, 0); // [jid|default] policy
+  fjid = *paramlst;
+  policy = *(paramlst+1);
+
+  if (!fjid && !policy) {
+    scr_LogPrint(LPRINT_NORMAL, "default otrpolicy: %s",
+                 string_for_otrpolicy(settings_otr_getpolicy(NULL)));
+    settings_foreach(SETTINGS_TYPE_OTR, &dump_otrpolicy, NULL);
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (!policy) {
+    scr_LogPrint(LPRINT_NORMAL,
+                 "Please call otrpolicy correctly: /otrpolicy (default|jid) "
+                 "(plain|manual|opportunistic|always)");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (!strcasecmp(policy, "plain"))
+    p = plain;
+  else if (!strcasecmp(policy, "manual"))
+    p = manual;
+  else if (!strcasecmp(policy, "opportunistic"))
+    p = opportunistic;
+  else if (!strcasecmp(policy, "always"))
+    p = always;
+  else {
+    /* Fail, we don't know _this_ policy*/
+    scr_LogPrint(LPRINT_NORMAL, "mcabber doesn't support _this_ policy!");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (!strcasecmp(fjid, "default") || !strcasecmp(fjid, "*")) {
+    /*set default policy*/
+    settings_otr_setpolicy(NULL, p);
+    free_arg_lst(paramlst);
+    return;
+  }
+  // Allow special jid "" or "." (current buddy)
+  if (fjid && (!*fjid || !strcmp(fjid, ".")))
+    fjid = NULL;
+
+  if (fjid) {
+    // The JID has been specified.  Quick check...
+    if (check_jid_syntax(fjid) || !strchr(fjid, '@')) {
+      scr_LogPrint(LPRINT_NORMAL|LPRINT_NOTUTF8,
+                   "<%s> is not a valid Jabber ID.", fjid);
+      fjid = NULL;
+    } else {
+      // Convert jid to lowercase and strip resource
+      char *p;
+      for (p = fjid; *p && *p != JID_RESOURCE_SEPARATOR; p++)
+        *p = tolower(*p);
+      if (*p == JID_RESOURCE_SEPARATOR)
+        *p = '\0';
+    }
+  } else {
+    gpointer bud = NULL;
+    if (current_buddy)
+      bud = BUDDATA(current_buddy);
+    if (bud) {
+      guint type = buddy_gettype(bud);
+      if (type & ROSTER_TYPE_USER)  // Is it a user?
+        fjid = (char*)buddy_getjid(bud);
+      else
+        scr_LogPrint(LPRINT_NORMAL, "The selected item should be a user.");
+    }
+  }
+
+  if (fjid)
+    settings_otr_setpolicy(fjid, p);
+  else
+    scr_LogPrint(LPRINT_NORMAL, "Please specify a valid Jabber ID.");
+
+  free_arg_lst(paramlst);
+#else
+  scr_LogPrint(LPRINT_NORMAL, "Please recompile mcabber with libotr enabled.");
+#endif /* HAVE_LIBOTR */
 }
 
 /* !!!
@@ -2869,7 +3599,7 @@ static void do_connect(char *arg)
 static void do_disconnect(char *arg)
 {
   jb_disconnect();
-  AutoConnection = false;
+  AutoConnection = FALSE;
 }
 
 static void do_help(char *arg)

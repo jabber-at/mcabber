@@ -1,7 +1,7 @@
 /*
  * main.c
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  * Parts of this file come from Cabber <cabber@ajmacias.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -41,6 +41,8 @@
 #include "hooks.h"
 #include "utils.h"
 #include "pgp.h"
+#include "otr.h"
+#include "fifo.h"
 
 #ifdef ENABLE_HGCSET
 # include "hgcset.h"
@@ -49,6 +51,8 @@
 #ifndef WAIT_ANY
 # define WAIT_ANY -1
 #endif
+
+static unsigned int terminate_ui;
 
 static struct termios *backup_termios;
 
@@ -67,7 +71,8 @@ void mcabber_connect(void)
 {
   const char *username, *password, *resource, *servername;
   const char *proxy_host;
-  char *bjid;
+  char *dynresource = NULL;
+  char *fjid;
   int ssl;
   int sslverify = -1;
   const char *sslvopt = NULL, *cafile = NULL, *capath = NULL, *ciphers = NULL;
@@ -97,8 +102,6 @@ void mcabber_connect(void)
     scr_LogPrint(LPRINT_NORMAL, "Password has not been specified!");
     return;
   }
-  if (!resource)
-    resource = "mcabber";
 
   port    = (unsigned int) settings_opt_get_int("port");
 
@@ -111,11 +114,23 @@ void mcabber_connect(void)
   ciphers = settings_opt_get("ssl_ciphers");
 
 #if !defined(HAVE_OPENSSL) && !defined(HAVE_GNUTLS)
-  if (ssl || sslvopt || cafile || capath || ciphers) {
-    scr_LogPrint(LPRINT_LOGNORM,
-             "** Warning: SSL is NOT available, ignoring ssl-related setting");
+  if (ssl) {
+    scr_LogPrint(LPRINT_LOGNORM, "** Error: SSL is NOT available, "
+                 "do not set the option 'ssl'.");
+    return;
+  } else if (sslvopt || cafile || capath || ciphers) {
+    scr_LogPrint(LPRINT_LOGNORM, "** Warning: SSL is NOT available, "
+                 "ignoring ssl-related settings");
     ssl = sslverify = 0;
     cafile = capath = ciphers = NULL;
+  }
+#elif defined HAVE_GNUTLS
+  if (ssl && sslverify != 0) {
+    scr_LogPrint(LPRINT_LOGNORM, "** Error: SSL certificate checking "
+                 "is not supported yet with GnuTLS.");
+    scr_LogPrint(LPRINT_LOGNORM,
+                 " * Please set 'ssl_verify' to 0 explicitly!");
+    return;
   }
 #endif
   cafile_xp = expand_filename(cafile);
@@ -124,11 +139,22 @@ void mcabber_connect(void)
   // We can't free the ca*_xp variables now, because they're not duplicated
   // in cw_set_ssl_options().
 
+  if (!resource) {
+    unsigned int tab[2];
+    srand(time(NULL));
+    tab[0] = (unsigned int) (0xffff * (rand() / (RAND_MAX + 1.0)));
+    tab[1] = (unsigned int) (0xffff * (rand() / (RAND_MAX + 1.0)));
+    dynresource = g_strdup_printf("%s.%04x%04x", PACKAGE_NAME,
+                                  tab[0], tab[1]);
+    resource = dynresource;
+  }
+
   /* Connect to server */
   scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, "Connecting to server: %s",
                servername);
   if (port)
     scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, " using port %d", port);
+  scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, " resource %s", resource);
 
   if (proxy_host) {
     int proxy_port = settings_opt_get_int("proxy_port");
@@ -145,9 +171,13 @@ void mcabber_connect(void)
     }
   }
 
-  bjid = compose_jid(username, servername, resource);
-  jc = jb_connect(bjid, servername, port, ssl, password);
-  g_free(bjid);
+  fjid = compose_jid(username, servername, resource);
+#if defined(HAVE_LIBOTR)
+  otr_init(fjid);
+#endif
+  jc = jb_connect(fjid, servername, port, ssl, password);
+  g_free(fjid);
+  g_free(dynresource);
 
   if (!jc)
     scr_LogPrint(LPRINT_LOGNORM, "Error connecting to (%s)", servername);
@@ -192,6 +222,10 @@ void sig_handler(int signum)
     mcabber_terminate("Killed by SIGTERM");
   } else if (signum == SIGINT) {
     mcabber_terminate("Killed by SIGINT");
+#ifdef USE_SIGWINCH
+  } else if (signum == SIGWINCH) {
+    ungetch(KEY_RESIZE);
+#endif
   } else {
     scr_LogPrint(LPRINT_LOGNORM, "Caught signal: %d", signum);
   }
@@ -242,7 +276,32 @@ static void credits(void)
   g_free(v);
 }
 
-void main_init_pgp(void)
+static void compile_options(void)
+{
+  puts("Installation data directory: " DATA_DIR "\n");
+#ifdef HAVE_UNICODE
+  puts("Compiled with unicode support.");
+#endif
+#ifdef HAVE_OPENSSL
+  puts("Compiled with OpenSSL support.");
+#elif defined HAVE_GNUTLS
+  puts("Compiled with GnuTLS support.");
+#endif
+#ifdef HAVE_GPGME
+  puts("Compiled with GPG support.");
+#endif
+#ifdef HAVE_LIBOTR
+  puts("Compiled with OTR support.");
+#endif
+#ifdef WITH_ASPELL
+  puts("Compiled with Aspell support.");
+#endif
+#ifdef ENABLE_DEBUG
+  puts("Compiled with debugging support.");
+#endif
+}
+
+static void main_init_pgp(void)
 {
 #ifdef HAVE_GPGME
   const char *pk, *pp;
@@ -250,12 +309,19 @@ void main_init_pgp(void)
   char *p;
   bool pgp_invalid = FALSE;
   bool pgp_agent;
+  int retries;
 
   p = getenv("GPG_AGENT_INFO");
   pgp_agent = (p && strchr(p, ':'));
 
   pk = settings_opt_get("pgp_private_key");
   pp = settings_opt_get("pgp_passphrase");
+
+  if (settings_opt_get("pgp_passphrase_retries"))
+    retries = settings_opt_get_int("pgp_passphrase_retries");
+  else
+    retries = 2;
+
   if (!pk) {
     scr_LogPrint(LPRINT_LOGNORM, "WARNING: unkown PGP private key");
     pgp_invalid = TRUE;
@@ -275,7 +341,7 @@ void main_init_pgp(void)
   if (!pgp_agent && pk && pp && gpg_test_passphrase()) {
     // Let's check the pasphrase
     int i;
-    for (i = 0; i < 2; i++) {
+    for (i = 1; retries < 0 || i <= retries; i++) {
       typed_passwd = ask_password("PGP passphrase"); // Ask again...
       if (typed_passwd) {
         gpg_set_passphrase(typed_passwd);
@@ -285,7 +351,7 @@ void main_init_pgp(void)
       if (!gpg_test_passphrase())
         break; // Ok
     }
-    if (i == 2)
+    if (i > retries)
       pgp_invalid = TRUE;
   }
   if (pgp_invalid)
@@ -293,6 +359,11 @@ void main_init_pgp(void)
 #else /* not HAVE_GPGME */
   scr_LogPrint(LPRINT_LOGNORM, "WARNING: not compiled with PGP support");
 #endif /* HAVE_GPGME */
+}
+
+void mcabber_set_terminate_ui(void)
+{
+  terminate_ui = TRUE;
 }
 
 int main(int argc, char **argv)
@@ -309,23 +380,34 @@ int main(int argc, char **argv)
   signal(SIGTERM, sig_handler);
   signal(SIGINT,  sig_handler);
   signal(SIGCHLD, sig_handler);
+#ifdef USE_SIGWINCH
+  signal(SIGWINCH, sig_handler);
+#endif
   signal(SIGPIPE, SIG_IGN);
 
   /* Parse command line options */
   while (1) {
-    int c = getopt(argc, argv, "hf:");
+    int c = getopt(argc, argv, "hVf:");
     if (c == -1) {
       break;
     } else
       switch (c) {
       case 'h':
-        printf("Usage: %s [-f mcabberrc_file]\n\n", argv[0]);
-        printf("Thanks to AjMacias for cabber!\n\n");
+      case '?':
+        printf("Usage: %s [-h|-V|-f mcabberrc_file]\n\n", argv[0]);
+        return (c == 'h' ? 0 : -1);
+      case 'V':
+        compile_options();
         return 0;
       case 'f':
         configFile = g_strdup(optarg);
         break;
       }
+  }
+
+  if (optind < argc) {
+    fprintf(stderr, "Usage: %s [-h|-V|-f mcabberrc_file]\n\n", argv[0]);
+    return -1;
   }
 
   /* Initialize command system, roster and default key bindings */
@@ -398,10 +480,26 @@ int main(int argc, char **argv)
   jb_set_keepalive_delay(ping);
   scr_LogPrint(LPRINT_DEBUG, "Ping interval established: %d secs", ping);
 
-  if (settings_opt_get_int("hide_offline_buddies") > 0)
-    buddylist_set_hide_offline_buddies(TRUE);
+  if (settings_opt_get_int("hide_offline_buddies") > 0) { // XXX Deprecated
+    scr_RosterDisplay("ofdna");
+    scr_LogPrint(LPRINT_LOGNORM,
+                 "* Warning: 'hide_offline_buddies' is deprecated.");
+  } else {
+    optstring = settings_opt_get("roster_display_filter");
+    if (optstring)
+      scr_RosterDisplay(optstring);
+    // Empty filter isn't allowed...
+    if (!buddylist_get_filter())
+      scr_RosterDisplay("*");
+  }
 
   chatstates_disabled = settings_opt_get_int("disable_chatstates");
+
+  /* Initialize FIFO named pipe */
+  fifo_init(settings_opt_get("fifo_name"));
+
+  /* Load previous roster state */
+  hlog_load_state();
 
   if (ret < 0) {
     scr_LogPrint(LPRINT_NORMAL, "No configuration file has been found.");
@@ -413,12 +511,12 @@ int main(int argc, char **argv)
 
   scr_LogPrint(LPRINT_DEBUG, "Entering into main loop...");
 
-  for (ret = 0 ; ret != 255 ; ) {
+  while (!terminate_ui) {
     scr_DoUpdate();
     scr_Getch(&kcode);
 
     if (kcode.value != ERR) {
-      ret = process_key(kcode);
+      process_key(kcode);
     } else {
       scr_CheckAutoAway(FALSE);
 
@@ -426,20 +524,26 @@ int main(int argc, char **argv)
         scr_DrawRoster();
 
       jb_main();
+      hk_mainloop();
     }
   }
 
+  scr_TerminateCurses();
+  fifo_deinit();
+#ifdef HAVE_LIBOTR
+  otr_terminate();
+#endif
   jb_disconnect();
 #ifdef HAVE_GPGME
   gpg_terminate();
 #endif
-  scr_TerminateCurses();
 #ifdef HAVE_ASPELL_H
   /* Deinitialize aspell */
-  if (settings_opt_get_int("aspell_enable")) {
+  if (settings_opt_get_int("aspell_enable"))
     spellcheck_deinit();
-  }
 #endif
+  /* Save pending message state */
+  hlog_save_state();
 
   printf("\n\nThanks for using mcabber!\n");
 

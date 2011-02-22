@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.9.3],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.9.7],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -24,13 +24,17 @@ if test "x$GCC" = "xyes"; then
     AC_MSG_RESULT($gccver)
 
     CFLAGS="$CFLAGS -Wall"
+    if test x"$gccvermajor" = x"4" -a x"$gccverminor" = x"2"; then
+        DBGCFLAGS="-fgnu89-inline"
+    fi
 fi
 
 # Checks for header files.
 AC_HEADER_STDC
 AC_CHECK_HEADERS([arpa/inet.h fcntl.h locale.h netdb.h netinet/in.h stddef.h \
                   stdlib.h string.h strings.h sys/socket.h sys/time.h \
-                  syslog.h termios.h unistd.h getopt.h wchar.h wctype.h])
+                  syslog.h termios.h unistd.h getopt.h wchar.h wctype.h \
+                  localcharset.h])
 AC_CHECK_HEADERS([getopt.h], , AC_MSG_ERROR([Missing header file]))
 AC_VAR_TIMEZONE_EXTERNALS
 
@@ -63,7 +67,19 @@ AC_CHECK_DECLS([strptime],,,
 # Check for tm_gmtoff
 MC_TM_GMTOFF
 
+# Check if we must provide a SIGWINCH handler
+AC_ARG_ENABLE(sigwinch,
+        [  --enable-sigwinch       compile with SIGWINCH handler],
+        [with_sigwinch=$enableval],
+        [with_sigwinch=$with_ext_funcs])
+AC_MSG_RESULT($with_sigwinch)
+if test "$with_sigwinch" = yes; then
+    AC_DEFINE(USE_SIGWINCH, [], [Provide own SIGWINCH handler])
+fi
+
 # Checks for libraries.
+
+AC_CHECK_LIB(charset, locale_charset)
 
 AC_CHECK_FUNC(initscr,,
 [
@@ -98,11 +114,25 @@ else
     AC_MSG_WARN([Your ncurses installation does not support unicode])
 fi
 
+AC_CACHE_CHECK([for ESCDELAY variable],
+               [mc_cv_ncurses_escdelay],
+               [AC_TRY_LINK([], [
+                            extern int ESCDELAY;
+                            ESCDELAY = 0;
+                            ],
+                            [mc_cv_ncurses_escdelay=yes],
+                            [mc_cv_ncurses_escdelay=no])
+               ])
+if test "$mc_cv_ncurses_escdelay" = yes; then
+    AC_DEFINE(HAVE_ESCDELAY, 1,
+              [Define if ncurses has ESCDELAY variable])
+fi
+
 # Check for glib
 AM_PATH_GLIB_2_0(2.0.0, , AC_MSG_ERROR([glib is required]),[g_list_append])
 
 # Check for gpgme
-AC_ARG_ENABLE(gpgme, AC_HELP_STRING([--disable-gpgme], [Disable GPGME support]),
+AC_ARG_ENABLE(gpgme, AC_HELP_STRING([--disable-gpgme], [disable GPGME support]),
     [ if test x"$enableval" = x"no"; then
         enable_gpgme=no
       fi
@@ -111,6 +141,18 @@ AC_ARG_ENABLE(gpgme, AC_HELP_STRING([--disable-gpgme], [Disable GPGME support]),
 if test x"${enable_gpgme}" != x"no"; then
     AM_PATH_GPGME(1.0.0, AC_DEFINE(HAVE_GPGME, 1,
         [Define if you use GPGME to support OpenPGP]))
+fi
+
+# Check for otr
+AC_ARG_ENABLE(otr, [  --enable-otr            enable OTR (Off-the-Record) messaging support],
+              enable_otr=$enableval, otr="")
+if test "x$enable_otr" = "xyes"; then
+  # Look for libgcrypt and libotr
+  AM_PATH_LIBGCRYPT(1.2.2, [
+          AM_PATH_LIBOTR(3.1.0, ,
+                         AC_MSG_ERROR(libotr 3.1.0 or newer is required.))
+      ], AC_MSG_ERROR(libgcrypt 1.2.2 or newer is required.)
+  )
 fi
 
 AC_ARG_WITH(ssl, [  --with-ssl              enable SSL secured connections using either OpenSSL
@@ -144,16 +186,16 @@ if test "$with_ssl" != "no"; then
     else
         AC_MSG_RESULT([not found or disabled])
 
-        # AM_PATH_LIBGNUTLS_EXTRA(0.0.1, [
-        #     CXXFLAGS="$CXXFLAGS $LIBGNUTLS_CFLAGS"
-        #     LIBS="$LIBS $LIBGNUTLS_LIBS -lgnutls-extra -lgnutls-openssl"
-        #     AC_DEFINE([HAVE_GNUTLS], [], [GNU TLS])
-        # ])
+        AM_PATH_LIBGNUTLS_EXTRA(0.0.1, [
+            CXXFLAGS="$CXXFLAGS $LIBGNUTLS_CFLAGS"
+            LIBS="$LIBS $LIBGNUTLS_LIBS -lgnutls-extra -lgnutls-openssl"
+            AC_DEFINE([HAVE_GNUTLS], [], [GNU TLS])
+        ])
     fi
 fi
 
 # Check for Aspell stuff
-AC_ARG_ENABLE(aspell, [  --enable-aspell         Enable aspell support],
+AC_ARG_ENABLE(aspell, [  --enable-aspell         enable aspell support],
               enable_aspell=$enableval, aspell="")
 if test "x$enable_aspell" = "xyes"; then
     AC_CHECK_HEADERS(aspell.h, [ have_aspell_includes=yes ])
@@ -174,21 +216,21 @@ AC_DEFINE(BUILD_JABBER, 1, [build with jabber support])
 
 # Export $datadir to the source tree.
 if test x"${datadir}" != x""; then
-    AC_DEFINE_DIR(DATA_DIR, "${datadir}", [Data files directory])
+    AC_DEFINE_DIR(DATA_DIR, datadir, [Data files directory])
 fi
 
 AC_ARG_ENABLE(debug,
-    [AC_HELP_STRING(--enable-debug, Add development compilation options)],
+    [AC_HELP_STRING(--enable-debug, add development compilation options)],
     debug=$enableval, debug="")
 if test x"${debug}" = x"yes"; then
-    AC_DEFINE_UNQUOTED([DEBUG_ENABLE],[1],[Devel compilation options])
+    AC_DEFINE_UNQUOTED([ENABLE_DEBUG],[1],[Devel compilation options])
     if test "x$GCC" = "xyes"; then
         if test "$gccvernum" -ge "400"; then
             CFLAGS="$CFLAGS -Wextra"
         else
             CFLAGS="$CFLAGS -W"
         fi
-        CFLAGS="$CFLAGS -Wno-unused-parameter -pedantic -std=gnu99 -O0"
+        CFLAGS="$CFLAGS -Wno-unused-parameter -pedantic -std=gnu99 $DBGCFLAGS -O0"
     fi # gcc
     CFLAGS="$CFLAGS -g"
 else
@@ -196,12 +238,14 @@ else
 fi
 
 AC_ARG_ENABLE(hgcset,
-    [AC_HELP_STRING(--disable-hgcset, Do not use Mercurial changeset value)],
+    [AC_HELP_STRING(--disable-hgcset, do not use Mercurial changeset value)],
     hgcset=$enableval, hgcset="yes")
-AM_CONDITIONAL(HGCSET, test x$hgcset = xyes)
+AM_CONDITIONAL(HGCSET, [test x$hgcset = xyes])
 if test "${hgcset}" = "yes"; then
     AC_DEFINE(ENABLE_HGCSET, 1, [Use Mercurial changeset])
 fi
+
+AM_CONDITIONAL([OTR], [test x$libotr_found = xyes])
 
 # We need _GNU_SOURCE for strptime() and strcasestr()
 CFLAGS="$CFLAGS -D_GNU_SOURCE"

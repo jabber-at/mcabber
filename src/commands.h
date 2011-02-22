@@ -13,16 +13,17 @@ typedef struct {
 
 void cmd_init(void);
 cmd *cmd_get(const char *command);
-int  process_line(char *line);
-int  process_command(char *line, guint iscmd);
-char *expandalias(char *line);
+int  process_line(const char *line);
+int  process_command(const char *line, guint iscmd);
+char *expandalias(const char *line);
 
 extern char *mcabber_version(void);
 extern void mcabber_connect(void);
+extern void mcabber_set_terminate_ui(void);
 
-void room_whois(gpointer bud, char *nick_locale, guint interactive);
-void room_leave(gpointer bud, char *arg);
-void setstatus(const char *recipient, const char *arg);
+void cmd_room_whois(gpointer bud, char *nick_locale, guint interactive);
+void cmd_room_leave(gpointer bud, char *arg);
+void cmd_setstatus(const char *recipient, const char *arg);
 
 #endif /* __COMMANDS_H__ */
 

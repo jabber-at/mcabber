@@ -1,7 +1,7 @@
 MCABBER(1)
 ===========
 Mikael BERTHE <mcabber@lilotux.net>
-v0.9.3, June 2007
+v0.9.7, April 2008
 
 NAME
 ----
@@ -9,7 +9,7 @@ mcabber - a simple Jabber console client
 
 SYNOPSIS
 --------
-'mcabber' [ -f configfile ] [ --help | -h ]
+'mcabber' [ -h | -V | -f configfile ]
 
 DESCRIPTION
 -----------
@@ -338,7 +338,7 @@ COMMANDS RELATED TO THE ROSTER AND JABBER RESOURCES
 
         'join' [room [nick [pass]]];; join "room", using "nick" as nickname.  If no nickname is provided (or if it is an empty string), the "nickname" option value is used (see sample configuration file).  If the currently selected entry is correctly recognized as a room by mcabber, the shortcut "." can be used instead of the full room id.  A password can be provided to enter protected rooms.  If your nickname contains space characters, use quotes.
         'leave' [message];;     leave the current room
-        'names' [--short|--quiet];; display the members of the current room
+        'names' [--detail|--short|--quiet];; display the members of the current room
         'nick' nick;;           change your nickname in the current room
         'privmsg' nick msg;;    send private message "msg" to "nick"
         'remove';;              remove the current room from the roster (you must have left this room before)
@@ -437,7 +437,7 @@ http://www.lilotux.net/~mikael/mcabber/[Main web site]
 
 COPYING
 -------
-Copyright \(C) 2005, 2006, 2007 Mikael Berthe. +
+Copyright \(C) 2005, 2006, 2007, 2008 Mikael Berthe. +
 Some portions are Copyright \(C) 2002-2004 mailto:cabber@ajmacias.com[].
 
 Free use of this software is granted under the terms of the GNU General Public

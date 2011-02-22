@@ -1,3 +1,86 @@
+mcabber (0.9.7)
+
+ * Pressing enter when a group is selected will toggle the fold status
+ * New option 'ignore_self_presence'
+ * New option 'log_display_presence'
+ * New option 'eventcmd_use_nickname'
+ * New option 'statefile' to keep track of unread messages across restarts
+ * New option to customize the away/notavail priority (Michael Gehring)
+ * New external "UNREAD" event
+ * Add FIFO named command pipe
+ * New switches for /say_to: -q, -f
+ * New command /status message (to only change the status description string)
+ * Let /del remove a MUC entry from the roster
+ * Allow more than the 16 default colors (mjs)
+ * Randomize the default resource
+ * Improve OTR support
+ * Improve Remote Controlling Clients (XEP-0146)
+ * Improve reading of history files
+ * Fix compilation on systems which need -lcharset
+ * Add optional SIGWINCH handler (Markus Hennecke)
+   (improves resize events on OpenBSD)
+ * Fixes from MirBSD (Thorsten Glaser)
+ * Some more fixes and improvements (see detailed changelog)
+
+ -- Mikael, 2008-04-17
+
+mcabber (0.9.6)
+
+ * Improve Cygwin support
+ * Fix compilation on OpenBSD
+ * [UI] New option 'escdelay'
+ * [MUC] New command /room setopt
+ * [MUC] More room settings are stored in the server private storage
+ * [MUC] The command /room ban can be used with a nickname
+ * [MUC] New rooms are automatically unlocked (suggested by M. Weiser)
+ * A few misc. bugfixes
+
+ -- Mikael, 2008-01-13
+
+mcabber (0.9.5)
+
+ * Implement internal hooks: post-connect, pre-disconnect
+ * Extend command /source; any command can be used in a sourced file
+   once mcabber is running
+ * [OTR] New option 'otr' (to enable OTR support in the conf. file)
+ * [OTR] Disable OTR encryption for non-user contacts
+ * [SSL] Do not connect when the SSL settings can't be used
+ * [MUC] Add "/room names --detail"
+ * Add command /roster item_toggle_lock
+ * A group name can be specified in the /group command
+ * [UI] Remove the restriction on the message sizes for displaying
+   incoming messages
+ * History logfile: Use a special code (MI) for local MUC info messages
+ * Usual misc. improvements and bugfixes
+ * Update Polish translation
+
+ -- Mikael, 2007-11-19
+
+mcabber (0.9.4)
+
+ * New mcabber command line option -V (displays the version)
+ * MCabber can be linked against GnuTLS
+ * Optional OTR support (Frank Zschockelt)
+   New commands /otr and /otrpolicy
+ * New command /room unban
+ * New command /roster display to filter the contacts per status
+ * New command /color (Michal 'vorner' Vaner)
+   - Add configurable roster colors
+   - Add configurable colors for info and incoming messages
+ * MUC nickname coloring (vorner)
+ * Add selectable time prefixes (vorner)
+ * Implement /buffer close|purge [jid]
+ * XEP-0203 - Delayed Delivery
+ * Improve iq:last support (Michael Scherer)
+ * Allow sending normal and headline messages (vorner)
+ * Allow longer lines in config file
+ * Fix proxy usage when SSL is disabled
+ * Misc. bugfixes
+ * New Italian translation (Alessandro Dotti Contra)
+ * Update online documentation and translations
+
+ -- Mikael, 2007-10-27
+
 mcabber (0.9.3)
 
  * Enable gpg-agent again
@@ -146,7 +229,7 @@ mcabber (0.7.7)
 
  * New "status" special buffer
    This buffer contains the log window data.
- * Mcabber does not stop when there is no configuration file
+ * MCabber does not stop when there is no configuration file
  * New command "/help" (online help)
  * New command "/authorization request_unsubscribe"
  * New command "/msay toggle_verbatim"
@@ -168,7 +251,7 @@ mcabber (0.7.7)
    subscription request is rejected.
  * New option "max_history_age"
  * MUC: New option "muc_auto_whois"
- * MUC: Mcabber can join password-protected chatrooms
+ * MUC: MCabber can join password-protected chatrooms
  * MUC: Allow "/room join . [nick [pass]]" if the current item is a MUC room
  * MUC: Fix joining a room when the buddylist is empty
  * MUC: Try to work around some server and network issues

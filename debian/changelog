@@ -1,8 +1,32 @@
-mcabber (0.9.3-1~bpo.1) etch-backports; urgency=low
+mcabber (0.9.7-0.1) unstable; urgency=low
 
-  * Backport to etch (simple recompile).
+  * Non-maintainer upload.
+  * New upstream release, which includes:
+    - using stat instead of lstat for permission check (closes: #475182)
+  * Fix watchfile to watch only for numbered versions (closes: #479601)
+  * Updated Standards-Version to 3.8.0:
+    - Added README.source quick introduction on dpatch usage.
 
- -- Mario Iseli <mario@debian.org>  Tue, 07 Aug 2007 15:37:48 +0200
+ -- Gerfried Fuchs <rhonda@debian.at>  Wed, 16 Jul 2008 17:51:43 +0200
+
+mcabber (0.9.5-1.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+  * --enable-otr and add Build-Depends libotr2-dev (Closes: #453729).
+  * Add Build-Depends on libaspell-dev to make --enable-aspell actually work
+    (Closes: #461977).
+
+ -- Gerfried Fuchs <rhonda@debian.at>  Tue, 22 Jan 2008 15:59:24 +0100
+
+mcabber (0.9.5-1) unstable; urgency=low
+
+  * New upstream release.
+  * New maintainer E-Mail address.
+  * Added Homepage field to debian/control.
+  * Fix debian-rules-ignores-make-clean-error by checking if the file exists
+    if the file exists..
+
+ -- Mario Iseli <mario@debian.org>  Tue, 20 Nov 2007 13:47:26 +0100
 
 mcabber (0.9.3-1) unstable; urgency=low
 

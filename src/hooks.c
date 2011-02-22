@@ -1,7 +1,7 @@
 /*
  * hooks.c      -- Hooks layer
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,12 +31,30 @@
 #include "settings.h"
 #include "utils.h"
 #include "utf8.h"
+#include "commands.h"
+#include "fifo.h"
 
 static char *extcmd;
 
 static const char *COMMAND_ME = "/me ";
 
-inline void hk_message_in(const char *bjid, const char *resname,
+void hk_mainloop(void)
+{
+  /*
+  static time_t last;
+  time_t now;
+
+  time(&now);
+
+  if (now > last + 1) {
+    // custom_hook();
+    last = now;
+  }
+  */
+  fifo_read();
+}
+
+void hk_message_in(const char *bjid, const char *resname,
                           time_t timestamp, const char *msg, const char *type,
                           guint encrypted)
 {
@@ -49,6 +67,8 @@ inline void hk_message_in(const char *bjid, const char *resname,
   guint rtype = ROSTER_TYPE_USER;
   char *wmsg = NULL, *bmsg = NULL, *mmsg = NULL;
   GSList *roster_usr;
+  unsigned mucnicklen = 0;
+  const char *ename = NULL;
 
   if (encrypted)
     message_flags |= HBB_PREFIX_PGPCRYPT;
@@ -63,6 +83,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
       wmsg = bmsg = g_strdup_printf("~ %s", msg);
     } else {
       wmsg = bmsg = g_strdup_printf("<%s> %s", resname, msg);
+      mucnicklen = strlen(resname) + 2;
       if (!strncmp(msg, COMMAND_ME, strlen(COMMAND_ME)))
         wmsg = mmsg = g_strdup_printf("*%s %s", resname, msg+4);
     }
@@ -85,7 +106,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
   roster_usr = roster_find(bjid, jidsearch, 0);
   if (!roster_usr) {
     new_guy = TRUE;
-    roster_usr = roster_add_user(bjid, NULL, NULL, rtype, sub_none);
+    roster_usr = roster_add_user(bjid, NULL, NULL, rtype, sub_none, -1);
     if (!roster_usr) { // Shouldn't happen...
       scr_LogPrint(LPRINT_LOGNORM, "ERROR: unable to add buddy!");
       g_free(bmsg);
@@ -157,7 +178,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
   // Note: the hlog_write should not be called first, because in some
   // cases scr_WriteIncomingMessage() will load the history and we'd
   // have the message twice...
-  scr_WriteIncomingMessage(bjid, wmsg, timestamp, message_flags);
+  scr_WriteIncomingMessage(bjid, wmsg, timestamp, message_flags, mucnicklen);
 
   // We don't log the modified message, but the original one
   if (wmsg == mmsg)
@@ -169,7 +190,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
   //   option is off (and it is not a history line)
   if (!(message_flags & HBB_PREFIX_ERR) &&
       (!is_room || (is_groupchat && log_muc_conf && !timestamp)))
-    hlog_write_message(bjid, timestamp, FALSE, wmsg);
+    hlog_write_message(bjid, timestamp, 0, wmsg);
 
   if (settings_opt_get_int("events_ignore_active_window") &&
       current_buddy && scr_get_chatmode()) {
@@ -181,12 +202,15 @@ inline void hk_message_in(const char *bjid, const char *resname,
     }
   }
 
+  if (settings_opt_get_int("eventcmd_use_nickname"))
+    ename = roster_getname(bjid);
+
   // External command
   // - We do not call hk_ext_cmd() for history lines in MUC
   // - We do call hk_ext_cmd() for private messages in a room
   // - We do call hk_ext_cmd() for messages to the current window
   if (!active_window && ((is_groupchat && !timestamp) || !is_groupchat))
-    hk_ext_cmd(bjid, (is_groupchat ? 'G' : 'M'), 'R', wmsg);
+    hk_ext_cmd(ename ? ename : bjid, (is_groupchat ? 'G' : 'M'), 'R', wmsg);
 
   // Display the sender in the log window
   if ((!is_groupchat) && !(message_flags & HBB_PREFIX_ERR) &&
@@ -207,10 +231,10 @@ inline void hk_message_in(const char *bjid, const char *resname,
   }
 
   // We need to update the roster if the sender is unknown or
-  // if the sender is offline/invisible and hide_offline_buddies is set
+  // if the sender is offline/invisible and a filter is set.
   if (new_guy ||
       (buddy_getstatus(roster_usr->data, NULL) == offline &&
-       buddylist_get_hide_offline_buddies()))
+       buddylist_isset_filter()))
   {
     update_roster = TRUE;
   }
@@ -222,7 +246,7 @@ inline void hk_message_in(const char *bjid, const char *resname,
 //  hk_message_out()
 // nick should be set for private messages in a chat room, and null for
 // normal messages.
-inline void hk_message_out(const char *bjid, const char *nick,
+void hk_message_out(const char *bjid, const char *nick,
                            time_t timestamp, const char *msg, guint encrypted)
 {
   char *wmsg = NULL, *bmsg = NULL, *mmsg = NULL;
@@ -251,7 +275,7 @@ inline void hk_message_out(const char *bjid, const char *nick,
 
   // We don't log private messages
   if (!nick)
-    hlog_write_message(bjid, timestamp, TRUE, msg);
+    hlog_write_message(bjid, timestamp, 1, msg);
 
   // External command
   hk_ext_cmd(bjid, 'M', 'S', NULL);
@@ -260,43 +284,50 @@ inline void hk_message_out(const char *bjid, const char *nick,
   g_free(mmsg);
 }
 
-inline void hk_statuschange(const char *bjid, const char *resname, gchar prio,
+void hk_statuschange(const char *bjid, const char *resname, gchar prio,
                             time_t timestamp, enum imstatus status,
                             const char *status_msg)
 {
-  int buddy_format;
   int st_in_buf;
   enum imstatus oldstat;
-  char *bn = NULL;
+  char *bn;
   char *logsmsg;
   const char *rn = (resname ? resname : "");
+  const char *ename = NULL;
 
-  st_in_buf = settings_opt_get_int("show_status_in_buffer");
-  buddy_format = settings_opt_get_int("buddy_format");
-  if (buddy_format) {
-    const char *name = roster_getname(bjid);
-    if (name && strcmp(name, bjid)) {
-      if (buddy_format == 1)
-        bn = g_strdup_printf("%s <%s/%s>", name, bjid, rn);
-      else if (buddy_format == 2)
-        bn = g_strdup_printf("%s/%s", name, rn);
-      else if (buddy_format == 3)
-        bn = g_strdup_printf("%s", name);
-    }
-  }
-
-  if (!bn) {
-    bn = g_strdup_printf("<%s/%s>", bjid, rn);
-  }
-
-  logsmsg = g_strdup(status_msg ? status_msg : "");
-  replace_nl_with_dots(logsmsg);
+  if (settings_opt_get_int("eventcmd_use_nickname"))
+    ename = roster_getname(bjid);
 
   oldstat = roster_getstatus(bjid, resname);
-  scr_LogPrint(LPRINT_LOGNORM, "Buddy status has changed: [%c>%c] %s %s",
-               imstatus2char[oldstat], imstatus2char[status], bn, logsmsg);
-  g_free(logsmsg);
-  g_free(bn);
+
+  st_in_buf = settings_opt_get_int("show_status_in_buffer");
+
+  if (settings_opt_get_int("log_display_presence")) {
+    int buddy_format = settings_opt_get_int("buddy_format");
+    bn = NULL;
+    if (buddy_format) {
+      const char *name = roster_getname(bjid);
+      if (name && strcmp(name, bjid)) {
+        if (buddy_format == 1)
+          bn = g_strdup_printf("%s <%s/%s>", name, bjid, rn);
+        else if (buddy_format == 2)
+          bn = g_strdup_printf("%s/%s", name, rn);
+        else if (buddy_format == 3)
+          bn = g_strdup_printf("%s", name);
+      }
+    }
+
+    if (!bn)
+      bn = g_strdup_printf("<%s/%s>", bjid, rn);
+
+    logsmsg = g_strdup(status_msg ? status_msg : "");
+    replace_nl_with_dots(logsmsg);
+
+    scr_LogPrint(LPRINT_LOGNORM, "Buddy status has changed: [%c>%c] %s %s",
+                 imstatus2char[oldstat], imstatus2char[status], bn, logsmsg);
+    g_free(logsmsg);
+    g_free(bn);
+  }
 
   if (st_in_buf == 2 ||
       (st_in_buf == 1 && (status == offline || oldstat == offline))) {
@@ -306,7 +337,7 @@ inline void hk_statuschange(const char *bjid, const char *resname, gchar prio,
                            imstatus2char[oldstat], imstatus2char[status],
                            ((status_msg) ? status_msg : ""));
       scr_WriteIncomingMessage(bjid, bn, timestamp,
-                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG);
+                               HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
       g_free(bn);
     }
   }
@@ -317,16 +348,40 @@ inline void hk_statuschange(const char *bjid, const char *resname, gchar prio,
   scr_DrawRoster();
   hlog_write_status(bjid, timestamp, status, status_msg);
   // External command
-  hk_ext_cmd(bjid, 'S', imstatus2char[status], NULL);
+  hk_ext_cmd(ename ? ename : bjid, 'S', imstatus2char[status], NULL);
 }
 
-inline void hk_mystatuschange(time_t timestamp, enum imstatus old_status,
+void hk_mystatuschange(time_t timestamp, enum imstatus old_status,
                               enum imstatus new_status, const char *msg)
 {
   scr_LogPrint(LPRINT_LOGNORM, "Your status has been set: [%c>%c] %s",
                imstatus2char[old_status], imstatus2char[new_status],
                (msg ? msg : ""));
   //hlog_write_status(NULL, 0, status);
+}
+
+
+/* Internal commands */
+
+void hook_execute_internal(const char *hookname)
+{
+  const char *hook_command;
+  char *buf;
+  char *cmdline;
+
+  hook_command = settings_opt_get(hookname);
+  if (!hook_command)
+    return;
+
+  buf = g_strdup_printf("Running %s...", hookname);
+  scr_LogPrint(LPRINT_LOGNORM, "%s", buf);
+
+  cmdline = from_utf8(hook_command);
+  if (process_command(cmdline, TRUE) == 255)
+    mcabber_set_terminate_ui();
+
+  g_free(cmdline);
+  g_free(buf);
 }
 
 
@@ -356,29 +411,35 @@ void hk_ext_cmd(const char *bjid, guchar type, guchar info, const char *data)
   char *arg_data = NULL;
   char status_str[2];
   char *datafname = NULL;
+  char unread_str[16];
 
   if (!extcmd) return;
 
   // Prepare arg_* (external command parameters)
   switch (type) {
-    case 'M':
+    case 'M': /* Normal message */
         arg_type = "MSG";
         if (info == 'R')
           arg_info = "IN";
         else if (info == 'S')
           arg_info = "OUT";
         break;
-    case 'G':
+    case 'G': /* Groupchat message */
         arg_type = "MSG";
         arg_info = "MUC";
         break;
-    case 'S':
+    case 'S': /* Status change */
         arg_type = "STATUS";
         if (strchr(imstatus2char, tolower(info))) {
           status_str[0] = toupper(info);
           status_str[1] = 0;
           arg_info = status_str;
         }
+        break;
+    case 'U': /* Unread buffer count */
+        arg_type = "UNREAD";
+        g_snprintf(unread_str, sizeof unread_str, "%d", info);
+        arg_info = unread_str;  /* number of remaining unread bjids */
         break;
     default:
         return;
@@ -428,7 +489,8 @@ void hk_ext_cmd(const char *bjid, guchar type, guchar info, const char *data)
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
-    if (execl(extcmd, extcmd, arg_type, arg_info, bjid, arg_data, NULL) == -1) {
+    if (execl(extcmd, extcmd, arg_type, arg_info, bjid, arg_data,
+              (char *)NULL) == -1) {
       // scr_LogPrint(LPRINT_LOGNORM, "Cannot execute external command.");
       exit(1);
     }

@@ -1,7 +1,7 @@
 /*
  * settings.c   -- Configuration stuff
  *
- * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2008 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,6 +27,11 @@
 #include "commands.h"
 #include "utils.h"
 #include "logprint.h"
+#include "otr.h"
+
+// Maximum line length
+// (probably best to use the same value as INPUTLINE_LENGTH)
+#define CONFLINE_LENGTH  1024
 
 static GHashTable *option;
 static GHashTable *alias;
@@ -42,11 +47,19 @@ typedef struct {
 } T_pgpopt;
 #endif
 
+#ifdef HAVE_LIBOTR
+static GHashTable *otrpolicy;
+static enum otr_policy default_policy;
+#endif
+
 static inline GHashTable *get_hash(guint type)
 {
   if      (type == SETTINGS_TYPE_OPTION)  return option;
   else if (type == SETTINGS_TYPE_ALIAS)   return alias;
   else if (type == SETTINGS_TYPE_BINDING) return binding;
+#ifdef HAVE_LIBOTR
+  else if (type == SETTINGS_TYPE_OTR)     return otrpolicy;
+#endif
   return NULL;
 }
 
@@ -60,6 +73,9 @@ void settings_init(void)
 #ifdef HAVE_GPGME
   pgpopt = g_hash_table_new(&g_str_hash, &g_str_equal);
 #endif
+#ifdef HAVE_LIBOTR
+  otrpolicy = g_hash_table_new(&g_str_hash, &g_str_equal);
+#endif
 }
 
 //  cfg_read_file(filename, mainfile)
@@ -71,6 +87,7 @@ void settings_init(void)
 //
 int cfg_read_file(char *filename, guint mainfile)
 {
+  static unsigned int runtime;
   FILE *fp;
   char *buf;
   char *line, *eol;
@@ -80,6 +97,7 @@ int cfg_read_file(char *filename, guint mainfile)
   if (!filename) {
     // Use default config file locations
     char *home;
+    GString *sfilename;
 
     if (!mainfile) {
       scr_LogPrint(LPRINT_LOGNORM, "No file name provided");
@@ -90,36 +108,39 @@ int cfg_read_file(char *filename, guint mainfile)
     if (!home) {
       scr_LogPrint(LPRINT_LOG, "Can't find home dir!");
       fprintf(stderr, "Can't find home dir!\n");
-      return -1;
+      err = -1;
+      goto cfg_read_file_return;
     }
-    filename = g_new(char, strlen(home)+24);
-    sprintf(filename, "%s/.mcabber/mcabberrc", home);
-    if ((fp = fopen(filename, "r")) == NULL) {
+    sfilename = g_string_new("");
+    g_string_printf(sfilename, "%s/.mcabber/mcabberrc", home);
+    if ((fp = fopen(sfilename->str, "r")) == NULL) {
       // 2nd try...
-      sprintf(filename, "%s/.mcabberrc", home);
-      if ((fp = fopen(filename, "r")) == NULL) {
+      g_string_printf(sfilename, "%s/.mcabberrc", home);
+      if ((fp = fopen(sfilename->str, "r")) == NULL) {
         fprintf(stderr, "Cannot open config file!\n");
-        g_free(filename);
-        return -1;
+        g_string_free(sfilename, TRUE);
+        err = -1;
+        goto cfg_read_file_return;
       }
     }
     // Check configuration file permissions
-    // As it could contain sensitive data, we make it user-readable only
-    checkset_perm(filename, TRUE);
-    scr_LogPrint(LPRINT_LOGNORM, "Reading %s", filename);
-    // Check mcabber dir.  There we just warn, we don't change the modes
-    sprintf(filename, "%s/.mcabber/", home);
-    checkset_perm(filename, FALSE);
-    g_free(filename);
-    filename = NULL;
+    // As it could contain sensitive data, we make it user-readable only.
+    checkset_perm(sfilename->str, TRUE);
+    scr_LogPrint(LPRINT_LOGNORM, "Reading %s", sfilename->str);
+    // Check mcabber dir.  Here we just warn, we don't change the modes.
+    g_string_printf(sfilename, "%s/.mcabber/", home);
+    checkset_perm(sfilename->str, FALSE);
+    g_string_free(sfilename, TRUE);
   } else {
+    // filename was specified
     if ((fp = fopen(filename, "r")) == NULL) {
       const char *msg = "Cannot open configuration file";
       if (mainfile)
         perror(msg);
       else
         scr_LogPrint(LPRINT_LOGNORM, "%s (%s).", msg, filename);
-      return -2;
+      err = -2;
+      goto cfg_read_file_return;
     }
     // Check configuration file permissions (see above)
     // We don't change the permissions if that's not the main file.
@@ -128,9 +149,9 @@ int cfg_read_file(char *filename, guint mainfile)
     scr_LogPrint(LPRINT_LOGNORM, "Reading %s", filename);
   }
 
-  buf = g_new(char, 512);
+  buf = g_new(char, CONFLINE_LENGTH+1);
 
-  while (fgets(buf+1, 511, fp) != NULL) {
+  while (fgets(buf+1, CONFLINE_LENGTH, fp) != NULL) {
     // The first char is reserved to add a '/', to make a command line
     line = buf+1;
     ln++;
@@ -153,27 +174,36 @@ int cfg_read_file(char *filename, guint mainfile)
     if ((*line == '\n') || (*line == '\0') || (*line == '#'))
       continue;
 
-    // We only allow assignments line, except for commands "pgp" and "source"
-    if ((strchr(line, '=') != NULL) ||
-        startswith(line, "pgp ", FALSE) || startswith(line, "source ", FALSE)) {
+    // We only allow assignments line, except for commands "pgp", "source",
+    // "color" and "otrpolicy", unless we're in runtime (i.e. not startup).
+    if (runtime ||
+        (strchr(line, '=') != NULL)        ||
+        startswith(line, "pgp ", FALSE)    ||
+        startswith(line, "source ", FALSE) ||
+        startswith(line, "color ", FALSE)  ||
+        startswith(line, "otrpolicy", FALSE)) {
       // Only accept the set, alias, bind, pgp and source commands
-      if (!startswith(line, "set ", FALSE)   &&
-          !startswith(line, "bind ", FALSE)  &&
-          !startswith(line, "alias ", FALSE) &&
-          !startswith(line, "pgp ", FALSE)   &&
-          !startswith(line, "source ", FALSE)) {
-        scr_LogPrint(LPRINT_LOGNORM,
-                     "Error in configuration file (l. %d): bad command", ln);
+      if (!runtime &&
+          !startswith(line, "set ", FALSE)    &&
+          !startswith(line, "bind ", FALSE)   &&
+          !startswith(line, "alias ", FALSE)  &&
+          !startswith(line, "pgp ", FALSE)    &&
+          !startswith(line, "source ", FALSE) &&
+          !startswith(line, "color ", FALSE)  &&
+          !startswith(line, "otrpolicy ", FALSE)) {
+        scr_LogPrint(LPRINT_LOGNORM, "Error in configuration file (l. %d): "
+                     "this command can't be used here", ln);
         err++;
         continue;
       }
       // Set the leading COMMAND_CHAR to build a command line
       // and process the command
       *(--line) = COMMAND_CHAR;
-      process_command(line, TRUE);
+      if (process_command(line, TRUE) == 255)
+        mcabber_set_terminate_ui();
     } else {
-      scr_LogPrint(LPRINT_LOGNORM,
-                   "Error in configuration file (l. %d): no assignment", ln);
+      scr_LogPrint(LPRINT_LOGNORM, "Error in configuration file (l. %d): "
+                   "this is not an assignment", ln);
       err++;
     }
   }
@@ -182,6 +212,12 @@ int cfg_read_file(char *filename, guint mainfile)
 
   if (filename)
     scr_LogPrint(LPRINT_LOGNORM, "Loaded %s.", filename);
+
+cfg_read_file_return:
+  // If we're done with the main file parsing, we can assume that
+  // the next time this function is called will be at run time.
+  if (mainfile)
+    runtime = TRUE;
   return err;
 }
 
@@ -352,9 +388,13 @@ void settings_foreach(guint type, void (*pfunc)(char *k, char *v, void *param),
 //  default_muc_nickname()
 // Return the user's default nickname
 // The caller should free the string after use
-char *default_muc_nickname(void)
+char *default_muc_nickname(const char *roomid)
 {
   char *nick;
+
+  nick = (char*)jb_get_bookmark_nick(roomid);
+  if (nick)
+    return g_strdup(nick);
 
   // We try the "nickname" option, then the username part of the jid.
   nick = (char*)settings_opt_get("nickname");
@@ -492,6 +532,64 @@ const char *settings_pgp_getkeyid(const char *bjid)
     return pgpdata->pgp_keyid;
 #endif
   return NULL;
+}
+
+/* otr settings */
+
+#ifdef HAVE_LIBOTR
+static void remove_default_policies(char * k, char * policy, void * defaultp)
+{
+  if (*(enum otr_policy *)policy == *(enum otr_policy *)defaultp) {
+    g_free((enum otr_policy *) policy);
+    g_hash_table_remove(otrpolicy, k);
+  }
+}
+#endif
+
+void settings_otr_setpolicy(const char *bjid, guint value)
+{
+#ifdef HAVE_LIBOTR
+  enum otr_policy *otrdata;
+
+  if (!bjid) {
+    default_policy = value;
+    /* refresh hash */
+    settings_foreach(SETTINGS_TYPE_OTR, &remove_default_policies, &value);
+    return;
+  }
+
+  otrdata = g_hash_table_lookup(otrpolicy, bjid);
+
+  if (value == default_policy) {
+    if (otrdata) {
+      g_free(otrdata);
+      g_hash_table_remove(otrpolicy, bjid);
+    }
+  } else if (otrdata) {
+    *otrdata = value;
+  } else {
+    otrdata = g_new(enum otr_policy, 1);
+    *otrdata = value;
+    g_hash_table_insert(otrpolicy, g_strdup(bjid), otrdata);
+  }
+#endif
+}
+
+guint settings_otr_getpolicy(const char *bjid)
+{
+#ifdef HAVE_LIBOTR
+  enum otr_policy * otrdata;
+  if (!bjid)
+    return default_policy;
+
+  otrdata = g_hash_table_lookup(otrpolicy, bjid);
+  if (otrdata)
+    return *otrdata;
+  else
+    return default_policy;
+#else
+  return 0;
+#endif
 }
 
 guint get_max_history_blocks(void)
