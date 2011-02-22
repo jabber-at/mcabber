@@ -72,6 +72,8 @@ static void handle_state_events(char* from, xmlnode xmldata);
 
 static int evscallback_invitation(eviqs *evp, guint evcontext);
 
+inline void update_last_use(void);
+
 
 static void logger(jconn j, int io, const char *buf)
 {
@@ -262,11 +264,13 @@ void jb_main()
       scr_DoUpdate();
     }
     // If we're not connected, sleep for a while...
-    select(maxfd + 1, &fds, NULL, NULL, &tv);
-    if (!online)
+    if (!online) {
+      select(1, &fds, NULL, NULL, &tv);
       check_connection();
-    else
+    } else {
+      select(maxfd + 1, &fds, NULL, NULL, &tv);
       jab_start(jc);
+    }
     return;
   }
 
@@ -354,7 +358,7 @@ inline const char *jb_getstatusmsg()
   return mystatusmsg;
 }
 
-inline void update_last_use(void)
+void update_last_use(void)
 {
   iqlast = time(NULL);
 }
@@ -1140,6 +1144,8 @@ void jb_request(const char *fjid, enum iqreq_type reqtype)
   void (*request_fn)(const char *);
   const char *strreqtype;
 
+  if (!online) return;
+
   if (reqtype == iqreq_version) {
     request_fn = &request_version;
     strreqtype = "version";
@@ -1809,7 +1815,6 @@ static void gotmessage(char *type, const char *from, const char *body,
 #ifdef HAVE_LIBOTR
   if (otr_enabled()) {
     decrypted_otr = (char*)body;
-    mc_strtolower(bjid);
     otr_msg = otr_receive(&decrypted_otr, bjid, &free_msg);
     if (!decrypted_otr) {
       goto gotmessage_return;
@@ -2683,6 +2688,10 @@ static void handle_state_events(char *from, xmlnode xmldata)
   } which_jep = JEP_none;
 
   rname = strchr(from, JID_RESOURCE_SEPARATOR);
+  if (rname)
+    ++rname;
+  else
+    rname = from + strlen(from);
   bjid  = jidtodisp(from);
   sl_buddy = roster_find(bjid, jidsearch, ROSTER_TYPE_USER);
   g_free(bjid);
@@ -2690,7 +2699,7 @@ static void handle_state_events(char *from, xmlnode xmldata)
   /* XXX Actually that's wrong, since it filters out server "offline"
      messages (for JEP-0022).  This JEP is (almost) deprecated so
      we don't really care. */
-  if (!sl_buddy || !rname++) {
+  if (!sl_buddy) {
     return;
   }
 

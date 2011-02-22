@@ -633,6 +633,21 @@ static void roster_note(char *arg)
   }
 }
 
+//  roster_updown(updown, nitems)
+// updown: -1=up, +1=down
+inline static void roster_updown(int updown, char *nitems)
+{
+  int nbitems;
+
+  if (!nitems || !*nitems)
+    nbitems = 1;
+  else
+    nbitems = strtol(nitems, NULL, 10);
+
+  if (nbitems > 0)
+    scr_RosterUpDown(updown, nbitems);
+}
+
 /* Commands callback functions */
 /* All these do_*() functions will be called with a "arg" parameter */
 /* (with arg not null)                                              */
@@ -701,9 +716,9 @@ static void do_roster(char *arg)
     scr_RosterSearch(arg);
     update_roster = TRUE;
   } else if (!strcasecmp(subcmd, "up")) {
-    scr_RosterUp();
+    roster_updown(-1, arg);
   } else if (!strcasecmp(subcmd, "down")) {
-    scr_RosterDown();
+    roster_updown(1, arg);
   } else if (!strcasecmp(subcmd, "group_prev")) {
     scr_RosterPrevGroup();
   } else if (!strcasecmp(subcmd, "group_next")) {
@@ -1459,7 +1474,7 @@ static void do_say_to(char *arg)
   }
 
   // Check for an option parameter
-  while (TRUE) {
+  while (*paramlst) {
     if (!strcmp(*paramlst, "-q")) {
       char **oldparamlst = paramlst;
       paramlst = split_arg(*(oldparamlst+1), 2, 1); // jid, message
@@ -1469,6 +1484,10 @@ static void do_say_to(char *arg)
       char **oldparamlst = paramlst;
       paramlst = split_arg(*(oldparamlst+1), 2, 1); // filename, jid
       free_arg_lst(oldparamlst);
+      if (!*paramlst) {
+        scr_LogPrint(LPRINT_NORMAL, "Wrong usage.");
+        return;
+      }
       file = g_strdup(*paramlst);
       // One more parameter shift...
       oldparamlst = paramlst;
@@ -1476,6 +1495,11 @@ static void do_say_to(char *arg)
       free_arg_lst(oldparamlst);
     } else
       break;
+  }
+
+  if (!*paramlst) {
+    scr_LogPrint(LPRINT_NORMAL, "Wrong usage.");
+    return;
   }
 
   fjid = *paramlst;
@@ -1525,7 +1549,7 @@ inline static void buffer_updown(int updown, char *nlines)
   if (!nlines || !*nlines)
     nblines = 0;
   else
-    nblines = atoi(nlines);
+    nblines = strtol(nlines, NULL, 10);
 
   if (nblines >= 0)
     scr_BufferScrollUpDown(updown, nblines);
@@ -1793,7 +1817,8 @@ static void room_names(gpointer bud, char *arg)
   const char *bjid;
   char *buffer;
   GSList *resources, *p_res;
-  enum { style_normal = 0, style_detail, style_short, style_quiet } style = 0;
+  enum { style_normal = 0, style_detail, style_short,
+         style_quiet, style_compact } style = 0;
 
   if (*arg) {
     if (!strcasecmp(arg, "--short"))
@@ -1802,6 +1827,8 @@ static void room_names(gpointer bud, char *arg)
       style = style_quiet;
     else if (!strcasecmp(arg, "--detail"))
       style = style_detail;
+    else if (!strcasecmp(arg, "--compact"))
+      style = style_compact;
     else {
       scr_LogPrint(LPRINT_NORMAL, "Unrecognized parameter!");
       return;
@@ -1831,7 +1858,18 @@ static void room_names(gpointer bud, char *arg)
                (char*)p_res->data,
                rst_msg ? " -- " : "", rst_msg ? rst_msg : "");
       scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
-    } else {
+    } else if (style == style_compact) {
+        enum imrole role = buddy_getrole(bud, p_res->data);
+        enum imaffiliation affil = buddy_getaffil(bud, p_res->data);
+        bool showaffil = (affil != affil_none);
+
+        snprintf(buffer, 4095, "[%c] %s (%s%s%s)",
+                 imstatus2char[rstatus], (char*)p_res->data,
+                 showaffil ? straffil[affil] : "\0",
+                 showaffil ? "/" : "\0",
+                 strrole[role]);
+        scr_WriteIncomingMessage(bjid, buffer, 0, HBB_PREFIX_INFO, 0);
+      } else {
       // (Style "normal", "detail" or "quiet")
       snprintf(buffer, 4095, "[%c] %s", imstatus2char[rstatus],
                (char*)p_res->data);
@@ -1925,7 +1963,7 @@ static void do_rename(char *arg)
     foreach_group_member(bud, &move_group_member, name_utf8);
     // Let's jump to the previous buddy, because this group name should
     // disappear when we receive the server answer.
-    scr_RosterUp();
+    scr_RosterUpDown(-1, 1);
   } else {
     // Rename a single buddy
     guint del_name = 0;
@@ -1979,7 +2017,7 @@ static void do_move(char *arg)
     guint msgflag;
 
     jb_updatebuddy(bjid, name, *group_utf8 ? group_utf8 : NULL);
-    scr_RosterUp();
+    scr_RosterUpDown(-1, 1);
 
     // If the buddy has a pending message flag,
     // we remove it temporarily in order to reset the global group
@@ -3072,6 +3110,12 @@ static void do_request(char *arg)
   if (!type || !numtype) {
     scr_LogPrint(LPRINT_NORMAL,
                  "Please specify a query type (version, time...).");
+    free_arg_lst(paramlst);
+    return;
+  }
+
+  if (!jb_getonline()) {
+    scr_LogPrint(LPRINT_NORMAL, "You are not connected.");
     free_arg_lst(paramlst);
     return;
   }
