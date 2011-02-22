@@ -1,3 +1,36 @@
+mcabber (0.10.0)
+
+ * Switch to the Loudmouth library (franky)
+ * Warning: 'username' has been replaced with 'jid' in the configuration file
+ * MCabber can now do DNS SRV lookups
+ * [UI] Buffers have priorities (and by default MUC rooms have a lower
+   priority).  The priority is used by mcabber to jump to the next unread
+   buffer.
+ * [UI] The attention sign (!) is displayed for urgent messages or when
+   the user nickname is used in a MUC room (depending on the buffer priority)
+ * [UI] Use locale to determine the online help language (Myhailo Danylenko)
+ * [UI] Print list of options with "/set" (Myhailo Danylenko)
+ * [UI] Fix iline word_upcase/word_downcase/word_capit commands
+ * Add support for modules in mcabber (Myhailo Danylenko)
+ * Sample "beep" module (Myhailo Danylenko)
+ * Allow commands shading (Myhailo Danylenko)
+ * Message Receipts (XEP-0184) support (franky)
+ * Update of Entity Capabilities support (franky)
+ * New command /request ping (Myhailo, Mikael)
+ * Add libidn support
+ * [MUC] Allow changing the nickname in MUC bookmarks (Myhailo Danylenko)
+ * [MUC] A suffix (i.e. ":") can be appended to completed nicknames
+ * Command "/source" now accepts a file pattern (Myhailo Danylenko)
+ * Tracelog level can now be changed at runtime (Myhailo Danylenko)
+ * Small vCard support improvements
+ * Startup status can be set in the configuration file
+ * Obsolete option 'hide_offline_buddies' has been removed
+ * Obsolete XEP-0022 (Message Events) is now disabled by default
+ * No suffix is displayed in the status bar after the 'info' value
+ * Add Vim syntax file for mcabber history log files to contrib
+
+ -- Mikael, 2010-04-11
+
 mcabber (0.9.10)
 
  * Include Franky's mcabber user guide

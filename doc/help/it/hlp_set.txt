@@ -1,4 +1,5 @@
 
- /SET opzione [= valore]
+ /SET [opzione [= valore]]
 
 Visualizza o imposta il valore di un'opzione.
+Se non vengono specificati parametri vengono elencate tutte le opzioni impostate ed i relativi valori.

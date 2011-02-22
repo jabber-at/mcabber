@@ -1,3 +1,24 @@
+mcabber (0.10.0)
+
+ * MCabber now uses the Loudmouth library (version 1.4.3 or greater).
+ * The JID should be provided in the configuration file, the variable
+   'username' has been replaced with 'jid'.
+ * The SSL/TLS-related options have changed; please check the new
+   sample configuration file.
+ * The UNREAD events now passes more data to the external script
+   (including the number of buffers with the attention sign,
+   the number of unread MUC buffers, and the number of unread MUC
+   buffers with the attention sign).
+
+ -- Mikael, 2010-04-11
+
+mcabber (0.9.10)
+
+ * The spell checking related options have changed, please
+   check your configuration file.
+
+ -- Mikael, 2009-10-11
+
 mcabber (0.9.5)
 
  * The option 'otr' must now be set in the configuration file in

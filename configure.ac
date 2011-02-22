@@ -2,12 +2,13 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.9.10],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.10.0],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
-AC_CONFIG_SRCDIR([src])
-AM_CONFIG_HEADER(config.h)
+AC_CONFIG_SRCDIR([mcabber])
+AM_CONFIG_HEADER(mcabber/config.h)
+AC_CONFIG_HEADER(include/config.h)
 
-#AC_PROG_LIBTOOL
+AC_PROG_LIBTOOL
 AC_PROG_RANLIB
 
 # Checks for programs.
@@ -30,6 +31,8 @@ if test "x$GCC" = "xyes"; then
 fi
 
 AC_SYS_LARGEFILE
+
+PKG_PROG_PKG_CONFIG
 
 # Checks for header files.
 AC_HEADER_STDC
@@ -71,7 +74,7 @@ MC_TM_GMTOFF
 
 # Check if we must provide a SIGWINCH handler
 AC_ARG_ENABLE(sigwinch,
-        [  --enable-sigwinch       compile with SIGWINCH handler],
+        AC_HELP_STRING([--enable-sigwinch], [compile with SIGWINCH handler]),
         [with_sigwinch=$enableval],
         [with_sigwinch=$with_ext_funcs])
 AC_MSG_RESULT($with_sigwinch)
@@ -130,16 +133,45 @@ if test "$mc_cv_ncurses_escdelay" = yes; then
               [Define if ncurses has ESCDELAY variable])
 fi
 
+AC_ARG_ENABLE(modules, AC_HELP_STRING([--disable-modules],
+                                      [disable dynamic modules loading]),
+              enable_modules=$enableval)
+if test "x$enable_modules" != "xno"; then
+  AC_DEFINE(MODULES_ENABLE, 1, [Define if you want dynamic modules loading])
+  gmodule_module=gmodule
+else
+  gmodule_module=''
+fi
+
 # Check for glib
 AM_PATH_GLIB_2_0(2.14.0,
                  [AC_DEFINE([HAVE_GLIB_REGEX], 1,
                             [Define if GLib has regex support])],
                  [AM_PATH_GLIB_2_0(2.0.0, , AC_MSG_ERROR([glib is required]),
-                                  [g_list_append])],
-                 [g_regex_new])
+                                  [g_list_append], ["$gmodule_module"])],
+                 [g_regex_new "$gmodule_module"])
+
+# Check for loudmouth
+PKG_CHECK_MODULES(LOUDMOUTH, loudmouth-1.0 >= 1.4.2)
+
+# Check for libidn
+AC_ARG_WITH(libidn, AC_HELP_STRING([--with-libidn=[DIR]],
+                                   [Support IDN (needs GNU Libidn)]),
+            libidn=$withval, libidn=yes)
+if test "$libidn" != "no" ; then
+  PKG_CHECK_MODULES(LIBIDN, libidn >= 0.0.0, [libidn=yes], [libidn=no])
+  if test "$libidn" != "yes" ; then
+    libidn=no
+    AC_MSG_WARN([Libidn not found])
+  else
+    libidn=yes
+    AC_DEFINE(HAVE_LIBIDN, 1, [Define to 1 if you want Libidn.])
+  fi
+fi
 
 # Check for gpgme
-AC_ARG_ENABLE(gpgme, AC_HELP_STRING([--disable-gpgme], [disable GPGME support]),
+AC_ARG_ENABLE(gpgme,
+    AC_HELP_STRING([--disable-gpgme], [disable GPGME support]),
     [ if test x"$enableval" = x"no"; then
         enable_gpgme=no
       fi
@@ -151,7 +183,9 @@ if test x"${enable_gpgme}" != x"no"; then
 fi
 
 # Check for otr
-AC_ARG_ENABLE(otr, [  --enable-otr            enable OTR (Off-the-Record) messaging support],
+AC_ARG_ENABLE(otr,
+              AC_HELP_STRING([--enable-otr],
+                             [enable OTR (Off-the-Record) messaging support]),
               enable_otr=$enableval, otr="")
 if test "x$enable_otr" = "xyes"; then
   # Look for libgcrypt and libotr
@@ -162,58 +196,18 @@ if test "x$enable_otr" = "xyes"; then
   )
 fi
 
-AC_ARG_WITH(ssl, [  --with-ssl              enable SSL secured connections using either OpenSSL
-                          or GnuTLS],
-        [with_ssl=$withval])
-
-if test "$with_ssl" != "no"; then
-    AC_ARG_WITH(openssl,
-        [  --with-openssl=[DIR]      enable SSL secured connections using the OpenSSL
-                          library in DIR (optional)],
-        [with_openssl=$withval])
-
-    if test -z "$with_openssl"; then
-        for ac_dir in /usr/local /usr; do
-            if test -f "$ac_dir/include/openssl/ssl.h"; then
-                with_openssl=$ac_dir
-                break;
-            fi
-        done
-    fi
-
-    AC_MSG_CHECKING(for OpenSSL)
-
-    if test -n "$with_openssl" -a "$with_openssl" != "no"; then
-        if test "$with_openssl" = "yes"; then with_openssl="/usr"; fi
-        CFLAGS="$CFLAGS -I${with_openssl}"
-        AC_DEFINE([HAVE_OPENSSL], [], [OpenSSL])
-        AC_MSG_RESULT([found in $with_openssl])
-        AC_CHECK_LIB(crypto, main)
-        AC_CHECK_LIB(ssl, main)
-    else
-        AC_MSG_RESULT([not found or disabled])
-
-        PKG_PROG_PKG_CONFIG
-        PKG_CHECK_MODULES([LIBGNUTLS], [gnutls >= 1.0.0],
-                          have_gnutls=yes, have_gnutls=no)
-        if test "$have_gnutls" = "yes"; then
-            AC_DEFINE([HAVE_GNUTLS], 1, [GNU TLS])
-            CXXFLAGS="$CXXFLAGS $LIBGNUTLS_CFLAGS"
-            LIBS="$LIBS $LIBGNUTLS_LIBS"
-        fi
-    fi
-fi
-
 # Check for Enchant stuff
-AC_ARG_ENABLE(enchant, [  --enable-enchant       enable enchant support],
+AC_ARG_ENABLE(enchant,
+              AC_HELP_STRING([--enable-enchant], [enable enchant support]),
               enable_enchant=$enableval, enchant="")
 # Check for Aspell stuff
-AC_ARG_ENABLE(aspell, [  --enable-aspell         enable aspell support],
+AC_ARG_ENABLE(aspell,
+              AC_HELP_STRING([--enable-aspell], [enable aspell support]),
               enable_aspell=$enableval, aspell="")
 
 if test "x$enable_enchant" = "xyes"; then
  PKG_CHECK_MODULES(ENCHANT, [enchant],
-   AC_DEFINE(WITH_ENCHANT, 1, [define if you want enchant support])
+   AC_DEFINE(WITH_ENCHANT, 1, [Define if you want enchant support])
  )
 else
  if test "x$enable_aspell" = "xyes"; then
@@ -221,7 +215,7 @@ else
     if test "x$have_aspell_includes" = "xyes"; then
         AC_CHECK_LIB(aspell, new_aspell_config, [ have_aspell_libs=yes ])
         if test "x$have_aspell_libs" = "xyes"; then
-            AC_DEFINE([WITH_ASPELL], 1, [define if you want aspell support])
+            AC_DEFINE([WITH_ASPELL], 1, [Define if you want aspell support])
             LIBS="$LIBS -laspell"
         else
             enable_aspell=no
@@ -232,15 +226,24 @@ else
  fi
 fi
 
-AC_DEFINE([BUILD_JABBER], 1, [build with jabber support])
-
 # Export $datadir to the source tree.
 if test x"${datadir}" != x""; then
     AC_DEFINE_DIR(DATA_DIR, datadir, [Data files directory])
 fi
 
+# Export $libexecdir to the source tree
+AC_DEFINE_DIR(PKGLIB_DIR, "${libdir}/${PACKAGE}", [Modules directory])
+
+AC_ARG_ENABLE(xep0022,
+              AC_HELP_STRING([--enable-xep0022],
+                             [enable obsolete Message Events (XEP-0022)]),
+              xep0022=$enableval)
+if test "${xep0022}" = "yes"; then
+    AC_DEFINE([XEP0022], 1, [Define if you want obsolete Message Events])
+fi
+
 AC_ARG_ENABLE(debug,
-    [AC_HELP_STRING(--enable-debug, add development compilation options)],
+    AC_HELP_STRING([--enable-debug], [add development compilation options]),
     debug=$enableval, debug="")
 if test x"${debug}" = x"yes"; then
     AC_DEFINE_UNQUOTED([ENABLE_DEBUG],[1],[Devel compilation options])
@@ -258,7 +261,7 @@ else
 fi
 
 AC_ARG_ENABLE(hgcset,
-    [AC_HELP_STRING(--disable-hgcset, do not use Mercurial changeset value)],
+    AC_HELP_STRING([--disable-hgcset], [do not use Mercurial changeset value]),
     hgcset=$enableval, hgcset="yes")
 AM_CONDITIONAL(HGCSET, [test x$hgcset = xyes])
 if test "${hgcset}" = "yes"; then
@@ -266,15 +269,22 @@ if test "${hgcset}" = "yes"; then
 fi
 
 AM_CONDITIONAL([OTR], [test x$libotr_found = xyes])
+AM_CONDITIONAL([INSTALL_HEADERS], [test x$enable_modules != xno])
+
+# Prepare some config.h variables
+AC_DEFINE([MCABBER_BRANCH], "0.10.0", [Mcabber branch])
+AC_DEFINE([MCABBER_VERSION], "AC_PACKAGE_VERSION", [Mcabber version string])
 
 # We need _GNU_SOURCE for strptime() and strcasestr()
 CFLAGS="$CFLAGS -D_GNU_SOURCE"
 
-AC_CONFIG_FILES([connwrap/Makefile
-                 libjabber/Makefile
-                 src/Makefile
+AC_CONFIG_FILES([mcabber/Makefile
+                 modules/Makefile
+                 modules/beep/Makefile
+                 modules/xttitle/Makefile
                  doc/Makefile
                  doc/guide/Makefile
                  doc/help/Makefile
+                 mcabber.pc
                  Makefile])
 AC_OUTPUT
