@@ -29,11 +29,12 @@ struct T_presence {
 #define IQS_CONTEXT_ERROR   2U
 
 extern enum enum_jstate jstate;
+extern xmlnode bookmarks, rosternotes;
 
 extern char *mcabber_version(void);
 
 
-char *jidtodisp(const char *jid);
+char *jidtodisp(const char *fjid);
 void handle_packet_iq(jconn conn, char *type, char *from, xmlnode xmldata);
 void display_server_error(xmlnode x);
 eviqs *iqs_new(guint8 type, const char *ns, const char *prefix, time_t timeout);
@@ -43,6 +44,10 @@ void iqs_check_timeout(time_t now_t);
 void iqscallback_auth(eviqs *iqp, xmlnode xml_result);
 void request_version(const char *fulljid);
 void request_time(const char *fulljid);
+void request_last(const char *fulljid);
+void request_vcard(const char *barejid);
+void send_storage_bookmarks(void);
+void send_storage_rosternotes(void);
 
 #endif /* __JAB_PRIV_H__ */
 

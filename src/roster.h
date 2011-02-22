@@ -4,6 +4,8 @@
 #include <glib.h>
 #include <time.h>
 
+#include "pgp.h"
+
 #define SPECIAL_BUFFER_STATUS_ID  "[status]"
 
 enum imstatus {
@@ -71,7 +73,52 @@ struct role_affil {
 #define ROSTER_FLAG_MSG     1U      // Message not read
 #define ROSTER_FLAG_HIDE    (1U<<1) // Group hidden (or buddy window closed)
 #define ROSTER_FLAG_LOCK    (1U<<2) // Node should not be removed from buddylist
-// ROSTER_FLAG_LOCAL   (1U<<3) // Buddy not on server's roster  (??)
+#define ROSTER_FLAG_USRLOCK (1U<<3) // Node should not be removed from buddylist
+// ROSTER_FLAG_LOCAL   (1U<<4) // Buddy not on server's roster  (??)
+
+#define JEP0022
+#define JEP0085
+
+struct jep0022 {
+  guint support;
+  guint last_state_sent;
+  gchar *last_msgid_sent;
+  guint last_state_rcvd;
+  gchar *last_msgid_rcvd;
+};
+struct jep0085 {
+  guint support;
+  guint last_state_sent;
+  guint last_state_rcvd;
+};
+
+enum chatstate_support {
+  CHATSTATES_SUPPORT_UNKNOWN = 0,
+  CHATSTATES_SUPPORT_PROBED,
+  CHATSTATES_SUPPORT_NONE,
+  CHATSTATES_SUPPORT_OK
+};
+
+struct pgp_data {
+  gchar *sign_keyid;  // KeyId used by the contact to sign their presence/msg
+#ifdef HAVE_GPGME
+  gpgme_sigsum_t last_sigsum; // Last signature summary
+#endif
+};
+
+/* Message event and chat state flags */
+#define ROSTER_EVENT_NONE      0U
+/* JEP-22 Message Events */
+#define ROSTER_EVENT_OFFLINE   (1U<<0)
+#define ROSTER_EVENT_DELIVERED (1U<<1)
+#define ROSTER_EVENT_DISPLAYED (1U<<2)
+/* JEP-22 & JEP-85 */
+#define ROSTER_EVENT_COMPOSING (1U<<3)
+/* JEP-85 Chat State Notifications */
+#define ROSTER_EVENT_ACTIVE    (1U<<4)
+#define ROSTER_EVENT_PAUSED    (1U<<5)
+#define ROSTER_EVENT_INACTIVE  (1U<<6)
+#define ROSTER_EVENT_GONE      (1U<<7)
 
 extern GList *buddylist;
 extern GList *current_buddy;
@@ -134,6 +181,12 @@ GSList *buddy_getresources(gpointer rosterdata);
 GSList *buddy_getresources_locale(gpointer rosterdata);
 void    buddy_resource_setname(gpointer rosterdata, const char *resname,
                                const char *newname);
+void    buddy_resource_setevents(gpointer rosterdata, const char *resname,
+                                 guint event);
+guint   buddy_resource_getevents(gpointer rosterdata, const char *resname);
+struct jep0022 *buddy_resource_jep22(gpointer rosterdata, const char *resname);
+struct jep0085 *buddy_resource_jep85(gpointer rosterdata, const char *resname);
+struct pgp_data *buddy_resource_pgp(gpointer rosterdata, const char *resname);
 enum imrole buddy_getrole(gpointer rosterdata, const char *resname);
 enum imaffiliation buddy_getaffil(gpointer rosterdata, const char *resname);
 const char *buddy_getrjid(gpointer rosterdata, const char *resname);

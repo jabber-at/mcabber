@@ -9,6 +9,11 @@ extern char *LocaleCharSet;
 #define from_utf8(s) ((s) ? g_convert_with_fallback((s), -1, LocaleCharSet, \
                                         "UTF-8", NULL,NULL,NULL,NULL) : NULL)
 
+#define JID_RESOURCE_SEPARATOR      '/'
+#define JID_RESOURCE_SEPARATORSTR   "/"
+#define JID_DOMAIN_SEPARATOR        '@'
+#define JID_DOMAIN_SEPARATORSTR     "@"
+
 void ut_InitDebug(int level, const char *file);
 void ut_WriteLog(unsigned int flag, const char *data);
 
@@ -21,9 +26,9 @@ time_t from_iso8601(const char *timestamp, int utc);
 
 inline void safe_usleep(unsigned int usec); /* Only for delays < 1s */
 
-int check_jid_syntax(char *jid);
+int check_jid_syntax(char *fjid);
 
-void mc_strtolower(char *str);
+inline void mc_strtolower(char *str);
 
 void strip_arg_special_chars(char *s);
 char **split_arg(const char *arg, unsigned int n, int dontstriplast);
