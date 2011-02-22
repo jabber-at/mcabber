@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.9.3],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.9.5],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -24,6 +24,9 @@ if test "x$GCC" = "xyes"; then
     AC_MSG_RESULT($gccver)
 
     CFLAGS="$CFLAGS -Wall"
+    if test x"$gccvermajor" = x"4" -a x"$gccverminor" = x"2"; then
+        DBGCFLAGS="-fgnu89-inline"
+    fi
 fi
 
 # Checks for header files.
@@ -113,6 +116,18 @@ if test x"${enable_gpgme}" != x"no"; then
         [Define if you use GPGME to support OpenPGP]))
 fi
 
+# Check for otr
+AC_ARG_ENABLE(otr, [  --enable-otr            Enable OTR (Off-the-Record) messaging support],
+              enable_otr=$enableval, otr="")
+if test "x$enable_otr" = "xyes"; then
+  # Look for libgcrypt and libotr
+  AM_PATH_LIBGCRYPT(1.2.2, [
+          AM_PATH_LIBOTR(3.1.0, ,
+                         AC_MSG_ERROR(libotr 3.1.0 or newer is required.))
+      ], AC_MSG_ERROR(libgcrypt 1.2.2 or newer is required.)
+  )
+fi
+
 AC_ARG_WITH(ssl, [  --with-ssl              enable SSL secured connections using either OpenSSL
                           or GnuTLS],
         [with_ssl=$withval])
@@ -144,11 +159,11 @@ if test "$with_ssl" != "no"; then
     else
         AC_MSG_RESULT([not found or disabled])
 
-        # AM_PATH_LIBGNUTLS_EXTRA(0.0.1, [
-        #     CXXFLAGS="$CXXFLAGS $LIBGNUTLS_CFLAGS"
-        #     LIBS="$LIBS $LIBGNUTLS_LIBS -lgnutls-extra -lgnutls-openssl"
-        #     AC_DEFINE([HAVE_GNUTLS], [], [GNU TLS])
-        # ])
+        AM_PATH_LIBGNUTLS_EXTRA(0.0.1, [
+            CXXFLAGS="$CXXFLAGS $LIBGNUTLS_CFLAGS"
+            LIBS="$LIBS $LIBGNUTLS_LIBS -lgnutls-extra -lgnutls-openssl"
+            AC_DEFINE([HAVE_GNUTLS], [], [GNU TLS])
+        ])
     fi
 fi
 
@@ -188,7 +203,7 @@ if test x"${debug}" = x"yes"; then
         else
             CFLAGS="$CFLAGS -W"
         fi
-        CFLAGS="$CFLAGS -Wno-unused-parameter -pedantic -std=gnu99 -O0"
+        CFLAGS="$CFLAGS -Wno-unused-parameter -pedantic -std=gnu99 $DBGCFLAGS -O0"
     fi # gcc
     CFLAGS="$CFLAGS -g"
 else
@@ -202,6 +217,8 @@ AM_CONDITIONAL(HGCSET, test x$hgcset = xyes)
 if test "${hgcset}" = "yes"; then
     AC_DEFINE(ENABLE_HGCSET, 1, [Use Mercurial changeset])
 fi
+
+AM_CONDITIONAL([OTR], [test x$libotr_found = xyes])
 
 # We need _GNU_SOURCE for strptime() and strcasestr()
 CFLAGS="$CFLAGS -D_GNU_SOURCE"

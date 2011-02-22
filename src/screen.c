@@ -28,6 +28,7 @@
 #include <locale.h>
 #include <langinfo.h>
 #include <config.h>
+#include <assert.h>
 
 #ifdef HAVE_ASPELL_H
 # include <aspell.h>
@@ -101,7 +102,6 @@ static int multimode;
 static char *multiline, *multimode_subj;
 int update_roster;
 int utf8_mode = 0;
-static bool Autoaway;
 static bool Curses;
 static bool log_win_on_top;
 static bool roster_win_on_right;
@@ -136,7 +136,8 @@ GSList *keyseqlist;
 static void add_keyseq(char *seqstr, guint mkeycode, gint value);
 
 void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
-                       unsigned int prefix_flags, int force_show);
+                       unsigned int prefix_flags, int force_show,
+                       unsigned mucnicklen);
 
 #ifdef HAVE_ASPELL_H
 #define ASPELLBADCHAR 5
@@ -144,9 +145,69 @@ AspellConfig *spell_config;
 AspellSpeller *spell_checker;
 #endif
 
+typedef struct {
+  char *status, *wildcard;
+  int color;
+  GPatternSpec *compiled;
+} rostercolor;
+
+static GSList *rostercolrules = NULL;
+
+static GHashTable *muccolors = NULL, *nickcolors = NULL;
+
+typedef struct {
+  bool manual;//Manually set?
+  int color;
+} nickcolor;
+
+static int nickcolcount = 0, *nickcols = NULL;
+static muccoltype glob_muccol = MC_OFF;
+
 /* Functions */
 
-static int FindColor(const char *name)
+static int color_conv_table[] = {
+  COLOR_BLACK,
+  COLOR_RED,
+  COLOR_GREEN,
+  COLOR_YELLOW,
+  COLOR_BLUE,
+  COLOR_MAGENTA,
+  COLOR_CYAN,
+  COLOR_WHITE
+};
+
+static int color_conv_table_fg[] = {
+  COLOR_BLACK_FG,
+  COLOR_RED_FG,
+  COLOR_GREEN_FG,
+  COLOR_YELLOW_FG,
+  COLOR_BLUE_FG,
+  COLOR_MAGENTA_FG,
+  COLOR_CYAN_FG,
+  COLOR_WHITE_FG
+};
+
+static int color_to_color_fg(int color)
+{
+  unsigned i = 0;
+  for ( ; i < sizeof color_conv_table / sizeof *color_conv_table; i++)
+    if (color == color_conv_table[i])
+      return color_conv_table_fg[i];
+  return -1;
+}
+
+static int color_fg_to_color(int color)
+{
+  unsigned i = 0;
+  if (color >= COLOR_BLACK_BOLD_FG)
+    color -= COLOR_BLACK_BOLD_FG - COLOR_BLACK_FG;
+  for ( ; i < sizeof color_conv_table_fg / sizeof *color_conv_table_fg; i++)
+    if (color == color_conv_table_fg[i])
+      return color_conv_table[i];
+  return -1;
+}
+
+static int FindColorInternal(const char *name)
 {
   if (!strcmp(name, "default"))
     return -1;
@@ -167,8 +228,197 @@ static int FindColor(const char *name)
   if (!strcmp(name, "white"))
     return COLOR_WHITE;
 
+  return -2;
+}
+
+static int FindColor(const char *name)
+{
+  int result = FindColorInternal(name);
+  if (result != -2)
+    return result;
+
   scr_LogPrint(LPRINT_LOGNORM, "ERROR: Wrong color: %s", name);
   return -1;
+}
+
+static int get_user_color(const char *color)
+{
+  bool isbright = false;
+  int cl;
+  if (!strncmp(color, "bright", 6)) {
+    isbright = true;
+    color += 6;
+  }
+  cl = color_to_color_fg(FindColorInternal(color));
+  if (cl < 0)
+    return cl;
+  if (isbright)
+    cl += COLOR_BLACK_BOLD_FG - COLOR_BLACK_FG;
+  return cl;
+}
+
+static void ensure_string_htable(GHashTable **table,
+    GDestroyNotify value_destroy_func)
+{
+  if (*table)//Have it already
+    return;
+  *table = g_hash_table_new_full(g_str_hash, g_str_equal,
+      g_free, value_destroy_func);
+}
+
+// Sets the coloring mode for given MUC
+// The MUC room does not need to be in the roster at that time
+// muc - the JID of room
+// type - the new type
+void scr_MucColor(const char *muc, muccoltype type)
+{
+  gchar *muclow = g_utf8_strdown(muc, -1);
+  if (type == MC_REMOVE) {//Remove it
+    if (strcmp(muc, "*")) {
+      if (muccolors && g_hash_table_lookup(muccolors, muclow))
+        g_hash_table_remove(muccolors, muclow);
+    } else {
+      scr_LogPrint(LPRINT_NORMAL, "Can not remove global coloring mode");
+    }
+    g_free(muclow);
+  } else {//Add or overwrite
+    if (strcmp(muc, "*")) {
+      ensure_string_htable(&muccolors, g_free);
+      muccoltype *value = g_new(muccoltype, 1);
+      *value = type;
+      g_hash_table_replace(muccolors, muclow, value);
+    } else {
+      glob_muccol = type;
+      g_free(muclow);
+    }
+  }
+  //Need to redraw?
+  if (chatmode &&
+      ((buddy_search_jid(muc) == current_buddy) || !strcmp(muc, "*")))
+    scr_UpdateBuddyWindow();
+}
+
+// Sets the color for nick in MUC
+// If color is "-", the color is marked as automaticly assigned and is
+// not used if the room is in the "preset" mode
+void scr_MucNickColor(const char *nick, const char *color)
+{
+  char *snick, *mnick;
+  bool need_update = false;
+  snick = g_strdup_printf("<%s>", nick);
+  mnick = g_strdup_printf("*%s ", nick);
+  if (!strcmp(color, "-")) {//Remove the color
+    if (nickcolors) {
+      nickcolor *nc = g_hash_table_lookup(nickcolors, snick);
+      if (nc) {//Have this nick already
+        nc->manual = false;
+        nc = g_hash_table_lookup(nickcolors, mnick);
+        assert(nc);//Must have both at the same time
+        nc->manual = false;
+      }// Else -> no color saved, nothing to delete
+    }
+    g_free(snick);//They are not saved in the hash
+    g_free(mnick);
+    need_update = true;
+  } else if (!strcmp(color, "!")) {
+    if (nickcolors) {
+      g_free(g_hash_table_lookup(nickcolors, snick));
+      g_hash_table_remove(nickcolors, snick);
+      g_hash_table_remove(nickcolors, mnick);
+    }
+    g_free(snick);//They are not saved in the hash
+    g_free(mnick);
+    need_update = true;
+  } else {
+    int cl = get_user_color(color);
+    if (cl < 0) {
+      scr_LogPrint(LPRINT_NORMAL, "No such color name");
+      g_free(snick);
+      g_free(mnick);
+    } else {
+      nickcolor *nc = g_new(nickcolor, 1);
+      ensure_string_htable(&nickcolors, NULL);
+      nc->manual = true;
+      nc->color = cl;
+      //Free the struct, if any there already
+      g_free(g_hash_table_lookup(nickcolors, mnick));
+      //Save the new ones
+      g_hash_table_replace(nickcolors, mnick, nc);
+      g_hash_table_replace(nickcolors, snick, nc);
+      need_update = true;
+    }
+  }
+  if (need_update && chatmode &&
+      (buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_ROOM))
+    scr_UpdateBuddyWindow();
+}
+
+static void free_rostercolrule(rostercolor *col)
+{
+  g_free(col->status);
+  g_free(col->wildcard);
+  g_pattern_spec_free(col->compiled);
+  g_free(col);
+}
+
+// Removes all roster coloring rules
+void scr_RosterClearColor(void)
+{
+  GSList *head;
+  for (head = rostercolrules; head; head = g_slist_next(head)) {
+    free_rostercolrule(head->data);
+  }
+  g_slist_free(rostercolrules);
+  rostercolrules = NULL;
+}
+
+// Adds, modifies or removes roster coloring rule
+// color set to "-" removes the rule,
+// otherwise it is modified (if exists) or added
+//
+// Returns weather it was successfull (therefore the roster should be
+// redrawed) or not. If it failed, for example because of invalid color
+// name, it also prints the error.
+bool scr_RosterColor(const char *status, const char *wildcard,
+                     const char *color)
+{
+  GSList *head;
+  GSList *found = NULL;
+  for (head = rostercolrules; head; head = g_slist_next(head)) {
+    rostercolor *rc = head->data;
+    if ((!strcmp(status, rc->status)) && (!strcmp(wildcard, rc->wildcard))) {
+      found = head;
+      break;
+    }
+  }
+  if (!strcmp(color,"-")) {//Delete the rule
+    if (found) {
+      free_rostercolrule(found->data);
+      rostercolrules = g_slist_delete_link(rostercolrules, found);
+      return TRUE;
+    } else {
+      scr_LogPrint(LPRINT_NORMAL, "No such color rule, nothing removed");
+      return FALSE;
+    }
+  } else {
+    int cl = get_user_color(color);
+    if (cl < 0 ) {
+      scr_LogPrint(LPRINT_NORMAL, "No such color name");
+      return FALSE;
+    }
+    if (found) {
+      rostercolor *rc = found->data;
+      rc->color = cl;
+    } else {
+      rostercolor *rc = g_new(rostercolor, 1);
+      rc->status = g_strdup(status);
+      rc->wildcard = g_strdup(wildcard);
+      rc->compiled = g_pattern_spec_new(wildcard);
+      rc->color = cl;
+      rostercolrules = g_slist_prepend(rostercolrules, rc);
+    }
+    return TRUE;
+  }
 }
 
 static void ParseColors(void)
@@ -183,6 +433,8 @@ static void ParseColors(void)
     "rostersel",
     "rosterselmsg",
     "rosternewmsg",
+    "info",
+    "msgin",
     NULL
   };
 
@@ -252,6 +504,55 @@ static void ParseColors(void)
           init_pair(i+1, ((color) ? FindColor(color) : COLOR_RED),
                     FindColor(background));
           break;
+      case COLOR_INFO:
+          init_pair(i+1, ((color) ? FindColor(color) : COLOR_WHITE),
+                    FindColor(background));
+          break;
+      case COLOR_MSGIN:
+          init_pair(i+1, ((color) ? FindColor(color) : COLOR_WHITE),
+                    FindColor(background));
+          break;
+    }
+  }
+  for (i = COLOR_BLACK_FG; i < COLOR_max; i++) {
+    init_pair(i, color_fg_to_color(i), FindColor(background));
+    if (i >= COLOR_BLACK_BOLD_FG)
+      COLOR_ATTRIB[i] = A_BOLD;
+  }
+  if (!nickcols) {
+    char *ncolors = g_strdup(settings_opt_get("nick_colors"));
+    if (ncolors) {
+      char *ncolor_start, *ncolor_end;
+      ncolor_start = ncolor_end = ncolors;
+
+      while (*ncolor_end)
+        ncolor_end++;
+
+      while (ncolors < ncolor_end && *ncolors) {
+        if ((*ncolors == ' ') || (*ncolors == '\t')) {
+          ncolors++;
+        } else {
+          char *end = ncolors;
+          int cl;
+          while (*end && (*end != ' ') && (*end != '\t'))
+            end++;
+          *end = '\0';
+          cl = get_user_color(ncolors);
+          if (cl < 0) {
+            scr_LogPrint(LPRINT_NORMAL, "Unknown color %s", ncolors);
+          } else {
+            nickcols = g_realloc(nickcols, (++nickcolcount) * sizeof *nickcols);
+            nickcols[nickcolcount-1] = cl;
+          }
+          ncolors = end+1;
+        }
+      }
+      g_free(ncolor_start);
+    }
+    if (!nickcols) {//Fallback to have something
+      nickcolcount = 1;
+      nickcols = g_new(int, 1);
+      *nickcols = COLOR_GENERAL;
     }
   }
 }
@@ -479,6 +780,40 @@ inline void scr_Beep(void)
   beep();
 }
 
+// This and following belongs to dynamic setting of time prefix
+static const char *timeprefixes[] = {
+  "%m-%d %H:%M ",
+  "%H:%M ",
+  " "
+};
+
+static const char *spectimeprefixes[] = {
+  "%m-%d %H:%M:%S   ",
+  "%H:%M:%S   ",
+  "   "
+};
+
+static int timepreflengths[] = {
+  17,
+  11,
+  6
+};
+
+static const char *gettprefix()
+{
+  return timeprefixes[settings_opt_get_int("time_prefix")];
+}
+
+static const char *getspectprefix()
+{
+  return spectimeprefixes[settings_opt_get_int("time_prefix")];
+}
+
+static unsigned getprefixwidth()
+{
+  return timepreflengths[settings_opt_get_int("time_prefix")];
+}
+
 //  scr_LogPrint(...)
 // Display a message in the log window.
 // This function will convert from UTF-8 unless the LPRINT_NOTUTF8 flag is set.
@@ -529,12 +864,12 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
       wprintw(logWnd, "\n%s", buffer_locale);
       update_panels();
       scr_WriteInWindow(NULL, buf_specialwindow, timestamp,
-                        HBB_PREFIX_SPECIAL, FALSE);
+                        HBB_PREFIX_SPECIAL, FALSE, 0);
     } else {
       printf("%s\n", buffer_locale);
       // ncurses are not initialized yet, so we call directly hbuf routine
       hbuf_add_line(&statushbuf, buf_specialwindow, timestamp,
-        HBB_PREFIX_SPECIAL, 0, 0);
+        HBB_PREFIX_SPECIAL, 0, 0, 0);
     }
 
     g_free(convbuf1);
@@ -608,7 +943,7 @@ static winbuf *scr_new_buddy(const char *title, int dont_show)
     } else {  // Load buddy history from file (if enabled)
       tmp->bd = g_new0(buffdata, 1);
       hlog_read_history(title, &tmp->bd->hbuf,
-                        maxX - Roster_Width - PREFIX_WIDTH);
+                        maxX - Roster_Width - getprefixwidth());
     }
 
     id = g_strdup(title);
@@ -629,6 +964,7 @@ static void scr_UpdateWindow(winbuf *win_entry)
   hbb_line **lines, *line;
   GList *hbuf_head;
   char date[64];
+  int color;
 
   width = getmaxx(win_entry->win);
 
@@ -667,51 +1003,111 @@ static void scr_UpdateWindow(winbuf *win_entry)
   for (n = 0; n < CHAT_WIN_HEIGHT; n++) {
     wmove(win_entry->win, n, 0);
     line = *(lines+n);
-    // NOTE: update PREFIX_WIDTH if you change the date format!!
-    // You need to set it to the whole prefix length + 1
     if (line) {
       if (line->flags & HBB_PREFIX_HLIGHT_OUT)
-        wattrset(win_entry->win, get_color(COLOR_MSGOUT));
+        color = COLOR_MSGOUT;
       else if (line->flags & HBB_PREFIX_HLIGHT)
-        wattrset(win_entry->win, get_color(COLOR_MSGHL));
+        color = COLOR_MSGHL;
+      else if (line->flags & HBB_PREFIX_INFO)
+        color = COLOR_INFO;
+      else if (line->flags & HBB_PREFIX_IN)
+        color = COLOR_MSGIN;
+      else
+        color = COLOR_GENERAL;
 
-      if (line->timestamp && !(line->flags & HBB_PREFIX_SPECIAL)) {
-        strftime(date, 30, "%m-%d %H:%M", localtime(&line->timestamp));
+      if (color != COLOR_GENERAL)
+        wattrset(win_entry->win, get_color(color));
+
+      if (line->timestamp &&
+          !(line->flags & (HBB_PREFIX_SPECIAL|HBB_PREFIX_CONT))) {
+        strftime(date, 30, gettprefix(), localtime(&line->timestamp));
       } else
         strcpy(date, "           ");
-      if (line->flags & HBB_PREFIX_INFO) {
-        char dir = '*';
-        if (line->flags & HBB_PREFIX_IN)
-          dir = '<';
-        else if (line->flags & HBB_PREFIX_OUT)
-          dir = '>';
-        wprintw(win_entry->win, "%.11s *%c* ", date, dir);
-      } else if (line->flags & HBB_PREFIX_ERR) {
-        char dir = '#';
-        if (line->flags & HBB_PREFIX_IN)
-          dir = '<';
-        else if (line->flags & HBB_PREFIX_OUT)
-          dir = '>';
-        wprintw(win_entry->win, "%.11s #%c# ", date, dir);
-      } else if (line->flags & HBB_PREFIX_IN) {
-        char cryptflag = line->flags & HBB_PREFIX_PGPCRYPT ? '~' : '=';
-        wprintw(win_entry->win, "%.11s <%c= ", date, cryptflag);
-      } else if (line->flags & HBB_PREFIX_OUT) {
-        char cryptflag = line->flags & HBB_PREFIX_PGPCRYPT ? '~' : '-';
-        wprintw(win_entry->win, "%.11s -%c> ", date, cryptflag);
-      } else if (line->flags & HBB_PREFIX_SPECIAL) {
-        strftime(date, 30, "%m-%d %H:%M:%S", localtime(&line->timestamp));
-        wprintw(win_entry->win, "%.14s  ", date);
+      if (!(line->flags & HBB_PREFIX_CONT)) {
+        if (line->flags & HBB_PREFIX_INFO) {
+          char dir = '*';
+          if (line->flags & HBB_PREFIX_IN)
+            dir = '<';
+          else if (line->flags & HBB_PREFIX_OUT)
+            dir = '>';
+          wprintw(win_entry->win, "%s*%c* ", date, dir);
+        } else if (line->flags & HBB_PREFIX_ERR) {
+          char dir = '#';
+          if (line->flags & HBB_PREFIX_IN)
+            dir = '<';
+          else if (line->flags & HBB_PREFIX_OUT)
+            dir = '>';
+          wprintw(win_entry->win, "%s#%c# ", date, dir);
+        } else if (line->flags & HBB_PREFIX_IN) {
+          char cryptflag = line->flags & HBB_PREFIX_PGPCRYPT ? '~' : '=';
+          wprintw(win_entry->win, "%s<%c= ", date, cryptflag);
+        } else if (line->flags & HBB_PREFIX_OUT) {
+          char cryptflag = line->flags & HBB_PREFIX_PGPCRYPT ? '~' : '-';
+          wprintw(win_entry->win, "%s-%c> ", date, cryptflag);
+        } else if (line->flags & HBB_PREFIX_SPECIAL) {
+          strftime(date, 30, getspectprefix(), localtime(&line->timestamp));
+          wprintw(win_entry->win, "%s   ", date);
+        } else {
+          wprintw(win_entry->win, "%s    ", date);
+        }
       } else {
-        wprintw(win_entry->win, "%.11s     ", date);
+        wprintw(win_entry->win, "                " );
       }
 
-      wprintw(win_entry->win, "%s", line->text); // Display text line
+      // Make sure we are at the right position
+      wmove(win_entry->win, n, getprefixwidth()-1);
 
-      if (line->flags & HBB_PREFIX_HLIGHT_OUT ||
-          line->flags & HBB_PREFIX_HLIGHT)
-        wattrset(win_entry->win, get_color(COLOR_GENERAL));
+      //The MUC nick - overwrite with propper color
+      if (line->mucnicklen) {
+        //Store the char after the nick
+        char tmp = line->text[line->mucnicklen];
+        muccoltype type = glob_muccol, *typetmp;
+        //Terminate the string after the nick
+        line->text[line->mucnicklen] = '\0';
+        char *mucjid = g_utf8_strdown(CURRENT_JID, -1);
+        if (muccolors) {
+          typetmp = g_hash_table_lookup(muccolors, mucjid);
+          if (typetmp)
+            type = *typetmp;
+        }
+        g_free(mucjid);
+        nickcolor *actual = NULL;
+        // Need to generate some random color?
+        if ((type == MC_ALL) && (!nickcolors ||
+            !g_hash_table_lookup(nickcolors, line->text))) {
+          ensure_string_htable(&nickcolors, NULL);
+          char *snick = g_strdup(line->text), *mnick = g_strdup(line->text);
+          nickcolor *nc = g_new(nickcolor, 1);
+          nc->color = nickcols[random() % nickcolcount];
+          nc->manual = false;
+          *snick = '<';
+          snick[strlen(snick)-1] = '>';
+          *mnick = '*';
+          mnick[strlen(mnick)-1] = ' ';
+          //Insert them
+          g_hash_table_insert(nickcolors, snick, nc);
+          g_hash_table_insert(nickcolors, mnick, nc);
+        }
+        if (nickcolors)
+          actual = g_hash_table_lookup(nickcolors, line->text);
+        if (actual && ((type == MC_ALL) || (actual->manual))
+            && (line->flags & HBB_PREFIX_IN) &&
+           (!(line->flags & HBB_PREFIX_HLIGHT_OUT)))
+          wattrset(win_entry->win, get_color(actual->color));
+        wprintw(win_entry->win, "%s", line->text);
+        //Return the char
+        line->text[line->mucnicklen] = tmp;
+        //Return the color back
+        wattrset(win_entry->win, get_color(color));
+      }
+
+      // Display text line
+      wprintw(win_entry->win, "%s", line->text+line->mucnicklen);
       wclrtoeol(win_entry->win);
+
+      // Return the color back
+      if (color != COLOR_GENERAL)
+        wattrset(win_entry->win, get_color(COLOR_GENERAL));
       g_free(line->text);
       g_free(line);
     } else {
@@ -813,7 +1209,8 @@ inline void scr_UpdateBuddyWindow(void)
 // Lines are splitted when they are too long to fit in the chat window.
 // If this window doesn't exist, it is created.
 void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
-                       unsigned int prefix_flags, int force_show)
+                       unsigned int prefix_flags, int force_show,
+                       unsigned mucnicklen)
 {
   winbuf *win_entry;
   char *text_locale;
@@ -821,6 +1218,7 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
   int special;
   guint num_history_blocks;
   bool setmsgflg = FALSE;
+  char *nicktmp, *nicklocaltmp;
 
   // Look for the window entry.
   special = (winId == NULL);
@@ -849,8 +1247,17 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
     num_history_blocks = get_max_history_blocks();
 
   text_locale = from_utf8(text);
+  //Convert the nick alone and compute its length
+  if (mucnicklen) {
+    nicktmp = g_strndup(text, mucnicklen);
+    nicklocaltmp = from_utf8(nicktmp);
+    mucnicklen = strlen(nicklocaltmp);
+    g_free(nicklocaltmp);
+    g_free(nicktmp);
+  }
   hbuf_add_line(&win_entry->bd->hbuf, text_locale, timestamp, prefix_flags,
-                maxX - Roster_Width - PREFIX_WIDTH, num_history_blocks);
+                maxX - Roster_Width - getprefixwidth(), num_history_blocks,
+                mucnicklen);
   g_free(text_locale);
 
   if (win_entry->bd->cleared) {
@@ -1051,7 +1458,7 @@ void scr_DrawMainWindow(unsigned int fullinit)
 
     // Init prev_chatwidth; this variable will be used to prevent us
     // from rewrapping buffers when the width doesn't change.
-    prev_chatwidth = maxX - Roster_Width - PREFIX_WIDTH;
+    prev_chatwidth = maxX - Roster_Width - getprefixwidth();
     // Wrap existing status buffer lines
     hbuf_rebuild(&statushbuf, prev_chatwidth);
 
@@ -1105,7 +1512,7 @@ static void resize_win_buffer(gpointer key, gpointer value, gpointer data)
   // Redo line wrapping
   wbp->bd->top = hbuf_previous_persistent(wbp->bd->top);
 
-  new_chatwidth = maxX - Roster_Width - PREFIX_WIDTH;
+  new_chatwidth = maxX - Roster_Width - getprefixwidth();
   if (new_chatwidth != prev_chatwidth)
     hbuf_rebuild(&wbp->bd->hbuf, new_chatwidth);
 }
@@ -1142,7 +1549,7 @@ void scr_Resize(void)
     resize_win_buffer(NULL, statusWindow, &dim);
 
   // Update prev_chatwidth, now that all buffers have been resized
-  prev_chatwidth = maxX - Roster_Width - PREFIX_WIDTH;
+  prev_chatwidth = maxX - Roster_Width - getprefixwidth();
 
   // Refresh current buddy window
   if (chatmode)
@@ -1410,8 +1817,22 @@ void scr_DrawRoster(void)
     } else {
       if (pending == '#')
         wattrset(rosterWnd, get_color(COLOR_ROSTERNMSG));
-      else
-        wattrset(rosterWnd, get_color(COLOR_ROSTER));
+      else {
+        int color = get_color(COLOR_ROSTER);
+        if ((!isspe) && (!isgrp)) {//Look for color rules
+          GSList *head;
+          const char *jid = buddy_getjid(BUDDATA(buddy));
+          for (head = rostercolrules; head; head = g_slist_next(head)) {
+            rostercolor *rc = head->data;
+            if (g_pattern_match_string(rc->compiled, jid) &&
+                (!strcmp("*", rc->status) || strchr(rc->status, status))) {
+              color = get_color(rc->color);
+              break;
+            }
+          }
+        }
+        wattrset(rosterWnd, color);
+      }
     }
 
     if (Roster_Width > 7)
@@ -1487,7 +1908,8 @@ void scr_RosterVisibility(int status)
 }
 
 inline void scr_WriteMessage(const char *bjid, const char *text,
-                             time_t timestamp, guint prefix_flags)
+                             time_t timestamp, guint prefix_flags,
+                             unsigned mucnicklen)
 {
   char *xtext;
 
@@ -1495,7 +1917,7 @@ inline void scr_WriteMessage(const char *bjid, const char *text,
 
   xtext = ut_expand_tabs(text); // Expand tabs and filter out some chars
 
-  scr_WriteInWindow(bjid, xtext, timestamp, prefix_flags, FALSE);
+  scr_WriteInWindow(bjid, xtext, timestamp, prefix_flags, FALSE, mucnicklen);
 
   if (xtext != (char*)text)
     g_free(xtext);
@@ -1503,14 +1925,14 @@ inline void scr_WriteMessage(const char *bjid, const char *text,
 
 // If prefix is NULL, HBB_PREFIX_IN is supposed.
 void scr_WriteIncomingMessage(const char *jidfrom, const char *text,
-        time_t timestamp, guint prefix)
+        time_t timestamp, guint prefix, unsigned mucnicklen)
 {
   if (!(prefix &
         ~HBB_PREFIX_NOFLAG & ~HBB_PREFIX_HLIGHT & ~HBB_PREFIX_HLIGHT_OUT &
         ~HBB_PREFIX_PGPCRYPT))
     prefix |= HBB_PREFIX_IN;
 
-  scr_WriteMessage(jidfrom, text, timestamp, prefix);
+  scr_WriteMessage(jidfrom, text, timestamp, prefix, mucnicklen);
 }
 
 void scr_WriteOutgoingMessage(const char *jidto, const char *text, guint prefix)
@@ -1519,7 +1941,8 @@ void scr_WriteOutgoingMessage(const char *jidto, const char *text, guint prefix)
   roster_elt = roster_find(jidto, jidsearch,
                            ROSTER_TYPE_USER|ROSTER_TYPE_AGENT|ROSTER_TYPE_ROOM);
 
-  scr_WriteMessage(jidto, text, 0, prefix|HBB_PREFIX_OUT|HBB_PREFIX_HLIGHT_OUT);
+  scr_WriteMessage(jidto, text,
+                   0, prefix|HBB_PREFIX_OUT|HBB_PREFIX_HLIGHT_OUT, 0);
 
   // Show jidto's buffer unless the buddy is not in the buddylist
   if (roster_elt && g_list_position(buddylist, roster_elt->data) != -1)
@@ -1675,7 +2098,7 @@ static void set_current_buddy(GList *newbuddy)
   // We should rebuild the buddylist but not everytime
   // Here we check if we were locking a buddy who is actually offline,
   // and hide_offline_buddies is TRUE.  In which case we need to rebuild.
-  if (prev_st == offline && buddylist_get_hide_offline_buddies())
+  if (!(buddylist_get_filter() & 1<<prev_st))
     buddylist_build();
   update_roster = TRUE;
 }
@@ -1775,7 +2198,7 @@ void scr_RosterJumpJid(char *barejid)
   // Create it if necessary
   if (!roster_elt)
     roster_elt = roster_add_user(barejid, NULL, NULL, ROSTER_TYPE_USER,
-                                 sub_none);
+                                 sub_none, -1);
   // Set a lock to see it in the buddylist
   buddy_setflags(BUDDATA(roster_elt), ROSTER_FLAG_LOCK, TRUE);
   buddylist_build();
@@ -1830,6 +2253,38 @@ void scr_RosterJumpAlternate(void)
   set_current_buddy(alternate_buddy);
   if (chatmode)
     scr_ShowBuddyWindow();
+}
+
+//  scr_RosterDisplay(filter)
+// Set the roster filter mask.  If filter is null/empty, the current
+// mask is displayed.
+void scr_RosterDisplay(const char *filter)
+{
+  guchar status;
+  enum imstatus budstate;
+  char strfilter[imstatus_size+1];
+  char *psfilter;
+
+  if (filter && *filter) {
+    int show_all = (*filter == '*');
+    status = 0;
+    for (budstate = 0; budstate < imstatus_size-1; budstate++)
+      if (strchr(filter, imstatus2char[budstate]) || show_all)
+        status |= 1<<budstate;
+    buddylist_set_filter(status);
+    buddylist_build();
+    update_roster = TRUE;
+    return;
+  }
+
+  // Display current filter
+  psfilter = strfilter;
+  status = buddylist_get_filter();
+  for (budstate = 0; budstate < imstatus_size-1; budstate++)
+    if (status & 1<<budstate)
+      *psfilter++ = imstatus2char[budstate];
+  *psfilter = '\0';
+  scr_LogPrint(LPRINT_NORMAL, "Roster status filter: %s", strfilter);
 }
 
 //  scr_BufferScrollUpDown()
@@ -1933,27 +2388,42 @@ static void buffer_purge(gpointer key, gpointer value, gpointer data)
   }
 }
 
-//  scr_BufferPurge(closebuf)
-// Purge/Drop the current buddy buffer
+//  scr_BufferPurge(closebuf, jid)
+// Purge/Drop the current buddy buffer or jid's buffer if jid != NULL.
 // If closebuf is 1, close the buffer.
-void scr_BufferPurge(int closebuf)
+void scr_BufferPurge(int closebuf, const char *jid)
 {
   winbuf *win_entry;
   guint isspe;
   guint *p_closebuf;
+  const char *cjid;
+  guint hold_chatmode = FALSE;
 
-  // Get win_entry
-  if (!current_buddy) return;
-  isspe = buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_SPECIAL;
-  win_entry = scr_SearchWindow(CURRENT_JID, isspe);
+  if (jid) {
+    cjid = jid;
+    isspe = FALSE;
+    // If closebuf is TRUE, it's probably better not to leave chat mode
+    // if the change isn't related to the current buffer.
+    if (closebuf && current_buddy) {
+      if (buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_SPECIAL ||
+          strcasecmp(jid, CURRENT_JID))
+        hold_chatmode = TRUE;
+    }
+  } else {
+    // Get win_entry
+    if (!current_buddy) return;
+    cjid = CURRENT_JID;
+    isspe = buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_SPECIAL;
+  }
+  win_entry = scr_SearchWindow(cjid, isspe);
   if (!win_entry) return;
 
   if (!isspe) {
     p_closebuf = g_new(guint, 1);
     *p_closebuf = closebuf;
-    buffer_purge((gpointer)CURRENT_JID, win_entry, p_closebuf);
+    buffer_purge((gpointer)cjid, win_entry, p_closebuf);
     g_free(p_closebuf);
-    if (closebuf) {
+    if (closebuf && !hold_chatmode) {
       scr_set_chatmode(FALSE);
       currentWindow = NULL;
     }
@@ -2182,6 +2652,8 @@ void scr_BufferList(void)
   buffer_list("[status]", statusWindow, NULL);
   g_hash_table_foreach(winbufhash, buffer_list, NULL);
   scr_LogPrint(LPRINT_NORMAL, "End of buffer list.");
+  scr_setmsgflag_if_needed(SPECIAL_BUFFER_STATUS_ID, TRUE);
+  update_roster = TRUE;
 }
 #endif
 
@@ -2459,9 +2931,12 @@ void readline_backward_kill_word(void)
     } else spaceallowed = 0;
   }
 
-  if (c != inputLine || iswblank(get_char(c)))
+  if (c == inputLine && *c == COMMAND_CHAR && old != c+1) {
+      c = next_char(c);
+  } else if (c != inputLine || iswblank(get_char(c))) {
     if ((c < prev_char(ptr_inputline, inputLine)) && (!iswalnum(get_char(c))))
       c = next_char(c);
+  }
 
   // Modify the line
   ptr_inputline = c;
@@ -2484,9 +2959,9 @@ void readline_backward_word(void)
       !iswalnum(get_char(prev_char(ptr_inputline, inputLine))))
     i--;
 
-  for( ;
-      ptr_inputline > inputLine;
-      ptr_inputline = prev_char(ptr_inputline, inputLine)) {
+  for ( ;
+       ptr_inputline > inputLine;
+       ptr_inputline = prev_char(ptr_inputline, inputLine)) {
     if (!iswalnum(get_char(ptr_inputline))) {
       if (i) {
         ptr_inputline = next_char(ptr_inputline);
@@ -3203,13 +3678,10 @@ static int bindcommand(keycode kcode)
   boundcmd = settings_get(SETTINGS_TYPE_BINDING, asciikey);
 
   if (boundcmd) {
-    gchar *cmdline, *boundcmd_locale;
-    boundcmd_locale = from_utf8(boundcmd);
-    cmdline = g_strdup_printf(mkcmdstr("%s"), boundcmd_locale);
+    gchar *cmdline = from_utf8(boundcmd);
     scr_CheckAutoAway(TRUE);
     if (process_command(cmdline, TRUE))
       return 255; // Quit
-    g_free(boundcmd_locale);
     g_free(cmdline);
     return 0;
   }
@@ -3225,7 +3697,7 @@ static int bindcommand(keycode kcode)
 
 //  process_key(key)
 // Handle the pressed key, in the command line (bottom).
-int process_key(keycode kcode)
+void process_key(keycode kcode)
 {
   int key = kcode.value;
   int display_char = FALSE;
@@ -3240,8 +3712,10 @@ int process_key(keycode kcode)
         break;
     case MKEY_META:
     default:
-        if (bindcommand(kcode) == 255)
-          return 255;
+        if (bindcommand(kcode) == 255) {
+          mcabber_set_terminate_ui();
+          return;
+        }
         key = ERR; // Do not process any further
   }
 
@@ -3259,8 +3733,10 @@ int process_key(keycode kcode)
         readline_do_completion();
         break;
     case 13:    // Enter
-        if (readline_accept_line(FALSE) == 255)
-          return 255;
+        if (readline_accept_line(FALSE) == 255) {
+          mcabber_set_terminate_ui();
+          return;
+        }
         break;
     case 3:     // Ctrl-C
         scr_handle_CtrlC();
@@ -3279,7 +3755,7 @@ display:
 
       // Check the line isn't too long
       if (strlen(inputLine) + 4 > INPUTLINE_LENGTH)
-        return 0;
+        return;
 
       // Insert char
       strcpy(tmpLine, ptr_inputline);
@@ -3288,8 +3764,10 @@ display:
       check_offset(1);
     } else {
       // Look for a key binding.
-      if (!kcode.utf8 && (bindcommand(kcode) == 255))
-        return 255;
+      if (!kcode.utf8 && (bindcommand(kcode) == 255)) {
+          mcabber_set_terminate_ui();
+          return;
+        }
     }
   }
 
@@ -3307,7 +3785,7 @@ display:
     if (chatstate)
       time(&chatstate_timestamp);
   }
-  return 0;
+  return;
 }
 
 #ifdef HAVE_ASPELL_H

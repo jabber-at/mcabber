@@ -21,6 +21,9 @@
 #define COMPL_EVENTS      (1U<<15)
 #define COMPL_EVENTSID    (1U<<16)
 #define COMPL_PGP         (1U<<17)
+#define COMPL_COLOR       (1U<<18)
+#define COMPL_OTR         (1U<<19)
+#define COMPL_OTRPOLICY   (1U<<20)
 
 void    compl_add_category_word(guint, const char *command);
 void    compl_del_category_word(guint categ, const char *word);

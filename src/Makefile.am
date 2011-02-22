@@ -7,10 +7,14 @@ mcabber_SOURCES = main.c roster.c roster.h events.c events.h \
 		  histolog.c histolog.h utils.c utils.h pgp.c pgp.h \
 		  help.c help.h
 
-LDADD = $(GLIB_LIBS) $(GPGME_LIBS) \
+if OTR
+mcabber_SOURCES += otr.c otr.h
+endif
+
+LDADD = $(GLIB_LIBS) $(GPGME_LIBS) $(LIBOTR_LIBS) \
 	../libjabber/liblibjabber.a ../connwrap/libconnwrap.a
 
-AM_CPPFLAGS = $(GLIB_CFLAGS) $(GPGME_CFLAGS)
+AM_CPPFLAGS = $(GLIB_CFLAGS) $(GPGME_CFLAGS) $(LIBOTR_CFLAGS)
 
 CLEANFILES = hgcset.h
 
