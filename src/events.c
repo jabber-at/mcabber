@@ -1,7 +1,7 @@
 /*
  * events.c     -- Events fonctions
  *
- * Copyright (C) 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2006-2007 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -110,7 +110,7 @@ int evs_callback(const char *evid, guint evcontext)
   // IQ processing
   // Note: If xml_result is NULL, this is a timeout
   if (i->callback)
-    (*i->callback)(i, evcontext);
+    (void)(*i->callback)(i, evcontext);
 
   evs_del(evid);
   return 0;

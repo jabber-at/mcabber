@@ -1,7 +1,7 @@
 /*
  * main.c
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  * Parts of this file come from Cabber <cabber@ajmacias.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -71,6 +71,7 @@ void mcabber_connect(void)
   int ssl;
   int sslverify = -1;
   const char *sslvopt = NULL, *cafile = NULL, *capath = NULL, *ciphers = NULL;
+  static char *cafile_xp, *capath_xp;
   unsigned int port;
 
   servername = settings_opt_get("server");
@@ -78,6 +79,11 @@ void mcabber_connect(void)
   password   = settings_opt_get("password");
   resource   = settings_opt_get("resource");
   proxy_host = settings_opt_get("proxy_host");
+
+  // Free the ca*_xp strings if they've already been set.
+  g_free(cafile_xp);
+  g_free(capath_xp);
+  cafile_xp = capath_xp = NULL;
 
   if (!servername) {
     scr_LogPrint(LPRINT_NORMAL, "Server name has not been specified!");
@@ -112,7 +118,11 @@ void mcabber_connect(void)
     cafile = capath = ciphers = NULL;
   }
 #endif
-  cw_set_ssl_options(sslverify, cafile, capath, ciphers, servername);
+  cafile_xp = expand_filename(cafile);
+  capath_xp = expand_filename(capath);
+  cw_set_ssl_options(sslverify, cafile_xp, capath_xp, ciphers, servername);
+  // We can't free the ca*_xp variables now, because they're not duplicated
+  // in cw_set_ssl_options().
 
   /* Connect to server */
   scr_LogPrint(LPRINT_NORMAL|LPRINT_DEBUG, "Connecting to server: %s",
@@ -309,24 +319,25 @@ int main(int argc, char **argv)
     } else
       switch (c) {
       case 'h':
-	printf("Usage: %s [-f mcabberrc_file]\n\n", argv[0]);
+        printf("Usage: %s [-f mcabberrc_file]\n\n", argv[0]);
         printf("Thanks to AjMacias for cabber!\n\n");
-	return 0;
+        return 0;
       case 'f':
-	configFile = g_strdup(optarg);
-	break;
+        configFile = g_strdup(optarg);
+        break;
       }
   }
 
-  /* Initialize commands system and roster */
+  /* Initialize command system, roster and default key bindings */
   cmd_init();
   roster_init();
   settings_init();
+  scr_init_bindings();
   /* Initialize charset */
   scr_InitLocaleCharSet();
 
   /* Parsing config file... */
-  ret = cfg_read_file(configFile);
+  ret = cfg_read_file(configFile, TRUE);
   /* free() configFile if it has been allocated during options parsing */
   g_free(configFile);
   /* Leave if there was an error in the config. file */
@@ -370,6 +381,13 @@ int main(int argc, char **argv)
   if (optval || optval2)
     hlog_enable(optval, settings_opt_get("logging_dir"), optval2);
 
+#ifdef HAVE_ASPELL_H
+  /* Initialize aspell */
+  if (settings_opt_get_int("aspell_enable")) {
+    spellcheck_init();
+  }
+#endif
+
   optstring = settings_opt_get("events_command");
   if (optstring)
     hk_ext_cmd_init(optstring);
@@ -405,7 +423,7 @@ int main(int argc, char **argv)
       scr_CheckAutoAway(FALSE);
 
       if (update_roster)
-	scr_DrawRoster();
+        scr_DrawRoster();
 
       jb_main();
     }
@@ -416,6 +434,12 @@ int main(int argc, char **argv)
   gpg_terminate();
 #endif
   scr_TerminateCurses();
+#ifdef HAVE_ASPELL_H
+  /* Deinitialize aspell */
+  if (settings_opt_get_int("aspell_enable")) {
+    spellcheck_deinit();
+  }
+#endif
 
   printf("\n\nThanks for using mcabber!\n");
 

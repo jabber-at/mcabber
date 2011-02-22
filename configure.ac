@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.9.1],[mcabber@lilotux.net])
+AC_INIT([mcabber],[0.9.3],[mcabber@lilotux.net])
 AM_INIT_AUTOMAKE
 AC_CONFIG_SRCDIR([src])
 AM_CONFIG_HEADER(config.h)
@@ -53,7 +53,7 @@ AC_FUNC_STRFTIME
 AC_FUNC_VPRINTF
 AC_CHECK_FUNCS([alarm bzero gethostbyname gethostname inet_ntoa isascii \
                 memmove memset modf select setlocale socket strcasecmp \
-                strchr strdup strncasecmp strrchr strstr strcasestr])
+                strchr strdup strncasecmp strrchr strstr strcasestr vsnprintf])
 
 
 AC_CHECK_DECLS([strptime],,,
@@ -152,6 +152,24 @@ if test "$with_ssl" != "no"; then
     fi
 fi
 
+# Check for Aspell stuff
+AC_ARG_ENABLE(aspell, [  --enable-aspell         Enable aspell support],
+              enable_aspell=$enableval, aspell="")
+if test "x$enable_aspell" = "xyes"; then
+    AC_CHECK_HEADERS(aspell.h, [ have_aspell_includes=yes ])
+    if test "x$have_aspell_includes" = "xyes"; then
+        AC_CHECK_LIB(aspell, new_aspell_config, [ have_aspell_libs=yes ])
+        if test "x$have_aspell_libs" = "xyes"; then
+            AC_DEFINE(WITH_ASPELL, 1, [define if you want aspell support])
+            LIBS="$LIBS -laspell"
+        else
+            enable_aspell=no
+        fi
+    else
+        enable_aspell=no
+    fi
+fi
+
 AC_DEFINE(BUILD_JABBER, 1, [build with jabber support])
 
 # Export $datadir to the source tree.
@@ -174,12 +192,12 @@ if test x"${debug}" = x"yes"; then
     fi # gcc
     CFLAGS="$CFLAGS -g"
 else
-    CFLAGS="$CFLAGS -O2"
+    CFLAGS="-O2 $CFLAGS"
 fi
 
 AC_ARG_ENABLE(hgcset,
-    [AC_HELP_STRING(--enable-hgcset, Add Mercurial changeset)],
-    hgcset=$enableval, hgcset="")
+    [AC_HELP_STRING(--disable-hgcset, Do not use Mercurial changeset value)],
+    hgcset=$enableval, hgcset="yes")
 AM_CONDITIONAL(HGCSET, test x$hgcset = xyes)
 if test "${hgcset}" = "yes"; then
     AC_DEFINE(ENABLE_HGCSET, 1, [Use Mercurial changeset])

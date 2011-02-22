@@ -6,7 +6,10 @@
 #include "jabglue.h"
 #include "events.h"
 
-#define JABBER_AGENT_GROUP "Jabber Agents"
+/* XEP-0115 (Entity Capabilities) node */
+#define MCABBER_CAPS_NODE   "http://mcabber.lilotux.net/caps"
+
+#define JABBER_AGENT_GROUP  "Jabber Agents"
 
 enum enum_jstate {
   STATE_CONNECTING,
@@ -32,6 +35,7 @@ extern enum enum_jstate jstate;
 extern xmlnode bookmarks, rosternotes;
 
 extern char *mcabber_version(void);
+const char *entity_version(void);
 
 
 char *jidtodisp(const char *fjid);
@@ -41,7 +45,7 @@ eviqs *iqs_new(guint8 type, const char *ns, const char *prefix, time_t timeout);
 int  iqs_del(const char *iqid);
 int  iqs_callback(const char *iqid, xmlnode xml_result, guint iqcontext);
 void iqs_check_timeout(time_t now_t);
-void iqscallback_auth(eviqs *iqp, xmlnode xml_result);
+int  iqscallback_auth(eviqs *iqp, xmlnode xml_result, guint iqcontext);
 void request_version(const char *fulljid);
 void request_time(const char *fulljid);
 void request_last(const char *fulljid);

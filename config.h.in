@@ -21,6 +21,9 @@
 /* Define to 1 if you have the <arpa/inet.h> header file. */
 #undef HAVE_ARPA_INET_H
 
+/* Define to 1 if you have the <aspell.h> header file. */
+#undef HAVE_ASPELL_H
+
 /* Define to 1 if you have the `bzero' function. */
 #undef HAVE_BZERO
 
@@ -222,6 +225,9 @@
 /* Define to 1 if you have the `vprintf' function. */
 #undef HAVE_VPRINTF
 
+/* Define to 1 if you have the `vsnprintf' function. */
+#undef HAVE_VSNPRINTF
+
 /* Define to 1 if you have the <wchar.h> header file. */
 #undef HAVE_WCHAR_H
 
@@ -272,6 +278,9 @@
 
 /* Version number of package */
 #undef VERSION
+
+/* define if you want aspell support */
+#undef WITH_ASPELL
 
 /* Define to empty if `const' does not conform to ANSI C. */
 #undef const

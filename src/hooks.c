@@ -1,7 +1,7 @@
 /*
  * hooks.c      -- Hooks layer
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +30,7 @@
 #include "hbuf.h"
 #include "settings.h"
 #include "utils.h"
+#include "utf8.h"
 
 static char *extcmd;
 
@@ -67,9 +68,16 @@ inline void hk_message_in(const char *bjid, const char *resname,
     }
   } else {
     bmsg = g_strdup(msg);
-    if (!strncmp(msg, COMMAND_ME, strlen(COMMAND_ME)))
-      wmsg = mmsg = g_strdup_printf("*%s %s", bjid, msg+4);
-    else
+    if (!strncmp(msg, COMMAND_ME, strlen(COMMAND_ME))) {
+      gchar *shortid = g_strdup(bjid);
+      if (settings_opt_get_int("buddy_me_fulljid") == FALSE) {
+        gchar *p = strchr(shortid, '@'); // Truncate the jid
+        if (p)
+          *p = '\0';
+      }
+      wmsg = mmsg = g_strdup_printf("*%s %s", shortid, msg+4);
+      g_free(shortid);
+    } else
       wmsg = (char*) msg;
   }
 
@@ -105,13 +113,39 @@ inline void hk_message_in(const char *bjid, const char *resname,
           wmsg = mmsg = g_strdup_printf("PRIV#*%s %s", resname, msg+4);
         }
       }
+      message_flags |= HBB_PREFIX_HLIGHT;
     } else {
       // This is a regular chatroom message.
-      // Let's see if we are the message sender, in which case we'll
-      // highlight it.
       const char *nick = buddy_getnickname(roster_usr->data);
-      if (resname && nick && !strcmp(resname, nick))
-        message_flags |= HBB_PREFIX_HLIGHT;
+
+      if (nick) {
+        // Let's see if we are the message sender, in which case we'll
+        // highlight it.
+        if (resname && !strcmp(resname, nick)) {
+          message_flags |= HBB_PREFIX_HLIGHT_OUT;
+        } else if (!settings_opt_get_int("muc_disable_nick_hl")) {
+          // We're not the sender.  Can we see our nick?
+          const char *msgptr = msg;
+          while ((msgptr = strcasestr(msgptr, nick)) != NULL) {
+            const char *leftb, *rightb;
+            // The message contains our nick.  Let's check it's not
+            // in the middle of another word (i.e. preceded/followed
+            // immediately by an alphanumeric character or an underscore.
+            rightb = msgptr+strlen(nick);
+            if (msgptr == msg)
+              leftb = NULL;
+            else
+              leftb = prev_char((char*)msgptr, msg);
+            msgptr = next_char((char*)msgptr);
+            // Check left boundary
+            if (leftb && (iswalnum(get_char(leftb)) || get_char(leftb) == '_'))
+              continue;
+            // Check right boundary
+            if (!iswalnum(get_char(rightb)) && get_char(rightb) != '_')
+              message_flags |= HBB_PREFIX_HLIGHT;
+          }
+        }
+      }
     }
   }
 
@@ -163,10 +197,13 @@ inline void hk_message_in(const char *bjid, const char *resname,
                  name, bjid, (resname ? resname : ""));
   }
 
-  // Beep, if enabled
-  if ((!is_groupchat) && !(message_flags & HBB_PREFIX_ERR) &&
-      settings_opt_get_int("beep_on_message")) {
-    scr_Beep();
+  // Beep, if enabled:
+  // - if it's a private message
+  // - if it's a public message and it's highlighted
+  if (settings_opt_get_int("beep_on_message")) {
+    if ((!is_groupchat && !(message_flags & HBB_PREFIX_ERR)) ||
+        (is_groupchat  && (message_flags & HBB_PREFIX_HLIGHT)))
+      scr_Beep();
   }
 
   // We need to update the roster if the sender is unknown or
@@ -305,7 +342,7 @@ void hk_ext_cmd_init(const char *command)
     extcmd = NULL;
   }
   if (command)
-    extcmd = g_strdup(command);
+    extcmd = expand_filename(command);
 }
 
 //  hk_ext_cmd()
@@ -352,13 +389,17 @@ void hk_ext_cmd(const char *bjid, guchar type, guchar info, const char *data)
   if (strchr("MG", type) && data && settings_opt_get_int("event_log_files")) {
     int fd;
     const char *prefix;
+    char *prefix_xp = NULL;
     char *data_locale;
 
     data_locale = from_utf8(data);
     prefix = settings_opt_get("event_log_dir");
-    if (!prefix)
+    if (prefix)
+      prefix = prefix_xp = expand_filename(prefix);
+    else
       prefix = ut_get_tmpdir();
     datafname = g_strdup_printf("%s/mcabber-%d.XXXXXX", prefix, getpid());
+    g_free(prefix_xp);
 
     // XXX Some old systems may require us to set umask first.
     fd = mkstemp(datafname);

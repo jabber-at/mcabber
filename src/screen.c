@@ -1,7 +1,7 @@
 /*
  * screen.c     -- UI stuff
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  * Parts of this file come from the Cabber project <cabber@ajmacias.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,10 @@
 #include <langinfo.h>
 #include <config.h>
 
+#ifdef HAVE_ASPELL_H
+# include <aspell.h>
+#endif
+
 #include "screen.h"
 #include "utf8.h"
 #include "hbuf.h"
@@ -51,16 +55,28 @@ static unsigned short int Log_Win_Height;
 static unsigned short int Roster_Width;
 
 static inline void check_offset(int);
+static void scr_cancel_current_completion(void);
+static void scr_end_current_completion(void);
+static void scr_insert_text(const char*);
+static void scr_handle_tab(void);
+
+#ifdef HAVE_ASPELL_H
+static void spellcheck(char *, char *);
+#endif
 
 static GHashTable *winbufhash;
 
 typedef struct {
+  GList  *hbuf;
+  GList  *top;     // If top is NULL, we'll display the last lines
+  char    cleared; // For ex, user has issued a /clear command...
+  char    lock;
+} buffdata;
+
+typedef struct {
   WINDOW *win;
   PANEL  *panel;
-  GList  *hbuf;
-  GList  *top;      // If top is NULL, we'll display the last lines
-  char    cleared;  // For ex, user has issued a /clear command...
-  char    lock;
+  buffdata *bd;
 } winbuf;
 
 struct dimensions {
@@ -92,6 +108,9 @@ static bool roster_win_on_right;
 static time_t LastActivity;
 
 static char       inputLine[INPUTLINE_LENGTH+1];
+#ifdef HAVE_ASPELL_H
+static char       maskLine[INPUTLINE_LENGTH+1];
+#endif
 static char      *ptr_inputline;
 static short int  inputline_offset;
 static int    completion_started;
@@ -119,6 +138,11 @@ static void add_keyseq(char *seqstr, guint mkeycode, gint value);
 void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
                        unsigned int prefix_flags, int force_show);
 
+#ifdef HAVE_ASPELL_H
+#define ASPELLBADCHAR 5
+AspellConfig *spell_config;
+AspellSpeller *spell_checker;
+#endif
 
 /* Functions */
 
@@ -153,6 +177,7 @@ static void ParseColors(void)
     "", "",
     "general",
     "msgout",
+    "msghl",
     "status",
     "roster",
     "rostersel",
@@ -201,6 +226,10 @@ static void ParseColors(void)
           break;
       case COLOR_MSGOUT:
           init_pair(i+1, ((color) ? FindColor(color) : COLOR_CYAN),
+                    FindColor(background));
+          break;
+      case COLOR_MSGHL:
+          init_pair(i+1, ((color) ? FindColor(color) : COLOR_YELLOW),
                     FindColor(background));
           break;
       case COLOR_STATUS:
@@ -289,6 +318,116 @@ static void init_keycodes(void)
   add_keyseq("[d", MKEY_EQUIV, 393); // Shift-Left
   add_keyseq("[5$", MKEY_SHIFT_PGUP, 0);   // Shift-PageUp
   add_keyseq("[6$", MKEY_SHIFT_PGDOWN, 0); // Shift-PageDown
+
+  // VT100
+  add_keyseq("[H", MKEY_EQUIV, KEY_HOME); // Home
+  add_keyseq("[F", MKEY_EQUIV, KEY_END);  // End
+
+  // Konsole Linux
+  add_keyseq("[1~", MKEY_EQUIV, KEY_HOME); // Home
+  add_keyseq("[4~", MKEY_EQUIV, KEY_END);  // End
+}
+
+//  scr_init_bindings()
+// Create default key bindings
+// Return 0 if error and 1 if none
+void scr_init_bindings(void)
+{
+  GString *sbuf = g_string_new("");
+
+  // Common backspace key codes: 8, 127
+  settings_set(SETTINGS_TYPE_BINDING, "8", "iline char_bdel");    // Ctrl-h
+  settings_set(SETTINGS_TYPE_BINDING, "127", "iline char_bdel");
+  g_string_printf(sbuf, "%d", KEY_BACKSPACE);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "iline char_bdel");
+  g_string_printf(sbuf, "%d", KEY_DC);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "iline char_fdel");
+  g_string_printf(sbuf, "%d", KEY_LEFT);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "iline bchar");
+  g_string_printf(sbuf, "%d", KEY_RIGHT);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "iline fchar");
+  settings_set(SETTINGS_TYPE_BINDING, "7", "iline compl_cancel"); // Ctrl-g
+  g_string_printf(sbuf, "%d", KEY_UP);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str,
+               "iline hist_beginning_search_bwd");
+  g_string_printf(sbuf, "%d", KEY_DOWN);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str,
+               "iline hist_beginning_search_fwd");
+  g_string_printf(sbuf, "%d", KEY_PPAGE);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "roster up");
+  g_string_printf(sbuf, "%d", KEY_NPAGE);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "roster down");
+  g_string_printf(sbuf, "%d", KEY_HOME);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "iline iline_start");
+  settings_set(SETTINGS_TYPE_BINDING, "1", "iline iline_start");  // Ctrl-a
+  g_string_printf(sbuf, "%d", KEY_END);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "iline iline_end");
+  settings_set(SETTINGS_TYPE_BINDING, "5", "iline iline_end");    // Ctrl-e
+  // Ctrl-o (accept-line-and-down-history):
+  settings_set(SETTINGS_TYPE_BINDING, "15", "iline iline_accept_down_hist");
+  settings_set(SETTINGS_TYPE_BINDING, "21", "iline iline_bdel");  // Ctrl-u
+  g_string_printf(sbuf, "%d", KEY_EOL);
+  settings_set(SETTINGS_TYPE_BINDING, sbuf->str, "iline iline_fdel");
+  settings_set(SETTINGS_TYPE_BINDING, "11", "iline iline_fdel");  // Ctrl-k
+  settings_set(SETTINGS_TYPE_BINDING, "16", "buffer up");         // Ctrl-p
+  settings_set(SETTINGS_TYPE_BINDING, "14", "buffer down");       // Ctrl-n
+  settings_set(SETTINGS_TYPE_BINDING, "20", "iline char_swap");   // Ctrl-t
+  settings_set(SETTINGS_TYPE_BINDING, "23", "iline word_bdel");   // Ctrl-w
+  settings_set(SETTINGS_TYPE_BINDING, "M98", "iline bword");      // Meta-b
+  settings_set(SETTINGS_TYPE_BINDING, "M102", "iline fword");     // Meta-f
+  settings_set(SETTINGS_TYPE_BINDING, "M100", "iline word_fdel"); // Meta-d
+  // Ctrl-Left  (2 codes):
+  settings_set(SETTINGS_TYPE_BINDING, "515", "iline bword");
+  settings_set(SETTINGS_TYPE_BINDING, "516", "iline bword");
+  // Ctrl-Right (2 codes):
+  settings_set(SETTINGS_TYPE_BINDING, "517", "iline fword");
+  settings_set(SETTINGS_TYPE_BINDING, "518", "iline fword");
+  settings_set(SETTINGS_TYPE_BINDING, "12", "screen_refresh");    // Ctrl-l
+  settings_set(SETTINGS_TYPE_BINDING, "27", "chat_disable");      // Esc
+  settings_set(SETTINGS_TYPE_BINDING, "M27", "chat_disable");     // Esc-Esc
+  settings_set(SETTINGS_TYPE_BINDING, "4", "iline send_multiline"); // Ctrl-d
+  settings_set(SETTINGS_TYPE_BINDING, "M117", "iline word_upcase"); // Meta-u
+  settings_set(SETTINGS_TYPE_BINDING, "M108", "iline word_downcase"); // Meta-l
+  settings_set(SETTINGS_TYPE_BINDING, "M99", "iline word_capit"); // Meta-c
+
+  settings_set(SETTINGS_TYPE_BINDING, "265", "help"); // Bind F1 to help...
+
+  g_string_free(sbuf, TRUE);
+}
+
+//  is_speckey(key)
+// Return TRUE if key is a special code, i.e. no char should be displayed on
+// the screen.  It's not very nice, it's a workaround for the systems where
+// isprint(KEY_PPAGE) returns TRUE...
+static int is_speckey(int key)
+{
+  switch (key) {
+    case 127:
+    case 393:
+    case 402:
+    case KEY_BACKSPACE:
+    case KEY_DC:
+    case KEY_LEFT:
+    case KEY_RIGHT:
+    case KEY_UP:
+    case KEY_DOWN:
+    case KEY_PPAGE:
+    case KEY_NPAGE:
+    case KEY_HOME:
+    case KEY_END:
+    case KEY_EOL:
+        return TRUE;
+  }
+
+  // Fn keys
+  if (key >= 265 && key < 265+12)
+    return TRUE;
+
+  // Special key combinations
+  if (key >= 513 && key <= 521)
+    return TRUE;
+
+  return FALSE;
 }
 
 void scr_InitLocaleCharSet(void)
@@ -412,6 +551,29 @@ void scr_LogPrint(unsigned int flag, const char *fmt, ...)
   g_free(btext);
 }
 
+static winbuf *scr_SearchWindow(const char *winId, int special)
+{
+  char *id;
+  winbuf *wbp;
+
+  if (special)
+    return statusWindow; // Only one special window atm.
+
+  if (!winId)
+    return NULL;
+
+  id = g_strdup(winId);
+  mc_strtolower(id);
+  wbp = g_hash_table_lookup(winbufhash, id);
+  g_free(id);
+  return wbp;
+}
+
+int scr_BuddyBufferExists(const char *bjid)
+{
+  return (scr_SearchWindow(bjid, FALSE) != NULL);
+}
+
 //  scr_new_buddy(title, dontshow)
 // Note: title (aka winId/jid) can be NULL for special buffers
 static winbuf *scr_new_buddy(const char *title, int dont_show)
@@ -436,37 +598,26 @@ static winbuf *scr_new_buddy(const char *title, int dont_show)
   // If title is NULL, this is a special buffer
   if (title) {
     char *id;
-    // Load buddy history from file (if enabled)
-    hlog_read_history(title, &tmp->hbuf, maxX - Roster_Width - PREFIX_WIDTH);
+    id = hlog_get_log_jid(title);
+    if (id) {
+      winbuf *wb = scr_SearchWindow(id, FALSE);
+      if (!wb)
+        wb = scr_new_buddy(id, TRUE);
+      tmp->bd=wb->bd;
+      g_free(id);
+    } else {  // Load buddy history from file (if enabled)
+      tmp->bd = g_new0(buffdata, 1);
+      hlog_read_history(title, &tmp->bd->hbuf,
+                        maxX - Roster_Width - PREFIX_WIDTH);
+    }
 
     id = g_strdup(title);
     mc_strtolower(id);
     g_hash_table_insert(winbufhash, id, tmp);
+  } else {
+    tmp->bd = g_new0(buffdata, 1);
   }
   return tmp;
-}
-
-static winbuf *scr_SearchWindow(const char *winId, int special)
-{
-  char *id;
-  winbuf *wbp;
-
-  if (special)
-    return statusWindow; // Only one special window atm.
-
-  if (!winId)
-    return NULL;
-
-  id = g_strdup(winId);
-  mc_strtolower(id);
-  wbp = g_hash_table_lookup(winbufhash, id);
-  g_free(id);
-  return wbp;
-}
-
-int scr_BuddyBufferExists(const char *bjid)
-{
-  return (scr_SearchWindow(bjid, FALSE) != NULL);
 }
 
 //  scr_UpdateWindow()
@@ -482,32 +633,32 @@ static void scr_UpdateWindow(winbuf *win_entry)
   width = getmaxx(win_entry->win);
 
   // Should the window be empty?
-  if (win_entry->cleared) {
+  if (win_entry->bd->cleared) {
     werase(win_entry->win);
     return;
   }
 
-  // win_entry->top is the top message of the screen.  If it set to NULL, we
-  // are displaying the last messages.
+  // win_entry->bd->top is the top message of the screen.  If it set to NULL,
+  // we are displaying the last messages.
 
   // We will show the last CHAT_WIN_HEIGHT lines.
   // Let's find out where it begins.
-  if (!win_entry->top ||
-      (g_list_position(g_list_first(win_entry->hbuf), win_entry->top) == -1)) {
+  if (!win_entry->bd->top || (g_list_position(g_list_first(win_entry->bd->hbuf),
+                                              win_entry->bd->top) == -1)) {
     // Move up CHAT_WIN_HEIGHT lines
-    win_entry->hbuf = g_list_last(win_entry->hbuf);
-    hbuf_head = win_entry->hbuf;
-    win_entry->top = NULL; // (Just to make sure)
+    win_entry->bd->hbuf = g_list_last(win_entry->bd->hbuf);
+    hbuf_head = win_entry->bd->hbuf;
+    win_entry->bd->top = NULL; // (Just to make sure)
     n = 0;
     while (hbuf_head && (n < CHAT_WIN_HEIGHT-1) && g_list_previous(hbuf_head)) {
       hbuf_head = g_list_previous(hbuf_head);
       n++;
     }
     // If the buffer is locked, remember current "top" line for the next time.
-    if (win_entry->lock)
-      win_entry->top = hbuf_head;
+    if (win_entry->bd->lock)
+      win_entry->bd->top = hbuf_head;
   } else
-    hbuf_head = win_entry->top;
+    hbuf_head = win_entry->bd->top;
 
   // Get the last CHAT_WIN_HEIGHT lines.
   lines = hbuf_get_lines(hbuf_head, CHAT_WIN_HEIGHT);
@@ -519,8 +670,10 @@ static void scr_UpdateWindow(winbuf *win_entry)
     // NOTE: update PREFIX_WIDTH if you change the date format!!
     // You need to set it to the whole prefix length + 1
     if (line) {
-      if (line->flags & HBB_PREFIX_HLIGHT)
+      if (line->flags & HBB_PREFIX_HLIGHT_OUT)
         wattrset(win_entry->win, get_color(COLOR_MSGOUT));
+      else if (line->flags & HBB_PREFIX_HLIGHT)
+        wattrset(win_entry->win, get_color(COLOR_MSGHL));
 
       if (line->timestamp && !(line->flags & HBB_PREFIX_SPECIAL)) {
         strftime(date, 30, "%m-%d %H:%M", localtime(&line->timestamp));
@@ -555,7 +708,8 @@ static void scr_UpdateWindow(winbuf *win_entry)
 
       wprintw(win_entry->win, "%s", line->text); // Display text line
 
-      if (line->flags & HBB_PREFIX_HLIGHT)
+      if (line->flags & HBB_PREFIX_HLIGHT_OUT ||
+          line->flags & HBB_PREFIX_HLIGHT)
         wattrset(win_entry->win, get_color(COLOR_GENERAL));
       wclrtoeol(win_entry->win);
       g_free(line->text);
@@ -568,6 +722,19 @@ static void scr_UpdateWindow(winbuf *win_entry)
   g_free(lines);
 }
 
+static winbuf *scr_CreateWindow(const char *winId, int special, int dont_show)
+{
+  if (special) {
+    if (!statusWindow) {
+      statusWindow = scr_new_buddy(NULL, dont_show);
+      statusWindow->bd->hbuf = statushbuf;
+    }
+    return statusWindow;
+  } else {
+    return scr_new_buddy(winId, dont_show);
+  }
+}
+
 //  scr_ShowWindow()
 // Display the chat window with the given identifier.
 // "special" must be true if this is a special buffer window.
@@ -578,21 +745,13 @@ static void scr_ShowWindow(const char *winId, int special)
   win_entry = scr_SearchWindow(winId, special);
 
   if (!win_entry) {
-    if (special) {
-      if (!statusWindow) {
-        statusWindow = scr_new_buddy(NULL, FALSE);
-        statusWindow->hbuf = statushbuf;
-      }
-      win_entry = statusWindow;
-    } else {
-      win_entry = scr_new_buddy(winId, FALSE);
-    }
+    win_entry = scr_CreateWindow(winId, special, FALSE);
   }
 
   top_panel(win_entry->panel);
   currentWindow = win_entry;
   chatmode = TRUE;
-  if (!win_entry->lock)
+  if (!win_entry->bd->lock)
     roster_msg_setflag(winId, special, FALSE);
   if (!special)
     roster_setflags(winId, ROSTER_FLAG_LOCK, TRUE);
@@ -675,51 +834,43 @@ void scr_WriteInWindow(const char *winId, const char *text, time_t timestamp,
 
   // If the window entry doesn't exist yet, let's create it.
   if (!win_entry) {
-    if (special) {
-      if (!statusWindow) {
-        statusWindow = scr_new_buddy(NULL, dont_show);
-        statusWindow->hbuf = statushbuf;
-      }
-      win_entry = statusWindow;
-    } else {
-      win_entry = scr_new_buddy(winId, dont_show);
-    }
+    win_entry = scr_CreateWindow(winId, special, dont_show);
   }
 
   // The message must be displayed -> update top pointer
-  if (win_entry->cleared)
-    win_entry->top = g_list_last(win_entry->hbuf);
+  if (win_entry->bd->cleared)
+    win_entry->bd->top = g_list_last(win_entry->bd->hbuf);
 
   // Make sure we do not free the buffer while it's locked or when
   // top is set.
-  if (win_entry->lock || win_entry->top)
+  if (win_entry->bd->lock || win_entry->bd->top)
     num_history_blocks = 0U;
   else
     num_history_blocks = get_max_history_blocks();
 
   text_locale = from_utf8(text);
-  hbuf_add_line(&win_entry->hbuf, text_locale, timestamp, prefix_flags,
+  hbuf_add_line(&win_entry->bd->hbuf, text_locale, timestamp, prefix_flags,
                 maxX - Roster_Width - PREFIX_WIDTH, num_history_blocks);
   g_free(text_locale);
 
-  if (win_entry->cleared) {
-    win_entry->cleared = FALSE;
-    if (g_list_next(win_entry->top))
-      win_entry->top = g_list_next(win_entry->top);
+  if (win_entry->bd->cleared) {
+    win_entry->bd->cleared = FALSE;
+    if (g_list_next(win_entry->bd->top))
+      win_entry->bd->top = g_list_next(win_entry->bd->top);
   }
 
   // Make sure the last line appears in the window; update top if necessary
-  if (!win_entry->lock && win_entry->top) {
+  if (!win_entry->bd->lock && win_entry->bd->top) {
     int dist;
-    GList *first = g_list_first(win_entry->hbuf);
-    dist = g_list_position(first, g_list_last(win_entry->hbuf)) -
-           g_list_position(first, win_entry->top);
+    GList *first = g_list_first(win_entry->bd->hbuf);
+    dist = g_list_position(first, g_list_last(win_entry->bd->hbuf)) -
+           g_list_position(first, win_entry->bd->top);
     if (dist >= CHAT_WIN_HEIGHT)
-      win_entry->top = NULL;
+      win_entry->bd->top = NULL;
   }
 
   if (!dont_show) {
-    if (win_entry->lock)
+    if (win_entry->bd->lock)
       setmsgflg = TRUE;
     // Show and refresh the window
     top_panel(win_entry->panel);
@@ -952,11 +1103,11 @@ static void resize_win_buffer(gpointer key, gpointer value, gpointer data)
   if (wbp->panel)
     replace_panel(wbp->panel, wbp->win);
   // Redo line wrapping
-  wbp->top = hbuf_previous_persistent(wbp->top);
+  wbp->bd->top = hbuf_previous_persistent(wbp->bd->top);
 
   new_chatwidth = maxX - Roster_Width - PREFIX_WIDTH;
   if (new_chatwidth != prev_chatwidth)
-    hbuf_rebuild(&wbp->hbuf, new_chatwidth);
+    hbuf_rebuild(&wbp->bd->hbuf, new_chatwidth);
 }
 
 //  scr_Resize()
@@ -1036,7 +1187,7 @@ void scr_UpdateChatStatus(int forceupdate)
   if (chatmode && !isgrp) {
     winbuf *win_entry;
     win_entry = scr_SearchWindow(buddy_getjid(BUDDATA(current_buddy)), isspe);
-    if (win_entry && win_entry->lock)
+    if (win_entry && win_entry->bd->lock)
       mvwprintw(chatstatusWnd, 0, 0, "*");
   }
 
@@ -1274,9 +1425,9 @@ void scr_DrawRoster(void)
         sep = "+++";
       else
         sep = "---";
-      snprintf(rline, Roster_Width, " %c%s %s", pending, sep, name);
+      snprintf(rline, 4*Roster_Width, " %c%s %s", pending, sep, name);
     } else if (isspe) {
-      snprintf(rline, Roster_Width, " %c%s", pending, name);
+      snprintf(rline, 4*Roster_Width, " %c%s", pending, name);
     } else {
       char sepleft  = '[';
       char sepright = ']';
@@ -1355,7 +1506,8 @@ void scr_WriteIncomingMessage(const char *jidfrom, const char *text,
         time_t timestamp, guint prefix)
 {
   if (!(prefix &
-        ~HBB_PREFIX_NOFLAG & ~HBB_PREFIX_HLIGHT & ~HBB_PREFIX_PGPCRYPT))
+        ~HBB_PREFIX_NOFLAG & ~HBB_PREFIX_HLIGHT & ~HBB_PREFIX_HLIGHT_OUT &
+        ~HBB_PREFIX_PGPCRYPT))
     prefix |= HBB_PREFIX_IN;
 
   scr_WriteMessage(jidfrom, text, timestamp, prefix);
@@ -1367,7 +1519,7 @@ void scr_WriteOutgoingMessage(const char *jidto, const char *text, guint prefix)
   roster_elt = roster_find(jidto, jidsearch,
                            ROSTER_TYPE_USER|ROSTER_TYPE_AGENT|ROSTER_TYPE_ROOM);
 
-  scr_WriteMessage(jidto, text, 0, prefix|HBB_PREFIX_OUT|HBB_PREFIX_HLIGHT);
+  scr_WriteMessage(jidto, text, 0, prefix|HBB_PREFIX_OUT|HBB_PREFIX_HLIGHT_OUT);
 
   // Show jidto's buffer unless the buddy is not in the buddylist
   if (roster_elt && g_list_position(buddylist, roster_elt->data) != -1)
@@ -1704,30 +1856,30 @@ void scr_BufferScrollUpDown(int updown, unsigned int nblines)
   } else {
     nbl = nblines;
   }
-  hbuf_top = win_entry->top;
+  hbuf_top = win_entry->bd->top;
 
   if (updown == -1) {   // UP
     if (!hbuf_top) {
-      hbuf_top = g_list_last(win_entry->hbuf);
-      if (!win_entry->cleared) {
+      hbuf_top = g_list_last(win_entry->bd->hbuf);
+      if (!win_entry->bd->cleared) {
         if (!nblines) nbl = nbl*3 - 1;
         else nbl += CHAT_WIN_HEIGHT - 1;
       } else {
-        win_entry->cleared = FALSE;
+        win_entry->bd->cleared = FALSE;
       }
     }
     for (n=0 ; hbuf_top && n < nbl && g_list_previous(hbuf_top) ; n++)
       hbuf_top = g_list_previous(hbuf_top);
-    win_entry->top = hbuf_top;
+    win_entry->bd->top = hbuf_top;
   } else {              // DOWN
     for (n=0 ; hbuf_top && n < nbl ; n++)
       hbuf_top = g_list_next(hbuf_top);
-    win_entry->top = hbuf_top;
+    win_entry->bd->top = hbuf_top;
     // Check if we are at the bottom
     for (n=0 ; hbuf_top && n < CHAT_WIN_HEIGHT-1 ; n++)
       hbuf_top = g_list_next(hbuf_top);
     if (!hbuf_top)
-      win_entry->top = NULL; // End reached
+      win_entry->bd->top = NULL; // End reached
   }
 
   // Refresh the window
@@ -1750,8 +1902,8 @@ void scr_BufferClear(void)
   win_entry = scr_SearchWindow(CURRENT_JID, isspe);
   if (!win_entry) return;
 
-  win_entry->cleared = TRUE;
-  win_entry->top = NULL;
+  win_entry->bd->cleared = TRUE;
+  win_entry->bd->top = NULL;
 
   // Refresh the window
   scr_UpdateWindow(win_entry);
@@ -1767,17 +1919,17 @@ void scr_BufferClear(void)
 // NOTE: does not work for special buffers.
 static void buffer_purge(gpointer key, gpointer value, gpointer data)
 {
-  int closebuf = (gint)data; // XXX GPOINTER_TO_INT?
+  int *p_closebuf = data;
   winbuf *win_entry = value;
 
   // Delete the current hbuf
-  hbuf_free(&win_entry->hbuf);
+  hbuf_free(&win_entry->bd->hbuf);
 
-  if (closebuf) {
+  if (*p_closebuf) {
     g_hash_table_remove(winbufhash, key);
   } else {
-    win_entry->cleared = FALSE;
-    win_entry->top = NULL;
+    win_entry->bd->cleared = FALSE;
+    win_entry->bd->top = NULL;
   }
 }
 
@@ -1788,6 +1940,7 @@ void scr_BufferPurge(int closebuf)
 {
   winbuf *win_entry;
   guint isspe;
+  guint *p_closebuf;
 
   // Get win_entry
   if (!current_buddy) return;
@@ -1796,8 +1949,10 @@ void scr_BufferPurge(int closebuf)
   if (!win_entry) return;
 
   if (!isspe) {
-    buffer_purge((gpointer)CURRENT_JID, win_entry, (gpointer)closebuf);
-    // XXX GINT_TO_POINTER?
+    p_closebuf = g_new(guint, 1);
+    *p_closebuf = closebuf;
+    buffer_purge((gpointer)CURRENT_JID, win_entry, p_closebuf);
+    g_free(p_closebuf);
     if (closebuf) {
       scr_set_chatmode(FALSE);
       currentWindow = NULL;
@@ -1805,12 +1960,12 @@ void scr_BufferPurge(int closebuf)
   } else {
     // (Special buffer)
     // Reset the current hbuf
-    hbuf_free(&win_entry->hbuf);
+    hbuf_free(&win_entry->bd->hbuf);
     // Currently it can only be the status buffer
     statushbuf = NULL;
 
-    win_entry->cleared = FALSE;
-    win_entry->top = NULL;
+    win_entry->bd->cleared = FALSE;
+    win_entry->bd->top = NULL;
   }
 
   // Refresh the window
@@ -1822,8 +1977,12 @@ void scr_BufferPurge(int closebuf)
 
 void scr_BufferPurgeAll(int closebuf)
 {
-  g_hash_table_foreach(winbufhash, buffer_purge, (gpointer)closebuf);
-  // XXX GINT_TO_POINTER?
+  guint *p_closebuf;
+  p_closebuf = g_new(guint, 1);
+
+  *p_closebuf = closebuf;
+  g_hash_table_foreach(winbufhash, buffer_purge, p_closebuf);
+  g_free(p_closebuf);
 
   if (closebuf) {
     scr_set_chatmode(FALSE);
@@ -1854,21 +2013,21 @@ void scr_BufferScrollLock(int lock)
   if (!win_entry) return;
 
   if (lock == -1)
-    lock = !win_entry->lock;
+    lock = !win_entry->bd->lock;
 
   if (lock) {
-    win_entry->lock = TRUE;
+    win_entry->bd->lock = TRUE;
   } else {
-    win_entry->lock = FALSE;
-    //win_entry->cleared = FALSE;
+    win_entry->bd->lock = FALSE;
+    //win_entry->bd->cleared = FALSE;
     if (isspe || (buddy_getflags(BUDDATA(current_buddy)) & ROSTER_FLAG_MSG))
-      win_entry->top = NULL;
+      win_entry->bd->top = NULL;
   }
 
   // If chatmode is disabled and we're at the bottom of the buffer,
   // we need to set the "top" line, so we need to call scr_ShowBuddyWindow()
   // at least once.  (Maybe it will cause a double refresh...)
-  if (!chatmode && !win_entry->top) {
+  if (!chatmode && !win_entry->bd->top) {
     chatmode = TRUE;
     scr_ShowBuddyWindow();
     chatmode = FALSE;
@@ -1895,11 +2054,11 @@ void scr_BufferTopBottom(int topbottom)
   win_entry = scr_SearchWindow(CURRENT_JID, isspe);
   if (!win_entry) return;
 
-  win_entry->cleared = FALSE;
+  win_entry->bd->cleared = FALSE;
   if (topbottom == 1)
-    win_entry->top = NULL;
+    win_entry->bd->top = NULL;
   else
-    win_entry->top = g_list_first(win_entry->hbuf);
+    win_entry->bd->top = g_list_first(win_entry->bd->hbuf);
 
   // Refresh the window
   scr_UpdateWindow(win_entry);
@@ -1923,16 +2082,16 @@ void scr_BufferSearch(int direction, const char *text)
   win_entry = scr_SearchWindow(CURRENT_JID, isspe);
   if (!win_entry) return;
 
-  if (win_entry->top)
-    current_line = win_entry->top;
+  if (win_entry->bd->top)
+    current_line = win_entry->bd->top;
   else
-    current_line = g_list_last(win_entry->hbuf);
+    current_line = g_list_last(win_entry->bd->hbuf);
 
   search_res = hbuf_search(current_line, direction, text);
 
   if (search_res) {
-    win_entry->cleared = FALSE;
-    win_entry->top = search_res;
+    win_entry->bd->cleared = FALSE;
+    win_entry->bd->top = search_res;
 
     // Refresh the window
     scr_UpdateWindow(win_entry);
@@ -1962,10 +2121,10 @@ void scr_BufferPercent(int pc)
     return;
   }
 
-  search_res = hbuf_jump_percent(win_entry->hbuf, pc);
+  search_res = hbuf_jump_percent(win_entry->bd->hbuf, pc);
 
-  win_entry->cleared = FALSE;
-  win_entry->top = search_res;
+  win_entry->bd->cleared = FALSE;
+  win_entry->bd->top = search_res;
 
   // Refresh the window
   scr_UpdateWindow(win_entry);
@@ -1989,10 +2148,10 @@ void scr_BufferDate(time_t t)
   win_entry = scr_SearchWindow(CURRENT_JID, isspe);
   if (!win_entry) return;
 
-  search_res = hbuf_jump_date(win_entry->hbuf, t);
+  search_res = hbuf_jump_date(win_entry->bd->hbuf, t);
 
-  win_entry->cleared = FALSE;
-  win_entry->top = search_res;
+  win_entry->bd->cleared = FALSE;
+  win_entry->bd->top = search_res;
 
   // Refresh the window
   scr_UpdateWindow(win_entry);
@@ -2000,6 +2159,31 @@ void scr_BufferDate(time_t t)
   // Finished :)
   update_panels();
 }
+
+#ifdef DEBUG_ENABLE
+//  buffer_list()
+// key: winId/jid
+// value: winbuf structure
+// data: none.
+static void buffer_list(gpointer key, gpointer value, gpointer data)
+{
+  GList *head;
+  winbuf *win_entry = value;
+
+  head = g_list_first(win_entry->bd->hbuf);
+
+  scr_LogPrint(LPRINT_NORMAL, " %s  (%u/%u)", key,
+               g_list_length(head), hbuf_get_blocks_number(head));
+}
+
+void scr_BufferList(void)
+{
+  scr_LogPrint(LPRINT_NORMAL, "Buffer list:");
+  buffer_list("[status]", statusWindow, NULL);
+  g_hash_table_foreach(winbufhash, buffer_list, NULL);
+  scr_LogPrint(LPRINT_NORMAL, "End of buffer list.");
+}
+#endif
 
 //  scr_set_chatmode()
 // Public function to (un)set chatmode...
@@ -2041,7 +2225,7 @@ void scr_setmsgflag_if_needed(const char *bjid, int special)
     if (current_id) {
       winbuf *win_entry = scr_SearchWindow(current_id, special);
       if (!win_entry) return;
-      iscurrentlocked = win_entry->lock;
+      iscurrentlocked = win_entry->bd->lock;
     }
   } else {
     current_id = NULL;
@@ -2235,6 +2419,28 @@ void readline_transpose_chars(void)
   }
 }
 
+void readline_forward_kill_word(void)
+{
+  char *c, *old = ptr_inputline;
+  int spaceallowed = 1;
+
+  if (! *ptr_inputline) return;
+
+  for (c = ptr_inputline ; *c ; c = next_char(c)) {
+    if (!iswalnum(get_char(c))) {
+      if (iswblank(get_char(c))) {
+        if (!spaceallowed) break;
+      } else spaceallowed = 0;
+    } else spaceallowed = 0;
+  }
+
+  // Modify the line
+  for (;;) {
+    *old = *c++;
+    if (!*old++) break;
+  }
+}
+
 //  readline_backward_kill_word()
 // Kill the word before the cursor, in input line
 void readline_backward_kill_word(void)
@@ -2270,25 +2476,24 @@ void readline_backward_kill_word(void)
 // Move  back  to the start of the current or previous word
 void readline_backward_word(void)
 {
-  char *old_ptr_inputLine = ptr_inputline;
-  int spaceallowed = 1;
+  int i = 0;
 
   if (ptr_inputline == inputLine) return;
 
-  for (ptr_inputline = prev_char(ptr_inputline, inputLine) ;
-       ptr_inputline > inputLine ;
-       ptr_inputline = prev_char(ptr_inputline, inputLine)) {
-    if (!iswalnum(get_char(ptr_inputline))) {
-      if (iswblank(get_char(ptr_inputline))) {
-        if (!spaceallowed) break;
-      } else spaceallowed = 0;
-    } else spaceallowed = 0;
-  }
+  if (iswalnum(get_char(ptr_inputline)) &&
+      !iswalnum(get_char(prev_char(ptr_inputline, inputLine))))
+    i--;
 
-  if (ptr_inputline < prev_char(old_ptr_inputLine, inputLine)
-      && iswblank(get_char(ptr_inputline))
-      && iswblank(get_char(next_char(ptr_inputline))))
-    ptr_inputline = next_char(ptr_inputline);
+  for( ;
+      ptr_inputline > inputLine;
+      ptr_inputline = prev_char(ptr_inputline, inputLine)) {
+    if (!iswalnum(get_char(ptr_inputline))) {
+      if (i) {
+        ptr_inputline = next_char(ptr_inputline);
+        break;
+      }
+    } else i++;
+  }
 
   check_offset(-1);
 }
@@ -2297,18 +2502,240 @@ void readline_backward_word(void)
 // Move forward to the end of the next word
 void readline_forward_word(void)
 {
-  int spaceallowed = 1;
+  int stopsymbol_allowed = 1;
 
   while (*ptr_inputline) {
-    ptr_inputline = next_char(ptr_inputline);
     if (!iswalnum(get_char(ptr_inputline))) {
-      if (iswblank(get_char(ptr_inputline))) {
-        if (!spaceallowed) break;
-      } else spaceallowed = 0;
-    } else spaceallowed = 0;
+      if (!stopsymbol_allowed) break;
+    } else stopsymbol_allowed = 0;
+    ptr_inputline = next_char(ptr_inputline);
   }
 
   check_offset(1);
+}
+
+void readline_updowncase_word(int upcase)
+{
+  int stopsymbol_allowed = 1;
+
+  while (*ptr_inputline) {
+    if (!iswalnum(get_char(ptr_inputline))) {
+      if (!stopsymbol_allowed) break;
+    } else {
+      stopsymbol_allowed = 0;
+      if (upcase)
+        *ptr_inputline = towupper(get_char(ptr_inputline));
+      else
+        *ptr_inputline = towlower(get_char(ptr_inputline));
+    }
+    ptr_inputline = next_char(ptr_inputline);
+  }
+
+  check_offset(1);
+}
+
+void readline_capitalize_word(void)
+{
+  int stopsymbol_allowed = 1;
+  int upcased = 0;
+
+  while (*ptr_inputline) {
+    if (!iswalnum(get_char(ptr_inputline))) {
+      if (!stopsymbol_allowed) break;
+    } else {
+      stopsymbol_allowed = 0;
+      if (!upcased) {
+        *ptr_inputline = towupper(get_char(ptr_inputline));
+        upcased = 1;
+      } else *ptr_inputline = towlower(get_char(ptr_inputline));
+    }
+    ptr_inputline = next_char(ptr_inputline);
+  }
+
+  check_offset(1);
+}
+
+void readline_backward_char(void)
+{
+  if (ptr_inputline == (char*)&inputLine) return;
+
+  ptr_inputline = prev_char(ptr_inputline, inputLine);
+  check_offset(-1);
+}
+
+void readline_forward_char(void)
+{
+  if (!*ptr_inputline) return;
+
+  ptr_inputline = next_char(ptr_inputline);
+  check_offset(1);
+}
+
+//  readline_accept_line(down_history)
+// Validate current command line.
+// If down_history is true, load the next history line.
+int readline_accept_line(int down_history)
+{
+  scr_CheckAutoAway(TRUE);
+  if (process_line(inputLine))
+    return 255;
+  // Add line to history
+  scr_cmdhisto_addline(inputLine);
+  // Reset the line
+  ptr_inputline = inputLine;
+  *ptr_inputline = 0;
+  inputline_offset = 0;
+
+  if (down_history) {
+    // Use next history line instead of a blank line
+    const char *l = scr_cmdhisto_next("", 0);
+    if (l) strcpy(inputLine, l);
+    // Reset backup history line
+    cmdhisto_backup[0] = 0;
+  } else {
+    // Reset history line pointer
+    cmdhisto_cur = NULL;
+  }
+  return 0;
+}
+
+void readline_cancel_completion(void)
+{
+  scr_cancel_current_completion();
+  scr_end_current_completion();
+  check_offset(-1);
+}
+
+void readline_do_completion(void)
+{
+  int i, n;
+
+  if (scr_get_multimode() != 2) {
+    // Not in verbatim multi-line mode
+    scr_handle_tab();
+  } else {
+    // Verbatim multi-line mode: expand tab
+    char tabstr[9];
+    n = 8 - (ptr_inputline - inputLine) % 8;
+    for (i = 0; i < n; i++)
+      tabstr[i] = ' ';
+    tabstr[i] = '\0';
+    scr_insert_text(tabstr);
+  }
+  check_offset(0);
+}
+
+void readline_refresh_screen(void)
+{
+  scr_CheckAutoAway(TRUE);
+  ParseColors();
+  scr_Resize();
+  redrawwin(stdscr);
+}
+
+void readline_disable_chat_mode(void)
+{
+  scr_CheckAutoAway(TRUE);
+  currentWindow = NULL;
+  chatmode = FALSE;
+  if (current_buddy)
+    buddy_setflags(BUDDATA(current_buddy), ROSTER_FLAG_LOCK, FALSE);
+  scr_RosterVisibility(1);
+  scr_UpdateChatStatus(FALSE);
+  top_panel(chatPanel);
+  top_panel(inputPanel);
+  update_panels();
+}
+
+void readline_hist_beginning_search_bwd(void)
+{
+  const char *l = scr_cmdhisto_prev(inputLine, ptr_inputline-inputLine);
+  if (l) strcpy(inputLine, l);
+}
+
+void readline_hist_beginning_search_fwd(void)
+{
+  const char *l = scr_cmdhisto_next(inputLine, ptr_inputline-inputLine);
+  if (l) strcpy(inputLine, l);
+}
+
+void readline_hist_prev(void)
+{
+  const char *l = scr_cmdhisto_prev(inputLine, 0);
+  if (l) {
+    strcpy(inputLine, l);
+    // Set the pointer at the EOL.
+    // We have to move it to BOL first, because we could be too far already.
+    readline_iline_start();
+    readline_iline_end();
+  }
+}
+
+void readline_hist_next(void)
+{
+  const char *l = scr_cmdhisto_next(inputLine, 0);
+  if (l) {
+    strcpy(inputLine, l);
+    // Set the pointer at the EOL.
+    // We have to move it to BOL first, because we could be too far already.
+    readline_iline_start();
+    readline_iline_end();
+  }
+}
+
+void readline_backward_kill_char(void)
+{
+  char *src, *c;
+
+  if (ptr_inputline == (char*)&inputLine)
+    return;
+
+  src = ptr_inputline;
+  c = prev_char(ptr_inputline, inputLine);
+  ptr_inputline = c;
+  for ( ; *src ; )
+    *c++ = *src++;
+  *c = 0;
+  check_offset(-1);
+}
+
+void readline_forward_kill_char(void)
+{
+  if (!*ptr_inputline)
+    return;
+
+  strcpy(ptr_inputline, next_char(ptr_inputline));
+}
+
+void readline_iline_start(void)
+{
+  ptr_inputline = inputLine;
+  inputline_offset = 0;
+}
+
+void readline_iline_end(void)
+{
+  for (; *ptr_inputline; ptr_inputline++) ;
+  check_offset(1);
+}
+
+void readline_backward_kill_iline(void)
+{
+  strcpy(inputLine, ptr_inputline);
+  ptr_inputline = inputLine;
+  inputline_offset = 0;
+}
+
+void readline_forward_kill_iline(void)
+{
+  *ptr_inputline = 0;
+}
+
+void readline_send_multiline(void)
+{
+  // Validate current multi-line
+  if (scr_get_multimode())
+    process_command(mkcmdstr("msay send"), TRUE);
 }
 
 //  which_row()
@@ -2423,17 +2850,37 @@ static void scr_handle_tab(void)
     guint dynlist;
     GSList *list = compl_get_category_list(compl_categ, &dynlist);
     if (list) {
+      guint n;
       char *prefix = g_strndup(row, ptr_inputline-row);
       // Init completion
-      new_completion(prefix, list);
+      n = new_completion(prefix, list);
       g_free(prefix);
+      if (n == 0 && nrow == -1) {
+        // This is a MUC room and we can't complete from the beginning of the
+        // line.  Let's try a bit harder and complete the current word.
+        row = prev_char(ptr_inputline, inputLine);
+        while (row >= inputLine) {
+          if (iswspace(get_char(row)) || get_char(row) == '(') {
+              row = next_char((char*)row);
+              break;
+          }
+          if (row == inputLine)
+            break;
+          row = prev_char((char*)row, inputLine);
+        }
+        // There's no need to try again if row == inputLine
+        if (row > inputLine) {
+          prefix = g_strndup(row, ptr_inputline-row);
+          new_completion(prefix, list);
+          g_free(prefix);
+        }
+      }
       // Free the list if it's a dynamic one
       if (dynlist) {
         GSList *slp;
         for (slp = list; slp; slp = g_slist_next(slp))
           g_free(slp->data);
         g_slist_free(list);
-
       }
       // Now complete
       cchar = complete();
@@ -2505,37 +2952,74 @@ static inline void check_offset(int direction)
   inputline_offset = c - inputLine;
 }
 
+#ifdef HAVE_ASPELL_H
+// prints inputLine with underlined words when misspelled
+static inline void print_checked_line(void)
+{
+  char *wprint_char_fmt = "%c";
+  int point;
+  char *ptrCur = inputLine + inputline_offset;
+
+#ifdef UNICODE
+  // We need this to display a single UTF-8 char... Any better solution?
+  if (utf8_mode)
+    wprint_char_fmt = "%lc";
+#endif
+
+  wmove(inputWnd, 0, 0); // problem with backspace
+
+  while (*ptrCur) {
+    point = ptrCur - inputLine;
+    if (maskLine[point])
+      wattrset(inputWnd, A_UNDERLINE);
+    wprintw(inputWnd, wprint_char_fmt, get_char(ptrCur));
+    wattrset(inputWnd, A_NORMAL);
+    ptrCur = next_char(ptrCur);
+  }
+}
+#endif
+
 static inline void refresh_inputline(void)
 {
-  mvwprintw(inputWnd, 0,0, "%s", inputLine + inputline_offset);
+#ifdef HAVE_ASPELL_H
+  if (settings_opt_get_int("aspell_enable")) {
+    memset(maskLine, 0, INPUTLINE_LENGTH+1);
+    spellcheck(inputLine, maskLine);
+  }
+  print_checked_line();
   wclrtoeol(inputWnd);
   if (*ptr_inputline) {
     // hack to set cursor pos. Characters can have different width,
     // so I know of no better way.
     char c = *ptr_inputline;
     *ptr_inputline = 0;
-    mvwprintw(inputWnd, 0,0, "%s", inputLine + inputline_offset);
+    print_checked_line();
     *ptr_inputline = c;
   }
+#else
+  mvwprintw(inputWnd, 0, 0, "%s", inputLine + inputline_offset);
+  wclrtoeol(inputWnd);
+  if (*ptr_inputline) {
+    // hack to set cursor pos. Characters can have different width,
+    // so I know of no better way.
+    char c = *ptr_inputline;
+    *ptr_inputline = 0;
+    mvwprintw(inputWnd, 0, 0, "%s", inputLine + inputline_offset);
+    *ptr_inputline = c;
+  }
+#endif
 }
 
 void scr_handle_CtrlC(void)
 {
   if (!Curses) return;
   // Leave multi-line mode
-  process_command(mkcmdstr("msay abort"));
+  process_command(mkcmdstr("msay abort"), TRUE);
   // Same as Ctrl-g, now
   scr_cancel_current_completion();
   scr_end_current_completion();
   check_offset(-1);
   refresh_inputline();
-}
-
-static void scr_handle_CtrlD(void)
-{
-  // Validate current multi-line
-  if (scr_get_multimode())
-    process_command(mkcmdstr("msay send"));
 }
 
 static void add_keyseq(char *seqstr, guint mkeycode, gint value)
@@ -2723,7 +3207,7 @@ static int bindcommand(keycode kcode)
     boundcmd_locale = from_utf8(boundcmd);
     cmdline = g_strdup_printf(mkcmdstr("%s"), boundcmd_locale);
     scr_CheckAutoAway(TRUE);
-    if (process_command(cmdline))
+    if (process_command(cmdline, TRUE))
       return 255; // Quit
     g_free(boundcmd_locale);
     g_free(cmdline);
@@ -2755,16 +3239,6 @@ int process_key(keycode kcode)
         key = kcode.value;
         break;
     case MKEY_META:
-        key = ERR;
-        switch (kcode.value) {
-          case 27:
-              key = 27;
-              break;
-          default:
-              if (bindcommand(kcode) == 255)
-                return 255;
-        }
-        break;
     default:
         if (bindcommand(kcode) == 255)
           return 255;
@@ -2781,166 +3255,18 @@ int process_key(keycode kcode)
     case 0:
     case ERR:
         break;
-    case 8:     // Ctrl-h
-    case 127:   // Backspace too
-    case KEY_BACKSPACE:
-        if (ptr_inputline != (char*)&inputLine) {
-          char *src = ptr_inputline;
-          char *c = prev_char(ptr_inputline, inputLine);
-          ptr_inputline = c;
-          for ( ; *src ; )
-            *c++ = *src++;
-          *c = 0;
-          check_offset(-1);
-        }
-        break;
-    case KEY_DC:// Del
-        if (*ptr_inputline)
-          strcpy(ptr_inputline, next_char(ptr_inputline));
-        break;
-    case KEY_LEFT:
-        if (ptr_inputline != (char*)&inputLine) {
-          ptr_inputline = prev_char(ptr_inputline, inputLine);
-          check_offset(-1);
-        }
-        break;
-    case KEY_RIGHT:
-        if (*ptr_inputline)
-          ptr_inputline = next_char(ptr_inputline);
-          check_offset(1);
-        break;
-    case 7:     // Ctrl-g
-        scr_cancel_current_completion();
-        scr_end_current_completion();
-        check_offset(-1);
-        break;
     case 9:     // Tab
-        if (scr_get_multimode() != 2) {
-          // Not in verbatim multi-line mode
-          scr_handle_tab();
-        } else {
-          // Verbatim multi-line mode: expand tab
-          char tabstr[9];
-          int i, n;
-          n = 8 - (ptr_inputline - inputLine) % 8;
-          for (i = 0; i < n; i++)
-            tabstr[i] = ' ';
-          tabstr[i] = '\0';
-          scr_insert_text(tabstr);
-        }
-        check_offset(0);
+        readline_do_completion();
         break;
     case 13:    // Enter
-    case 15:    // Ctrl-o ("accept-line-and-down-history")
-        scr_CheckAutoAway(TRUE);
-        if (process_line(inputLine))
+        if (readline_accept_line(FALSE) == 255)
           return 255;
-        // Add line to history
-        scr_cmdhisto_addline(inputLine);
-        // Reset the line
-        ptr_inputline = inputLine;
-        *ptr_inputline = 0;
-        inputline_offset = 0;
-
-        if (key == 13)            // Enter
-        {
-          // Reset history line pointer
-          cmdhisto_cur = NULL;
-        } else {                  // down-history
-          // Use next history line instead of a blank line
-          const char *l = scr_cmdhisto_next("", 0);
-          if (l) strcpy(inputLine, l);
-          // Reset backup history line
-          cmdhisto_backup[0] = 0;
-        }
-        break;
-    case KEY_UP:
-        {
-          const char *l = scr_cmdhisto_prev(inputLine,
-                  ptr_inputline-inputLine);
-          if (l) strcpy(inputLine, l);
-        }
-        break;
-    case KEY_DOWN:
-        {
-          const char *l = scr_cmdhisto_next(inputLine,
-                  ptr_inputline-inputLine);
-          if (l) strcpy(inputLine, l);
-        }
-        break;
-    case KEY_PPAGE:
-        scr_CheckAutoAway(TRUE);
-        scr_RosterUp();
-        break;
-    case KEY_NPAGE:
-        scr_CheckAutoAway(TRUE);
-        scr_RosterDown();
-        break;
-    case KEY_HOME:
-    case 1:
-        ptr_inputline = inputLine;
-        inputline_offset = 0;
         break;
     case 3:     // Ctrl-C
         scr_handle_CtrlC();
         break;
-    case 4:     // Ctrl-D
-        scr_handle_CtrlD();
-        break;
-    case KEY_END:
-    case 5:
-        for (; *ptr_inputline; ptr_inputline++) ;
-        check_offset(1);
-        break;
-    case 21:    // Ctrl-u
-        strcpy(inputLine, ptr_inputline);
-        ptr_inputline = inputLine;
-        inputline_offset = 0;
-        break;
-    case KEY_EOL:
-    case 11:    // Ctrl-k
-        *ptr_inputline = 0;
-        break;
-    case 16:    // Ctrl-p
-        scr_BufferScrollUpDown(-1, 0);
-        break;
-    case 14:    // Ctrl-n
-        scr_BufferScrollUpDown(1, 0);
-        break;
-    case 20:    // Ctrl-t
-        readline_transpose_chars();
-        break;
-    case 23:    // Ctrl-w
-        readline_backward_kill_word();
-        break;
-    case 515:
-    case 516:   // Ctrl-Left
-        readline_backward_word();
-        break;
-    case 517:
-    case 518:   // Ctrl-Right
-        readline_forward_word();
-        break;
-    case 12:    // Ctrl-l
-        scr_CheckAutoAway(TRUE);
-        ParseColors();
-        scr_Resize();
-        redrawwin(stdscr);
-        break;
     case KEY_RESIZE:
         scr_Resize();
-        break;
-    case 27:    // ESC
-        scr_CheckAutoAway(TRUE);
-        currentWindow = NULL;
-        chatmode = FALSE;
-        if (current_buddy)
-          buddy_setflags(BUDDATA(current_buddy), ROSTER_FLAG_LOCK, FALSE);
-        scr_RosterVisibility(1);
-        scr_UpdateChatStatus(FALSE);
-        top_panel(chatPanel);
-        top_panel(inputPanel);
-        update_panels();
         break;
     default:
         display_char = TRUE;
@@ -2948,7 +3274,7 @@ int process_key(keycode kcode)
 
 display:
   if (display_char) {
-    if (kcode.utf8 ? iswprint(key) : isprint(key)) {
+    if (kcode.utf8 ? iswprint(key) : (isprint(key) && !is_speckey(key))) {
       char tmpLine[INPUTLINE_LENGTH+1];
 
       // Check the line isn't too long
@@ -2983,5 +3309,101 @@ display:
   }
   return 0;
 }
+
+#ifdef HAVE_ASPELL_H
+// Aspell initialization
+void spellcheck_init(void)
+{
+  int aspell_enable           = settings_opt_get_int("aspell_enable");
+  const char *aspell_lang     = settings_opt_get("aspell_lang");
+  const char *aspell_encoding = settings_opt_get("aspell_encoding");
+  AspellCanHaveError *possible_err;
+
+  if (!aspell_enable)
+    return;
+
+  if (spell_checker) {
+    delete_aspell_speller(spell_checker);
+    delete_aspell_config(spell_config);
+    spell_checker = NULL;
+    spell_config = NULL;
+  }
+
+  spell_config = new_aspell_config();
+  aspell_config_replace(spell_config, "encoding", aspell_encoding);
+  aspell_config_replace(spell_config, "lang", aspell_lang);
+  possible_err = new_aspell_speller(spell_config);
+
+  if (aspell_error_number(possible_err) != 0) {
+    spell_checker = NULL;
+    delete_aspell_config(spell_config);
+    spell_config = NULL;
+  } else {
+    spell_checker = to_aspell_speller(possible_err);
+  }
+}
+
+// Deinitialization of Aspell spellchecker
+void spellcheck_deinit(void)
+{
+  if (spell_checker) {
+    delete_aspell_speller(spell_checker);
+    spell_checker = NULL;
+  }
+
+  if (spell_config) {
+    delete_aspell_config(spell_config);
+    spell_config = NULL;
+  }
+}
+
+#define aspell_isalpha(c) (utf8_mode ? iswalpha(get_char(c)) : isalpha(*c))
+
+// Spell checking function
+static void spellcheck(char *line, char *checked)
+{
+  const char *start, *line_start;
+
+  if (inputLine[0] == 0 || inputLine[0] == COMMAND_CHAR)
+    return;
+
+  line_start = line;
+
+  while (*line) {
+
+    if (!aspell_isalpha(line)) {
+      line = next_char(line);
+      continue;
+    }
+
+    if (!strncmp(line, "http://", 7)) {
+      line += 7; // : and / characters are 1 byte long in utf8, right?
+
+      while (!strchr(" \t\r\n", *line))
+        line = next_char(line); // i think line++ would be fine here?
+
+      continue;
+    }
+
+    if (!strncmp(line, "ftp://", 6)) {
+      line += 6;
+
+      while (!strchr(" \t\r\n", *line))
+        line = next_char(line);
+
+      continue;
+    }
+
+    start = line;
+
+    while (aspell_isalpha(line))
+      line = next_char(line);
+
+    if (spell_checker &&
+        aspell_speller_check(spell_checker, start, line - start) == 0)
+      memset(&checked[start - line_start], ASPELLBADCHAR, line - start);
+  }
+}
+#endif
 
 /* vim: set expandtab cindent cinoptions=>2\:2(0:  For Vim users... */

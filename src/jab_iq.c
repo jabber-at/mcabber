@@ -1,7 +1,7 @@
 /*
  * jab_iq.c     -- Jabber protocol IQ-related fonctions
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  * Some parts initially came from the centericq project:
  * Copyright (C) 2002-2005 by Konstantin Klyagin <konst@konst.org.ua>
  * Some small parts come from the Gaim project <http://gaim.sourceforge.net/>
@@ -32,6 +32,11 @@
 #include "screen.h"
 #include "settings.h"
 #include "hbuf.h"
+#include "commands.h"
+
+#ifdef ENABLE_HGCSET
+# include "hgcset.h"
+#endif
 
 
 // Bookmarks for IQ:private storage
@@ -52,6 +57,71 @@ enum vcard_attr {
   vcard_inet    = 1<<6,
   vcard_pref    = 1<<7,
 };
+
+static void handle_iq_command_set_status(jconn conn, char *from,
+                                         const char *id, xmlnode xmldata);
+
+static void handle_iq_command_leave_groupchats(jconn conn, char *from,
+                                               const char *id, xmlnode xmldata);
+
+typedef void (*adhoc_command_callback)(jconn, char*, const char*, xmlnode);
+
+struct adhoc_command {
+  char *name;
+  char *description;
+  bool only_for_self;
+  adhoc_command_callback callback;
+};
+
+const struct adhoc_command adhoc_command_list[] = {
+  { "http://jabber.org/protocol/rc#set-status",
+    "Change client status",
+    1,
+    &handle_iq_command_set_status },
+  { "http://jabber.org/protocol/rc#leave-groupchats",
+    "Leave groupchat(s)",
+    1,
+    &handle_iq_command_leave_groupchats },
+  { NULL, NULL, 0, NULL },
+};
+
+struct adhoc_status {
+  char *name;   // the name used by adhoc
+  char *description;
+  char *status; // the string, used by setstus
+};
+
+const struct adhoc_status adhoc_status_list[] = {
+  {"online", "Online", "avail"},
+  {"chat", "Chat", "free"},
+  {"away", "Away", "away"},
+  {"xd", "Extended away", "notavail"},
+  {"dnd", "Do not disturb", "dnd"},
+  {"invisible", "Invisible", "invisible"},
+  {"offline", "Offline", "offline"},
+  {NULL, NULL, NULL},
+};
+
+//  entity_version()
+// Return a static version string for Entity Capabilities.
+// It should be specific to the client version, please change the id
+// if you alter mcabber's disco support (or add something to the version
+// number) so that it doesn't conflict with the official client.
+const char *entity_version(void)
+{
+  static char *ver;
+
+  if (ver)
+    return ver;
+
+#ifdef HGCSET
+  ver = g_strdup_printf("%s-%s", PACKAGE_VERSION, HGCSET);
+#else
+  ver = g_strdup(PACKAGE_VERSION);
+#endif
+
+  return ver;
+}
 
 //  iqs_new(type, namespace, prefix, timeout)
 // Create a query (GET, SET) IQ structure.  This function should not be used
@@ -127,6 +197,7 @@ static eviqs *iqs_find(const char *iqid)
 int iqs_callback(const char *iqid, xmlnode xml_result, guint iqcontext)
 {
   eviqs *i;
+  int retval = 0;
 
   i = iqs_find(iqid);
   if (!i) return -1;
@@ -134,10 +205,10 @@ int iqs_callback(const char *iqid, xmlnode xml_result, guint iqcontext)
   // IQ processing
   // Note: If xml_result is NULL, this is a timeout
   if (i->callback)
-    (*i->callback)(i, xml_result, iqcontext);
+    retval = (*i->callback)(i, xml_result, iqcontext);
 
   iqs_del(iqid);
-  return 0;
+  return retval;
 }
 
 void iqs_check_timeout(time_t now_t)
@@ -243,7 +314,7 @@ static void handle_iq_roster(xmlnode x)
     scr_UpdateBuddyWindow();
 }
 
-static void iqscallback_version(eviqs *iqp, xmlnode xml_result, guint iqcontext)
+static int iqscallback_version(eviqs *iqp, xmlnode xml_result, guint iqcontext)
 {
   xmlnode ansqry;
   char *p;
@@ -251,18 +322,18 @@ static void iqscallback_version(eviqs *iqp, xmlnode xml_result, guint iqcontext)
   char *buf;
 
   // Leave now if we cannot process xml_result
-  if (!xml_result || iqcontext) return;
+  if (!xml_result || iqcontext) return -1;
 
   ansqry = xmlnode_get_tag(xml_result, "query");
   if (!ansqry) {
     scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:version result!");
-    return;
+    return 0;
   }
   // Display IQ result sender...
   p = xmlnode_get_attrib(xml_result, "from");
   if (!p) {
     scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:version result (no sender name).");
-    return;
+    return 0;
   }
   bjid = p;
 
@@ -295,6 +366,7 @@ static void iqscallback_version(eviqs *iqp, xmlnode xml_result, guint iqcontext)
     scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_NONE);
     g_free(buf);
   }
+  return 0;
 }
 
 void request_version(const char *fulljid)
@@ -307,7 +379,7 @@ void request_version(const char *fulljid)
   jab_send(jc, iqn->xmldata);
 }
 
-static void iqscallback_time(eviqs *iqp, xmlnode xml_result, guint iqcontext)
+static int iqscallback_time(eviqs *iqp, xmlnode xml_result, guint iqcontext)
 {
   xmlnode ansqry;
   char *p;
@@ -315,18 +387,18 @@ static void iqscallback_time(eviqs *iqp, xmlnode xml_result, guint iqcontext)
   char *buf;
 
   // Leave now if we cannot process xml_result
-  if (!xml_result || iqcontext) return;
+  if (!xml_result || iqcontext) return -1;
 
   ansqry = xmlnode_get_tag(xml_result, "query");
   if (!ansqry) {
     scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:time result!");
-    return;
+    return 0;
   }
   // Display IQ result sender...
   p = xmlnode_get_attrib(xml_result, "from");
   if (!p) {
     scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:time result (no sender name).");
-    return;
+    return 0;
   }
   bjid = p;
 
@@ -359,6 +431,7 @@ static void iqscallback_time(eviqs *iqp, xmlnode xml_result, guint iqcontext)
     scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_NONE);
     g_free(buf);
   }
+  return 0;
 }
 
 void request_time(const char *fulljid)
@@ -371,7 +444,7 @@ void request_time(const char *fulljid)
   jab_send(jc, iqn->xmldata);
 }
 
-static void iqscallback_last(eviqs *iqp, xmlnode xml_result, guint iqcontext)
+static int iqscallback_last(eviqs *iqp, xmlnode xml_result, guint iqcontext)
 {
   xmlnode ansqry;
   char *p;
@@ -379,18 +452,18 @@ static void iqscallback_last(eviqs *iqp, xmlnode xml_result, guint iqcontext)
   char *buf;
 
   // Leave now if we cannot process xml_result
-  if (!xml_result || iqcontext) return;
+  if (!xml_result || iqcontext) return -1;
 
   ansqry = xmlnode_get_tag(xml_result, "query");
   if (!ansqry) {
     scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:last result!");
-    return;
+    return 0;
   }
   // Display IQ result sender...
   p = xmlnode_get_attrib(xml_result, "from");
   if (!p) {
     scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:last result (no sender name).");
-    return;
+    return 0;
   }
   bjid = p;
 
@@ -432,6 +505,7 @@ static void iqscallback_last(eviqs *iqp, xmlnode xml_result, guint iqcontext)
     scr_WriteIncomingMessage(bjid, buf, 0, HBB_PREFIX_INFO);
     g_free(buf);
   }
+  return 0;
 }
 
 void request_last(const char *fulljid)
@@ -555,7 +629,7 @@ static void handle_vcard_node(const char *barejid, xmlnode vcardnode)
   }
 }
 
-static void iqscallback_vcard(eviqs *iqp, xmlnode xml_result, guint iqcontext)
+static int iqscallback_vcard(eviqs *iqp, xmlnode xml_result, guint iqcontext)
 {
   xmlnode ansqry;
   char *p;
@@ -563,13 +637,13 @@ static void iqscallback_vcard(eviqs *iqp, xmlnode xml_result, guint iqcontext)
   char *buf;
 
   // Leave now if we cannot process xml_result
-  if (!xml_result || iqcontext) return;
+  if (!xml_result || iqcontext) return -1;
 
   // Display IQ result sender...
   p = xmlnode_get_attrib(xml_result, "from");
   if (!p) {
     scr_LogPrint(LPRINT_LOGNORM, "Invalid IQ:vCard result (no sender name).");
-    return;
+    return 0;
   }
   bjid = p;
 
@@ -580,7 +654,7 @@ static void iqscallback_vcard(eviqs *iqp, xmlnode xml_result, guint iqcontext)
   ansqry = xmlnode_get_tag(xml_result, "vCard");
   if (!ansqry) {
     scr_LogPrint(LPRINT_LOGNORM, "Empty IQ:vCard result!");
-    return;
+    return 0;
   }
 
   // bjid should really be the "bare JID", let's strip the resource
@@ -592,6 +666,7 @@ static void iqscallback_vcard(eviqs *iqp, xmlnode xml_result, guint iqcontext)
 
   // Get result data...
   handle_vcard_node(bjid, ansqry);
+  return 0;
 }
 
 void request_vcard(const char *bjid)
@@ -662,20 +737,36 @@ static void storage_bookmarks_parse_conference(xmlnode xmldata)
   g_free(bjid);
 }
 
-static void iqscallback_storage_bookmarks(eviqs *iqp, xmlnode xml_result,
-                                          guint iqcontext)
+static int iqscallback_storage_bookmarks(eviqs *iqp, xmlnode xml_result,
+                                         guint iqcontext)
 {
   xmlnode x, ansqry;
   char *p;
 
+  if (iqcontext == IQS_CONTEXT_ERROR) {
+    // No server support, or no bookmarks?
+    p = xmlnode_get_name(xmlnode_get_firstchild(xml_result));
+    if (p && !strcmp(p, "item-not-found")) {
+      // item-no-found means the server has Private Storage, but it's
+      // currently empty.
+      xmlnode_free(bookmarks);
+      bookmarks = xmlnode_new_tag("storage");
+      xmlnode_put_attrib(bookmarks, "xmlns", "storage:bookmarks");
+      // We return 0 so that the IQ error message be
+      // not displayed, as it isn't a real error.
+      return 0;
+    }
+    return -1; // Unhandled error
+  }
+
   // Leave now if we cannot process xml_result
-  if (!xml_result || iqcontext) return;
+  if (!xml_result || iqcontext) return 0;
 
   ansqry = xmlnode_get_tag(xml_result, "query");
   ansqry = xmlnode_get_tag(ansqry, "storage");
   if (!ansqry) {
     scr_LogPrint(LPRINT_LOG, "Invalid IQ:private result! (storage:bookmarks)");
-    return;
+    return 0;
   }
 
   // Walk through the storage tags
@@ -689,6 +780,7 @@ static void iqscallback_storage_bookmarks(eviqs *iqp, xmlnode xml_result,
   // Copy the bookmarks node
   xmlnode_free(bookmarks);
   bookmarks = xmlnode_dup(ansqry);
+  return 0;
 }
 
 static void request_storage_bookmarks(void)
@@ -705,24 +797,42 @@ static void request_storage_bookmarks(void)
   jab_send(jc, iqn->xmldata);
 }
 
-static void iqscallback_storage_rosternotes(eviqs *iqp, xmlnode xml_result,
-                                            guint iqcontext)
+static int iqscallback_storage_rosternotes(eviqs *iqp, xmlnode xml_result,
+                                           guint iqcontext)
 {
   xmlnode ansqry;
 
+  if (iqcontext == IQS_CONTEXT_ERROR) {
+    const char *p;
+    // No server support, or no roster notes?
+    p = xmlnode_get_name(xmlnode_get_firstchild(xml_result));
+    if (p && !strcmp(p, "item-not-found")) {
+      // item-no-found means the server has Private Storage, but it's
+      // currently empty.
+      xmlnode_free(rosternotes);
+      rosternotes = xmlnode_new_tag("storage");
+      xmlnode_put_attrib(rosternotes, "xmlns", "storage:rosternotes");
+      // We return 0 so that the IQ error message be
+      // not displayed, as it isn't a real error.
+      return 0;
+    }
+    return -1; // Unhandled error
+  }
+
   // Leave now if we cannot process xml_result
-  if (!xml_result || iqcontext) return;
+  if (!xml_result || iqcontext) return 0;
 
   ansqry = xmlnode_get_tag(xml_result, "query");
   ansqry = xmlnode_get_tag(ansqry, "storage");
   if (!ansqry) {
     scr_LogPrint(LPRINT_LOG, "Invalid IQ:private result! "
                  "(storage:rosternotes)");
-    return;
+    return 0;
   }
   // Copy the rosternotes node
   xmlnode_free(rosternotes);
   rosternotes = xmlnode_dup(ansqry);
+  return 0;
 }
 
 static void request_storage_rosternotes(void)
@@ -739,8 +849,11 @@ static void request_storage_rosternotes(void)
   jab_send(jc, iqn->xmldata);
 }
 
-void iqscallback_auth(eviqs *iqp, xmlnode xml_result)
+int iqscallback_auth(eviqs *iqp, xmlnode xml_result, guint iqcontext)
 {
+  if (iqcontext == IQS_CONTEXT_ERROR)
+    return -1;
+
   if (jstate == STATE_GETAUTH) {
     eviqs *iqn;
 
@@ -761,6 +874,7 @@ void iqscallback_auth(eviqs *iqp, xmlnode xml_result)
     request_storage_rosternotes();
     jstate = STATE_LOGGED;
   }
+  return 0;
 }
 
 static void handle_iq_result(jconn conn, char *from, xmlnode xmldata)
@@ -794,34 +908,463 @@ static void handle_iq_result(jconn conn, char *from, xmlnode xmldata)
   }
 }
 
+// FIXME  highly duplicated code
+static void send_iq_not_implemented(jconn conn, char *from, xmlnode xmldata)
+{
+  xmlnode x, y, z;
+  // Not implemented.
+  x = xmlnode_dup(xmldata);
+  xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
+  xmlnode_hide_attrib(x, "from");
+
+  xmlnode_put_attrib(x, "type", TMSG_ERROR);
+  y = xmlnode_insert_tag(x, TMSG_ERROR);
+  xmlnode_put_attrib(y, "code", "501");
+  xmlnode_put_attrib(y, "type", "cancel");
+  z = xmlnode_insert_tag(y, "feature-not-implemented");
+  xmlnode_put_attrib(z, "xmlns", NS_XMPP_STANZAS);
+
+  jab_send(conn, x);
+  xmlnode_free(x);
+}
+
+/*
+static void send_iq_commands_bad_action(jconn conn, char *from, xmlnode xmldata)
+{
+  xmlnode x, y, z;
+
+  x = xmlnode_dup(xmldata);
+  xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
+  xmlnode_hide_attrib(x, "from");
+
+  xmlnode_put_attrib(x, "type", TMSG_ERROR);
+  y = xmlnode_insert_tag(x, TMSG_ERROR);
+  xmlnode_put_attrib(y, "code", "400");
+  xmlnode_put_attrib(y, "type", "modify");
+  z = xmlnode_insert_tag(y, "bad-request");
+  xmlnode_put_attrib(z, "xmlns", NS_XMPP_STANZAS);
+  z = xmlnode_insert_tag(y, "bad-action");
+  xmlnode_put_attrib(z, "xmlns", NS_COMMANDS);
+
+  jab_send(conn, x);
+  xmlnode_free(x);
+}
+*/
+
+static void send_iq_forbidden(jconn conn, char *from, xmlnode xmldata)
+{
+  xmlnode x, y, z;
+
+  x = xmlnode_dup(xmldata);
+  xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
+  xmlnode_hide_attrib(x, "from");
+
+  xmlnode_put_attrib(x, "type", TMSG_ERROR);
+  y = xmlnode_insert_tag(x, TMSG_ERROR);
+  xmlnode_put_attrib(y, "code", "403");
+  xmlnode_put_attrib(y, "type", "cancel");
+  z = xmlnode_insert_tag(y, "forbidden");
+  xmlnode_put_attrib(z, "xmlns", NS_XMPP_STANZAS);
+
+  jab_send(conn, x);
+  xmlnode_free(x);
+}
+
+static void send_iq_commands_malformed_action(jconn conn, char *from,
+                                              xmlnode xmldata)
+{
+  xmlnode x, y, z;
+
+  x = xmlnode_dup(xmldata);
+  xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
+  xmlnode_hide_attrib(x, "from");
+
+  xmlnode_put_attrib(x, "type", TMSG_ERROR);
+  y = xmlnode_insert_tag(x, TMSG_ERROR);
+  xmlnode_put_attrib(y, "code", "400");
+  xmlnode_put_attrib(y, "type", "modify");
+  z = xmlnode_insert_tag(y, "bad-request");
+  xmlnode_put_attrib(z, "xmlns", NS_XMPP_STANZAS);
+  z = xmlnode_insert_tag(y, "malformed-action");
+  xmlnode_put_attrib(z, "xmlns", NS_COMMANDS);
+
+  jab_send(conn, x);
+  xmlnode_free(x);
+}
+
+static void handle_iq_commands_list(jconn conn, char *from, const char *id,
+                                    xmlnode xmldata)
+{
+  xmlnode x;
+  xmlnode myquery;
+  jid requester_jid;
+  const struct adhoc_command *command;
+  bool from_self;
+  x = jutil_iqnew(JPACKET__RESULT, NS_DISCO_ITEMS);
+  xmlnode_put_attrib(x, "id", id);
+  xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
+  myquery = xmlnode_get_tag(x, "query");
+
+  requester_jid = jid_new(conn->p, xmlnode_get_attrib(xmldata, "from"));
+  from_self = !jid_cmpx(conn->user, requester_jid, JID_USER | JID_SERVER);
+
+  for (command = adhoc_command_list ; command->name ; command++) {
+    if (!command->only_for_self || from_self) {
+      xmlnode item;
+      item = xmlnode_insert_tag(myquery, "item");
+      xmlnode_put_attrib(item, "node", command->name);
+      xmlnode_put_attrib(item, "name", command->description);
+      xmlnode_put_attrib(item, "jid", jid_full(conn->user));
+    }
+  }
+
+  jab_send(jc, x);
+  xmlnode_free(x);
+}
+
+static void xmlnode_insert_dataform_result_message(xmlnode node, char *message)
+{
+  xmlnode x = xmlnode_insert_tag(node, "x");
+  xmlnode_put_attrib(x, "type", "result");
+  xmlnode_put_attrib(x, "xmlns", "jabber:x:data");
+
+  xmlnode field = xmlnode_insert_tag(x, "field");
+  xmlnode_put_attrib(field, "type", "text-single");
+  xmlnode_put_attrib(field, "var", "message");
+
+  xmlnode value = xmlnode_insert_tag(field, "value");
+  xmlnode_insert_cdata(value, message, -1);
+}
+
+static char *generate_session_id(char *prefix)
+{
+  char *result;
+  static int counter = 0;
+  counter++;
+  // TODO better use timezone ?
+  result = g_strdup_printf("%s-%i", prefix, counter);
+  return result;
+}
+
+static void handle_iq_command_set_status(jconn conn, char *from, const char *id,
+                                          xmlnode xmldata)
+{
+  char *action, *node, *sessionid;
+  xmlnode iq, command, x, y;
+  const struct adhoc_status *s;
+
+  x = xmlnode_get_tag(xmldata, "command");
+  action = xmlnode_get_attrib(x, "action");
+  node = xmlnode_get_attrib(x, "node");
+  sessionid = xmlnode_get_attrib(x, "sessionid");
+
+  iq = xmlnode_new_tag("iq");
+  command = xmlnode_insert_tag(iq, "command");
+  xmlnode_put_attrib(command, "node", node);
+  xmlnode_put_attrib(command, "xmlns", NS_COMMANDS);
+
+  if (!sessionid) {
+    sessionid = generate_session_id("set-status");
+    xmlnode_put_attrib(command, "sessionid", sessionid);
+    g_free(sessionid);
+    xmlnode_put_attrib(command, "status", "executing");
+
+    x = xmlnode_insert_tag(command, "x");
+    xmlnode_put_attrib(x, "type", "form");
+    xmlnode_put_attrib(x, "xmlns", "jabber:x:data");
+
+    y = xmlnode_insert_tag(x, "title");
+    xmlnode_insert_cdata(y, "Change Status", -1);
+
+    y = xmlnode_insert_tag(x, "instructions");
+    xmlnode_insert_cdata(y, "Choose the status and status message", -1);
+
+    // TODO see if factorisation is possible
+    // (with xmlnode_insert_dataform_result_message)
+    y = xmlnode_insert_tag(x, "field");
+    xmlnode_put_attrib(y, "type", "hidden");
+    xmlnode_put_attrib(y, "var", "FORM_TYPE");
+
+    xmlnode value = xmlnode_insert_tag(y, "value");
+    xmlnode_insert_cdata(value, "http://jabber.org/protocol/rc", -1);
+
+    y = xmlnode_insert_tag(x, "field");
+    xmlnode_put_attrib(y, "type", "list-single");
+    xmlnode_put_attrib(y, "var", "status");
+    xmlnode_put_attrib(y, "label", "Status");
+    xmlnode_insert_tag(y, "required");
+
+    value = xmlnode_insert_tag(y, "value");
+    // TODO current status
+    xmlnode_insert_cdata(value, "online", -1);
+    for (s = adhoc_status_list; s->name; s++) {
+        xmlnode option = xmlnode_insert_tag(y, "option");
+        value = xmlnode_insert_tag(option, "value");
+        xmlnode_insert_cdata(value, s->name, -1);
+        xmlnode_put_attrib(option, "label", s->description);
+    }
+    // TODO add priority ?
+    // I do not think this is useful, user should not have to care of the
+    // priority like gossip and gajim do (misc)
+    y = xmlnode_insert_tag(x, "field");
+    xmlnode_put_attrib(y, "type", "text-multi");
+    xmlnode_put_attrib(y, "var", "status-message");
+    xmlnode_put_attrib(y, "label", "Message");
+  }
+  else // (if sessionid)
+  {
+    y = xmlnode_get_tag(x, "x?xmlns=jabber:x:data");
+    if (y) {
+      char *value, *message;
+      value = xmlnode_get_tag_data(xmlnode_get_tag(y, "field?var=status"),
+                                   "value");
+      message = xmlnode_get_tag_data(xmlnode_get_tag(y,
+                                   "field?var=status-message"), "value");
+      for (s = adhoc_status_list; !s->name || strcmp(s->name, value); s++);
+      if (s->name) {
+        char *status = g_strdup_printf("%s %s", s->status,
+                                       message ? message : "");
+        setstatus(NULL, status);
+        g_free(status);
+        xmlnode_put_attrib(command, "status", "completed");
+        xmlnode_put_attrib(iq, "type", "result");
+        xmlnode_insert_dataform_result_message(command,
+                                               "Status has been changed");
+      }
+    }
+  }
+  xmlnode_put_attrib(iq, "to", xmlnode_get_attrib(xmldata, "from"));
+  xmlnode_put_attrib(iq, "id", id);
+  jab_send(jc, iq);
+  xmlnode_free(iq);
+}
+
+static void _callback_foreach_buddy_groupchat(gpointer rosterdata, void *param)
+{
+  xmlnode value;
+  xmlnode *field;
+  const char *room_jid, *nickname;
+  char *desc;
+
+  room_jid = buddy_getjid(rosterdata);
+  if (!room_jid) return;
+  nickname = buddy_getnickname(rosterdata);
+  if (!nickname) return;
+  field = param;
+
+  xmlnode option = xmlnode_insert_tag(*field, "option");
+  value = xmlnode_insert_tag(option, "value");
+  xmlnode_insert_cdata(value, room_jid, -1);
+  desc = g_strdup_printf("%s on %s", nickname, room_jid);
+  xmlnode_put_attrib(option, "label", desc);
+  g_free(desc);
+}
+
+static void handle_iq_command_leave_groupchats(jconn conn, char *from,
+                                               const char *id, xmlnode xmldata)
+{
+  char *action, *node, *sessionid;
+  xmlnode iq, command, x;
+
+  x = xmlnode_get_tag(xmldata, "command");
+  action = xmlnode_get_attrib(x, "action");
+  node = xmlnode_get_attrib(x, "node");
+  sessionid = xmlnode_get_attrib(x, "sessionid");
+
+  iq = xmlnode_new_tag("iq");
+  command = xmlnode_insert_tag(iq, "command");
+  xmlnode_put_attrib(command, "node", node);
+  xmlnode_put_attrib(command, "xmlns", NS_COMMANDS);
+
+  if (!sessionid) {
+    sessionid = generate_session_id("leave-groupchats");
+    xmlnode_put_attrib(command, "sessionid", sessionid);
+    g_free(sessionid);
+    xmlnode_put_attrib(command, "status", "executing");
+
+    x = xmlnode_insert_tag(command, "x");
+    xmlnode_put_attrib(x, "type", "form");
+    xmlnode_put_attrib(x, "xmlns", "jabber:x:data");
+
+    xmlnode title = xmlnode_insert_tag(x, "title");
+    xmlnode_insert_cdata(title, "Leave groupchat(s)", -1);
+
+    xmlnode instructions = xmlnode_insert_tag(x, "instructions");
+    xmlnode_insert_cdata(instructions, "What groupchats do you want to leave?",
+                         -1);
+
+    xmlnode field = xmlnode_insert_tag(x, "field");
+    xmlnode_put_attrib(field, "type", "hidden");
+    xmlnode_put_attrib(field, "var", "FORM_TYPE");
+
+    xmlnode value = xmlnode_insert_tag(field, "value");
+    xmlnode_insert_cdata(value, "http://jabber.org/protocol/rc", -1);
+
+    field = xmlnode_insert_tag(x, "field");
+    xmlnode_put_attrib(field, "type", "list-multi");
+    xmlnode_put_attrib(field, "var", "groupchats");
+    xmlnode_put_attrib(field, "label", "Groupchats: ");
+    xmlnode_insert_tag(field, "required");
+
+    foreach_buddy(ROSTER_TYPE_ROOM, &_callback_foreach_buddy_groupchat, &field);
+  }
+  else // (if sessionid)
+  {
+    xmlnode form = xmlnode_get_tag(x, "x?xmlns=jabber:x:data");
+    if (form) {
+      xmlnode_put_attrib(command, "status", "completed");
+      xmlnode gc = xmlnode_get_tag(form, "field?var=groupchats");
+      xmlnode x;
+
+      for (x = xmlnode_get_firstchild(gc) ; x ; x = xmlnode_get_nextsibling(x))
+      {
+        char* to_leave = xmlnode_get_tag_data(x, "value");
+        if (to_leave) {
+          GList* b = buddy_search_jid(to_leave);
+          if (b)
+            room_leave(b->data, "Asked by remote command");
+        }
+      }
+      xmlnode_put_attrib(iq, "type", "result");
+      xmlnode_insert_dataform_result_message(command,
+                                             "Groupchats have been left");
+    }
+  }
+  xmlnode_put_attrib(iq, "to", xmlnode_get_attrib(xmldata, "from"));
+  xmlnode_put_attrib(iq, "id", id);
+  jab_send(jc, iq);
+  xmlnode_free(iq);
+}
+
+static void handle_iq_commands(jconn conn, char *from, const char *id,
+                               xmlnode xmldata)
+{
+  jid requester_jid;
+  xmlnode x;
+  const struct adhoc_command *command;
+
+  requester_jid = jid_new(conn->p, xmlnode_get_attrib(xmldata, "from"));
+  x = xmlnode_get_tag(xmldata, "command");
+  if (!jid_cmpx(conn->user, requester_jid, JID_USER | JID_SERVER) ) {
+    char *action, *node;
+    action = xmlnode_get_attrib(x, "action");
+    node = xmlnode_get_attrib(x, "node");
+    // action can be NULL, in which case it seems to take the default,
+    // ie execute
+    if (!action || !strcmp(action, "execute") || !strcmp(action, "cancel")
+        || !strcmp(action, "next") || !strcmp(action, "complete")) {
+      for (command = adhoc_command_list; command->name; command++) {
+        if (!strcmp(node, command->name))
+          command->callback(conn, from, id, xmldata);
+      }
+      // "prev" action will get there, as we do not implement it,
+      // and do not authorize it
+    } else {
+      send_iq_commands_malformed_action(conn, from, xmldata);
+    }
+  } else {
+    send_iq_forbidden(conn, from, xmldata);
+  }
+}
+
+static void handle_iq_disco_items(jconn conn, char *from, const char *id,
+                                  xmlnode xmldata)
+{
+  xmlnode x;
+  char *node;
+  x = xmlnode_get_tag(xmldata, "query");
+  node = xmlnode_get_attrib(x, "node");
+  if (node) {
+    if (!strcmp(node, NS_COMMANDS)) {
+      handle_iq_commands_list(conn, from, id, xmldata);
+    } else {
+      send_iq_not_implemented(conn, from, xmldata);
+    }
+  } else {
+    // not sure about this one
+    send_iq_not_implemented(conn, from, xmldata);
+  }
+}
+
+//  disco_info_set_ext(ansquery, ext)
+// Add features attributes to ansquery for extension ext.
+static void disco_info_set_ext(xmlnode ansquery, const char *ext)
+{
+  char *nodename;
+  nodename = g_strdup_printf("%s#%s", MCABBER_CAPS_NODE, ext);
+  xmlnode_put_attrib(ansquery, "node", nodename);
+  g_free(nodename);
+  if (!strcasecmp(ext, "csn")) {
+    // I guess it's ok to send this even if it's not compiled in.
+    xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                       "var", NS_CHATSTATES);
+  }
+}
+
+//  disco_info_set_default(ansquery, entitycaps)
+// Add features attributes to ansquery.  If entitycaps is TRUE, assume
+// that we're answering an Entity Caps request (if not, the request was
+// a basic discovery query).
+// Please change the entity version string if you modify mcabber disco
+// source code, so that it doesn't conflict with the upstream client.
+static void disco_info_set_default(xmlnode ansquery, guint entitycaps)
+{
+  xmlnode y;
+  char *eversion;
+
+  eversion = g_strdup_printf("%s#%s", MCABBER_CAPS_NODE, entity_version());
+  xmlnode_put_attrib(ansquery, "node", eversion);
+  g_free(eversion);
+
+  y = xmlnode_insert_tag(ansquery, "identity");
+  xmlnode_put_attrib(y, "category", "client");
+  xmlnode_put_attrib(y, "type", "pc");
+  xmlnode_put_attrib(y, "name", PACKAGE_NAME);
+
+  xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                     "var", NS_DISCO_INFO);
+  xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                     "var", NS_MUC);
+#ifdef JEP0085
+  // Advertise ChatStates only if we're not using Entity Capabilities
+  if (!entitycaps)
+    xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                       "var", NS_CHATSTATES);
+#endif
+  xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                     "var", NS_TIME);
+  xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                     "var", NS_VERSION);
+  xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                     "var", NS_PING);
+  xmlnode_put_attrib(xmlnode_insert_tag(ansquery, "feature"),
+                     "var", NS_COMMANDS);
+}
+
 static void handle_iq_disco_info(jconn conn, char *from, const char *id,
                                  xmlnode xmldata)
 {
-  xmlnode x, y;
+  xmlnode x;
   xmlnode myquery;
+  char *node;
 
   x = jutil_iqnew(JPACKET__RESULT, NS_DISCO_INFO);
   xmlnode_put_attrib(x, "id", id);
   xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
   myquery = xmlnode_get_tag(x, "query");
 
-  y = xmlnode_insert_tag(myquery, "identity");
-  xmlnode_put_attrib(y, "category", "client");
-  xmlnode_put_attrib(y, "type", "pc");
-  xmlnode_put_attrib(y, "name", PACKAGE_NAME);
+  node = xmlnode_get_attrib(xmlnode_get_tag(xmldata, "query"), "node");
+  if (node && startswith(node, MCABBER_CAPS_NODE "#", FALSE)) {
+    const char *param = node+strlen(MCABBER_CAPS_NODE)+1;
+    if (!strcmp(param, entity_version()))
+      disco_info_set_default(myquery, TRUE);  // client#version
+    else
+      disco_info_set_ext(myquery, param);     // client#extension
+  } else {
+    // Basic discovery request
+    disco_info_set_default(myquery, FALSE);
+  }
 
-  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
-                     "var", NS_DISCO_INFO);
-  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
-                     "var", NS_MUC);
-  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
-                     "var", NS_CHATSTATES);
-  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
-                     "var", NS_TIME);
-  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
-                     "var", NS_VERSION);
-  xmlnode_put_attrib(xmlnode_insert_tag(myquery, "feature"),
-                     "var", NS_PING);
   jab_send(jc, x);
   xmlnode_free(x);
 }
@@ -832,7 +1375,6 @@ static void handle_iq_ping(jconn conn, char *from, const char *id,
   xmlnode x;
   x = jutil_iqresult(xmldata);
   jab_send(jc, x);
-  xmlnode_free(x);
 }
 
 static void handle_iq_version(jconn conn, char *from, const char *id,
@@ -919,7 +1461,7 @@ static void handle_iq_time(jconn conn, char *from, const char *id,
 static void handle_iq_get(jconn conn, char *from, xmlnode xmldata)
 {
   const char *id, *ns;
-  xmlnode x, y, z;
+  xmlnode x;
   guint iq_not_implemented = FALSE;
 
   id = xmlnode_get_attrib(xmldata, "id");
@@ -939,6 +1481,8 @@ static void handle_iq_get(jconn conn, char *from, xmlnode xmldata)
   ns = xmlnode_get_attrib(x, "xmlns");
   if (ns && !strcmp(ns, NS_DISCO_INFO)) {
     handle_iq_disco_info(conn, from, id, xmldata);
+  } else if (ns && !strcmp(ns, NS_DISCO_ITEMS)) {
+    handle_iq_disco_items(conn, from, id, xmldata);
   } else if (ns && !strcmp(ns, NS_VERSION)) {
     handle_iq_version(conn, from, id, xmldata);
   } else if (ns && !strcmp(ns, NS_TIME)) {
@@ -950,26 +1494,13 @@ static void handle_iq_get(jconn conn, char *from, xmlnode xmldata)
   if (!iq_not_implemented)
     return;
 
-  // Not implemented.
-  x = xmlnode_dup(xmldata);
-  xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
-  xmlnode_hide_attrib(x, "from");
-
-  xmlnode_put_attrib(x, "type", TMSG_ERROR);
-  y = xmlnode_insert_tag(x, TMSG_ERROR);
-  xmlnode_put_attrib(y, "code", "501");
-  xmlnode_put_attrib(y, "type", "cancel");
-  z = xmlnode_insert_tag(y, "feature-not-implemented");
-  xmlnode_put_attrib(z, "xmlns", NS_XMPP_STANZAS);
-
-  jab_send(conn, x);
-  xmlnode_free(x);
+  send_iq_not_implemented(conn, from, xmldata);
 }
 
 static void handle_iq_set(jconn conn, char *from, xmlnode xmldata)
 {
   const char *id, *ns;
-  xmlnode x, y, z;
+  xmlnode x;
   guint iq_not_implemented = FALSE;
 
   id = xmlnode_get_attrib(xmldata, "id");
@@ -981,7 +1512,13 @@ static void handle_iq_set(jconn conn, char *from, xmlnode xmldata)
   if (ns && !strcmp(ns, NS_ROSTER)) {
     handle_iq_roster(x);
   } else {
-    iq_not_implemented = TRUE;
+    x = xmlnode_get_tag(xmldata, "command");
+    ns = xmlnode_get_attrib(x, "xmlns");
+    if (ns && !strcmp(ns, NS_COMMANDS)) {
+      handle_iq_commands(conn, from, id, xmldata);
+    } else {
+      iq_not_implemented = TRUE;
+    }
   }
 
   if (!id) return;
@@ -991,22 +1528,11 @@ static void handle_iq_set(jconn conn, char *from, xmlnode xmldata)
     xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
     xmlnode_put_attrib(x, "type", "result");
     xmlnode_put_attrib(x, "id", id);
+    jab_send(conn, x);
+    xmlnode_free(x);
   } else {
-    /* Not implemented yet: send an error stanza */
-    x = xmlnode_dup(xmldata);
-    xmlnode_put_attrib(x, "to", xmlnode_get_attrib(xmldata, "from"));
-    xmlnode_hide_attrib(x, "from");
-    xmlnode_put_attrib(x, "type", "result");
-    xmlnode_put_attrib(x, "type", TMSG_ERROR);
-    y = xmlnode_insert_tag(x, TMSG_ERROR);
-    xmlnode_put_attrib(y, "code", "501");
-    xmlnode_put_attrib(y, "type", "cancel");
-    z = xmlnode_insert_tag(y, "feature-not-implemented");
-    xmlnode_put_attrib(z, "xmlns", NS_XMPP_STANZAS);
+    send_iq_not_implemented(conn, from, xmldata);
   }
-
-  jab_send(conn, x);
-  xmlnode_free(x);
 }
 
 void handle_packet_iq(jconn conn, char *type, char *from, xmlnode xmldata)
@@ -1021,10 +1547,10 @@ void handle_packet_iq(jconn conn, char *type, char *from, xmlnode xmldata)
   } else if (!strcmp(type, "set")) {
     handle_iq_set(conn, from, xmldata);
   } else if (!strcmp(type, TMSG_ERROR)) {
+    // Display a message only if the error isn't caught by a callback.
     xmlnode x = xmlnode_get_tag(xmldata, TMSG_ERROR);
-    if (x)
+    if (iqs_callback(xmlnode_get_attrib(xmldata, "id"), x, IQS_CONTEXT_ERROR))
       display_server_error(x);
-    iqs_callback(xmlnode_get_attrib(xmldata, "id"), NULL, IQS_CONTEXT_ERROR);
   }
 }
 

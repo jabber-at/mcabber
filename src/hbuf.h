@@ -14,17 +14,18 @@
 #define HBB_FLAG_ALLOC      1
 #define HBB_FLAG_PERSISTENT 2
 
-#define HBB_PREFIX_IN          1U
-#define HBB_PREFIX_OUT         2U
-#define HBB_PREFIX_STATUS      4U
-#define HBB_PREFIX_AUTH        8U
-#define HBB_PREFIX_INFO       16U
-#define HBB_PREFIX_ERR        32U
-#define HBB_PREFIX_NOFLAG     64U
-#define HBB_PREFIX_HLIGHT    128U
-#define HBB_PREFIX_NONE      256U
-#define HBB_PREFIX_SPECIAL   512U
-#define HBB_PREFIX_PGPCRYPT 1024U
+#define HBB_PREFIX_IN         (1U<<0)
+#define HBB_PREFIX_OUT        (1U<<1)
+#define HBB_PREFIX_STATUS     (1U<<2)
+#define HBB_PREFIX_AUTH       (1U<<3)
+#define HBB_PREFIX_INFO       (1U<<4)
+#define HBB_PREFIX_ERR        (1U<<5)
+#define HBB_PREFIX_NOFLAG     (1U<<6)
+#define HBB_PREFIX_HLIGHT_OUT (1U<<7)
+#define HBB_PREFIX_HLIGHT     (1U<<8)
+#define HBB_PREFIX_NONE       (1U<<9)
+#define HBB_PREFIX_SPECIAL    (1U<<10)
+#define HBB_PREFIX_PGPCRYPT   (1U<<11)
 
 typedef struct {
   time_t timestamp;
@@ -42,6 +43,10 @@ hbb_line **hbuf_get_lines(GList *hbuf, unsigned int n);
 GList *hbuf_search(GList *hbuf, int direction, const char *string);
 GList *hbuf_jump_date(GList *hbuf, time_t t);
 GList *hbuf_jump_percent(GList *hbuf, int pc);
+
+#ifdef DEBUG_ENABLE
+guint hbuf_get_blocks_number(GList *p_hbuf);
+#endif
 
 #endif /* __HBUF_H__ */
 

@@ -1,7 +1,7 @@
 /*
  * settings.c   -- Configuration stuff
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -38,6 +38,7 @@ static GHashTable *pgpopt;
 typedef struct {
   gchar *pgp_keyid;   /* KeyId the contact is supposed to use */
   guint pgp_disabled; /* If TRUE, PGP is disabled for outgoing messages */
+  guint pgp_force;    /* If TRUE, PGP is used w/o negotiation */
 } T_pgpopt;
 #endif
 
@@ -61,11 +62,14 @@ void settings_init(void)
 #endif
 }
 
-//  cfg_read_file(filename)
+//  cfg_read_file(filename, mainfile)
 // Read and parse config file "filename".  If filename is NULL,
 // try to open the configuration file at the default locations.
+// mainfile must be set to TRUE for the startup config file.
+// If mainfile is TRUE, the permissions of the configuration file will
+// be fixed if they're insecure.
 //
-int cfg_read_file(char *filename)
+int cfg_read_file(char *filename, guint mainfile)
 {
   FILE *fp;
   char *buf;
@@ -75,7 +79,14 @@ int cfg_read_file(char *filename)
 
   if (!filename) {
     // Use default config file locations
-    char *home = getenv("HOME");
+    char *home;
+
+    if (!mainfile) {
+      scr_LogPrint(LPRINT_LOGNORM, "No file name provided");
+      return -1;
+    }
+
+    home = getenv("HOME");
     if (!home) {
       scr_LogPrint(LPRINT_LOG, "Can't find home dir!");
       fprintf(stderr, "Can't find home dir!\n");
@@ -95,17 +106,26 @@ int cfg_read_file(char *filename)
     // Check configuration file permissions
     // As it could contain sensitive data, we make it user-readable only
     checkset_perm(filename, TRUE);
+    scr_LogPrint(LPRINT_LOGNORM, "Reading %s", filename);
     // Check mcabber dir.  There we just warn, we don't change the modes
     sprintf(filename, "%s/.mcabber/", home);
     checkset_perm(filename, FALSE);
     g_free(filename);
+    filename = NULL;
   } else {
     if ((fp = fopen(filename, "r")) == NULL) {
-      perror("Cannot open configuration file");
+      const char *msg = "Cannot open configuration file";
+      if (mainfile)
+        perror(msg);
+      else
+        scr_LogPrint(LPRINT_LOGNORM, "%s (%s).", msg, filename);
       return -2;
     }
     // Check configuration file permissions (see above)
-    checkset_perm(filename, TRUE);
+    // We don't change the permissions if that's not the main file.
+    if (mainfile)
+      checkset_perm(filename, TRUE);
+    scr_LogPrint(LPRINT_LOGNORM, "Reading %s", filename);
   }
 
   buf = g_new(char, 512);
@@ -133,12 +153,15 @@ int cfg_read_file(char *filename)
     if ((*line == '\n') || (*line == '\0') || (*line == '#'))
       continue;
 
-    if ((strchr(line, '=') != NULL) || !strncmp(line, "pgp ", strlen("pgp "))) {
-      // Only accept the set, alias, bind and pgp commands
-      if (strncmp(line, "set ", strlen("set ")) &&
-          strncmp(line, "pgp ", strlen("pgp ")) &&
-          strncmp(line, "bind ", strlen("bind ")) &&
-          strncmp(line, "alias ", strlen("alias "))) {
+    // We only allow assignments line, except for commands "pgp" and "source"
+    if ((strchr(line, '=') != NULL) ||
+        startswith(line, "pgp ", FALSE) || startswith(line, "source ", FALSE)) {
+      // Only accept the set, alias, bind, pgp and source commands
+      if (!startswith(line, "set ", FALSE)   &&
+          !startswith(line, "bind ", FALSE)  &&
+          !startswith(line, "alias ", FALSE) &&
+          !startswith(line, "pgp ", FALSE)   &&
+          !startswith(line, "source ", FALSE)) {
         scr_LogPrint(LPRINT_LOGNORM,
                      "Error in configuration file (l. %d): bad command", ln);
         err++;
@@ -147,7 +170,7 @@ int cfg_read_file(char *filename)
       // Set the leading COMMAND_CHAR to build a command line
       // and process the command
       *(--line) = COMMAND_CHAR;
-      process_command(line);
+      process_command(line, TRUE);
     } else {
       scr_LogPrint(LPRINT_LOGNORM,
                    "Error in configuration file (l. %d): no assignment", ln);
@@ -156,6 +179,9 @@ int cfg_read_file(char *filename)
   }
   g_free(buf);
   fclose(fp);
+
+  if (filename)
+    scr_LogPrint(LPRINT_LOGNORM, "Loaded %s.", filename);
   return err;
 }
 
@@ -381,9 +407,49 @@ guint settings_pgp_getdisabled(const char *bjid)
   if (pgpdata)
     return pgpdata->pgp_disabled;
   else
-    return FALSE; // default: not disabled
+    return FALSE; // Default: not disabled
 #else
   return TRUE;    // No PGP support, let's say it's disabled.
+#endif
+}
+
+//  settings_pgp_setforce(jid, value)
+// Force (or not) PGP encryption for jid.
+// When value is TRUE, PGP support will be assumed for the remote client.
+void settings_pgp_setforce(const char *bjid, guint value)
+{
+#ifdef HAVE_GPGME
+  T_pgpopt *pgpdata;
+  pgpdata = g_hash_table_lookup(pgpopt, bjid);
+  if (!pgpdata) {
+    // If value is 0, we do not need to create a structure (that's
+    // the default value).
+    if (value) {
+      pgpdata = g_new0(T_pgpopt, 1);
+      pgpdata->pgp_force = value;
+      g_hash_table_insert(pgpopt, g_strdup(bjid), pgpdata);
+    }
+  } else {
+    pgpdata->pgp_force = value;
+  }
+  if (!pgpdata->pgp_keyid)
+    scr_LogPrint(LPRINT_NORMAL, "Warning: the Key Id is not set!");
+#endif
+}
+
+//  settings_pgp_getforce(jid)
+// Return TRUE if PGP enforcement is set for jid.
+guint settings_pgp_getforce(const char *bjid)
+{
+#ifdef HAVE_GPGME
+  T_pgpopt *pgpdata;
+  pgpdata = g_hash_table_lookup(pgpopt, bjid);
+  if (pgpdata)
+    return pgpdata->pgp_force;
+  else
+    return FALSE; // Default
+#else
+  return FALSE;   // No PGP support
 #endif
 }
 

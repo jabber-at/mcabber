@@ -24,7 +24,7 @@
 #define mkcmdstr(cmd) COMMAND_CHARSTR cmd
 
 void    settings_init(void);
-int     cfg_read_file(char *filename);
+int     cfg_read_file(char *filename, guint mainfile);
 guint   parse_assigment(gchar *assignment, gchar **pkey, gchar **pval);
 void    settings_set(guint type, const gchar *key, const gchar *value);
 void    settings_del(guint type, const gchar *key);
@@ -37,6 +37,8 @@ void    settings_foreach(guint type,
 
 void    settings_pgp_setdisabled(const char *bjid, guint value);
 guint   settings_pgp_getdisabled(const char *bjid);
+void    settings_pgp_setforce(const char *bjid, guint value);
+guint   settings_pgp_getforce(const char *bjid);
 void    settings_pgp_setkeyid(const char *bjid, const char *keyid);
 const char *settings_pgp_getkeyid(const char *bjid);
 

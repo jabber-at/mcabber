@@ -1,7 +1,7 @@
 /*
  * histolog.c   -- File history handling
  *
- * Copyright (C) 2005, 2006 Mikael Berthe <bmikael@lists.lilotux.net>
+ * Copyright (C) 2005-2007 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -59,6 +59,33 @@ static char *user_histo_file(const char *bjid)
   filename = g_strdup_printf("%s%s", RootDir, lowerid);
   g_free(lowerid);
   return filename;
+}
+
+char *hlog_get_log_jid(const char *bjid)
+{
+  struct stat bufstat;
+  char *path;
+  char *log_jid = NULL;
+  
+  path = user_histo_file(bjid);
+  do {  
+    /*scr_LogPrint(LPRINT_NORMAL, "path=%s", path);*/
+    if(lstat(path, &bufstat) != 0)
+      break;
+    if(S_ISLNK(bufstat.st_mode)) {
+      g_free(log_jid);
+      log_jid = g_new(char, bufstat.st_size+1);
+      readlink(path, log_jid, bufstat.st_size);
+      g_free(path);
+      log_jid[bufstat.st_size] = '\0';
+      path = user_histo_file(log_jid);
+    } else {
+      g_free(path);
+      path = NULL;
+    }
+  } while( path );
+
+  return log_jid;
 }
 
 //  write_histo_line()
@@ -253,7 +280,7 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
     if (type == 'M') {
       char *converted;
       if (info == 'S')
-        prefix_flags = HBB_PREFIX_OUT | HBB_PREFIX_HLIGHT;
+        prefix_flags = HBB_PREFIX_OUT | HBB_PREFIX_HLIGHT_OUT;
       else
         prefix_flags = HBB_PREFIX_IN;
       converted = from_utf8(&data[dataoffset+1]);
@@ -282,17 +309,21 @@ void hlog_enable(guint enable, const char *root_dir, guint loadfiles)
 
   if (enable || loadfiles) {
     if (root_dir) {
+      char *xp_root_dir;
       int l = strlen(root_dir);
       if (l < 1) {
         scr_LogPrint(LPRINT_LOGNORM, "Error: logging dir name too short");
         UseFileLogging = FileLoadLogs = FALSE;
         return;
       }
+      xp_root_dir = expand_filename(root_dir);
       // RootDir must be slash-terminated
-      if (root_dir[l-1] == '/')
-        RootDir = g_strdup(root_dir);
-      else
-        RootDir = g_strdup_printf("%s/", root_dir);
+      if (root_dir[l-1] == '/') {
+        RootDir = xp_root_dir;
+      } else {
+        RootDir = g_strdup_printf("%s/", xp_root_dir);
+        g_free(xp_root_dir);
+      }
     } else {
       char *home = getenv("HOME");
       const char *dir = "/.mcabber/histo/";
@@ -322,8 +353,7 @@ inline void hlog_write_message(const char *bjid, time_t timestamp, int sent,
 inline void hlog_write_status(const char *bjid, time_t timestamp,
         enum imstatus status, const char *status_msg)
 {
-  // #1 XXX Check status value?
-  // #2 We could add a user-readable comment
+  // XXX Check status value?
   write_histo_line(bjid, timestamp, 'S', toupper(imstatus2char[status]),
           status_msg);
 }

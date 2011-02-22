@@ -21,6 +21,9 @@
 # define iswblank(c) (c == ' ')
 # define iswalnum(c) isalnum(c)
 # define iswprint(c) isprint(c)
+# define towupper(c) toupper(c)
+# define towlower(c) tolower(c)
+# define iswalpha(c) isalpha(c)
 #endif
 
 extern int utf8_mode;
