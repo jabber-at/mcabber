@@ -51,8 +51,7 @@ static void decline_invitation(event_muc_invitation *invitation, const char *rea
   m = lm_message_new(invitation->to, LM_MESSAGE_TYPE_MESSAGE);
 
   x = lm_message_node_add_child(m->node, "x", NULL);
-  lm_message_node_set_attribute(x, "xmlns",
-                                "http://jabber.org/protocol/muc#user");
+  lm_message_node_set_attribute(x, "xmlns", NS_MUC_USER);
 
   y = lm_message_node_add_child(x, "decline", NULL);
   lm_message_node_set_attribute(y, "to", invitation->from);
@@ -148,8 +147,9 @@ void xmpp_room_join(const char *room, const char *nickname, const char *passwd)
 
   // Send the XML request
   x = lm_message_new_presence(mystatus, roomid, mystatusmsg);
+  xmpp_insert_entity_capabilities(x->node, mystatus); // Entity Caps (XEP-0115)
   y = lm_message_node_add_child(x->node, "x", NULL);
-  lm_message_node_set_attribute(y, "xmlns", "http://jabber.org/protocol/muc");
+  lm_message_node_set_attribute(y, "xmlns", NS_MUC);
   if (passwd)
     lm_message_node_add_child(y, "password", passwd);
 
@@ -172,8 +172,7 @@ void xmpp_room_invite(const char *room, const char *fjid, const char *reason)
   msg = lm_message_new(room, LM_MESSAGE_TYPE_MESSAGE);
 
   x = lm_message_node_add_child(msg->node, "x", NULL);
-  lm_message_node_set_attribute(x, "xmlns",
-                                "http://jabber.org/protocol/muc#user");
+  lm_message_node_set_attribute(x, "xmlns", NS_MUC_USER);
 
   y = lm_message_node_add_child(x, "invite", NULL);
   lm_message_node_set_attribute(y, "to", fjid);
@@ -211,8 +210,7 @@ int xmpp_room_setattrib(const char *roomid, const char *fjid,
   iq = lm_message_new_with_sub_type(roomid, LM_MESSAGE_TYPE_IQ,
                                     LM_MESSAGE_SUB_TYPE_SET);
   query = lm_message_node_add_child(iq->node, "query", NULL);
-  lm_message_node_set_attribute(query, "xmlns",
-                                "http://jabber.org/protocol/muc#admin");
+  lm_message_node_set_attribute(query, "xmlns", NS_MUC_ADMIN);
   x = lm_message_node_add_child(query, "item", NULL);
 
   if (fjid) {
@@ -249,8 +247,7 @@ void xmpp_room_unlock(const char *room)
                                     LM_MESSAGE_SUB_TYPE_SET);
 
   node = lm_message_node_add_child(iq->node, "query", NULL);
-  lm_message_node_set_attribute(node, "xmlns",
-                                "http://jabber.org/protocol/muc#owner");
+  lm_message_node_set_attribute(node, "xmlns", NS_MUC_OWNER);
   node = lm_message_node_add_child(node, "x", NULL);
   lm_message_node_set_attributes(node, "xmlns", "jabber:x:data",
                                  "type", "submit", NULL);
@@ -272,8 +269,7 @@ void xmpp_room_destroy(const char *room, const char *venue, const char *reason)
   iq = lm_message_new_with_sub_type(room, LM_MESSAGE_TYPE_IQ,
                                     LM_MESSAGE_SUB_TYPE_SET);
   query = lm_message_node_add_child(iq->node, "query", NULL);
-  lm_message_node_set_attribute(query, "xmlns",
-                                "http://jabber.org/protocol/muc#owner");
+  lm_message_node_set_attribute(query, "xmlns", NS_MUC_OWNER);
   x = lm_message_node_add_child(query, "destroy", NULL);
 
   if (venue && *venue)
@@ -325,6 +321,8 @@ static void muc_get_item_info(const char *from, LmMessageNode *xmldata,
   *mbnick = lm_message_node_get_attribute(y, "nick");
   // For kick/ban, there can be actor and reason tags
   *reason = lm_message_node_get_child_value(y, "reason");
+  if (*reason && !**reason)
+    *reason = NULL;
   z = lm_message_node_find_child(y, "actor");
   if (z)
     *actorjid = lm_message_node_get_attribute(z, "jid");
@@ -491,7 +489,7 @@ void handle_muc_presence(const char *from, LmMessageNode *xmldata,
   }
 
   // Check for departure/arrival
-  if (!mbnick && ust == offline) {
+  if (statuscode != 303 && ust == offline) {
     // Somebody is leaving
     enum { leave=0, kick, ban } how = leave;
     bool we_left = FALSE;
@@ -515,21 +513,27 @@ void handle_muc_presence(const char *from, LmMessageNode *xmldata,
     // The message depends on _who_ left, and _how_
     if (how) {
       gchar *mbuf_end;
+      gchar *reason_msg = NULL;
       // Forced leave
       if (actorjid) {
-        mbuf_end = g_strdup_printf("%s from %s by <%s>.\nReason: %s",
+        mbuf_end = g_strdup_printf("%s from %s by <%s>.",
                                    (how == ban ? "banned" : "kicked"),
-                                   roomjid, actorjid, reason);
+                                   roomjid, actorjid);
       } else {
         mbuf_end = g_strdup_printf("%s from %s.",
                                    (how == ban ? "banned" : "kicked"),
                                    roomjid);
       }
+      if (reason)
+        reason_msg = g_strdup_printf("\nReason: %s", reason);
       if (we_left)
-        mbuf = g_strdup_printf("You have been %s", mbuf_end);
+        mbuf = g_strdup_printf("You have been %s%s", mbuf_end,
+                               reason_msg ? reason_msg : "");
       else
-        mbuf = g_strdup_printf("%s has been %s", rname, mbuf_end);
+        mbuf = g_strdup_printf("%s has been %s%s", rname, mbuf_end,
+                               reason_msg ? reason_msg : "");
 
+      g_free(reason_msg);
       g_free(mbuf_end);
     } else {
       // Natural leave
@@ -537,8 +541,8 @@ void handle_muc_presence(const char *from, LmMessageNode *xmldata,
         LmMessageNode *destroynode = lm_message_node_find_child(xmldata,
                                                                 "destroy");
         if (destroynode) {
-          if ((reason = lm_message_node_get_child_value(destroynode,
-                                                       "reason"))) {
+          reason = lm_message_node_get_child_value(destroynode, "reason");
+          if (reason && *reason) {
             mbuf = g_strdup_printf("You have left %s, "
                                    "the room has been destroyed: %s",
                                    roomjid, reason);

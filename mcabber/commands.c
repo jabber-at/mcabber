@@ -195,7 +195,7 @@ void cmd_init(void)
           COMPL_JID, COMPL_STATUS, &do_status_to);
   cmd_add("version", "Show mcabber version", 0, 0, &do_version);
 #ifdef MODULES_ENABLE
-  cmd_add("module", "Manipulations with modules", 0, 0, &do_module);
+  cmd_add("module", "Manipulations with modules", COMPL_MODULE, 0, &do_module);
 #endif
 
   // Status category
@@ -330,6 +330,14 @@ void cmd_init(void)
   compl_add_category_word(COMPL_COLOR, "roster");
   compl_add_category_word(COMPL_COLOR, "muc");
   compl_add_category_word(COMPL_COLOR, "mucnick");
+
+#ifdef MODULES_ENABLE
+  // Module category
+  compl_add_category_word(COMPL_MODULE, "info");
+  compl_add_category_word(COMPL_MODULE, "list");
+  compl_add_category_word(COMPL_MODULE, "load");
+  compl_add_category_word(COMPL_MODULE, "unload");
+#endif
 }
 
 //  expandalias(line)
@@ -3217,6 +3225,13 @@ static void do_version(char *arg)
   gchar *ver = mcabber_version();
   scr_LogPrint(LPRINT_NORMAL, "This is mcabber version %s.", ver);
   g_free(ver);
+#ifdef MODULES_ENABLE
+  scr_LogPrint(LPRINT_NORMAL, "Compiled with modules support (API %s:%d-%d).",
+         MCABBER_BRANCH, MCABBER_API_MIN, MCABBER_API_VERSION);
+# ifdef PKGLIB_DIR
+  scr_LogPrint(LPRINT_NORMAL, " Modules directory: " PKGLIB_DIR);
+# endif
+#endif
 }
 
 static void do_request(char *arg)

@@ -197,6 +197,15 @@ void hk_message_in(const char *bjid, const char *resname,
   unsigned mucnicklen = 0;
   const char *ename = NULL;
   gboolean attention = FALSE, mucprivmsg = FALSE;
+  gboolean error_msg_subtype = (type == LM_MESSAGE_SUB_TYPE_ERROR);
+#ifdef MODULES_ENABLE
+  gchar strdelay[32];
+
+  if (timestamp)
+    to_iso8601(strdelay, timestamp);
+  else
+    strdelay[0] = '\0';
+#endif
 
   if (encrypted == ENCRYPTED_PGP)
     message_flags |= HBB_PREFIX_PGPCRYPT;
@@ -240,6 +249,8 @@ void hk_message_in(const char *bjid, const char *resname,
       { "resource", resname },
       { "message", msg },
       { "groupchat", is_groupchat ? "true" : "false" },
+      { "delayed", strdelay },
+      { "error", error_msg_subtype ? "true" : "false" },
       { NULL, NULL },
     };
     h_result = hk_run_handlers(HOOK_PRE_MESSAGE_IN, args);
@@ -323,7 +334,7 @@ void hk_message_in(const char *bjid, const char *resname,
     }
   }
 
-  if (type  == LM_MESSAGE_SUB_TYPE_ERROR) {
+  if (error_msg_subtype) {
     message_flags = HBB_PREFIX_ERR | HBB_PREFIX_IN;
     scr_LogPrint(LPRINT_LOGNORM, "Error message received from <%s>", bjid);
   }
@@ -389,6 +400,8 @@ void hk_message_in(const char *bjid, const char *resname,
       { "message", msg },
       { "groupchat", is_groupchat ? "true" : "false" },
       { "attention", attention ? "true" : "false" },
+      { "delayed", strdelay },
+      { "error", error_msg_subtype ? "true" : "false" },
       { NULL, NULL },
     };
     hk_run_handlers(HOOK_POST_MESSAGE_IN, args);
@@ -697,6 +710,42 @@ void hk_unread_list_change(guint unread_count, guint attention_count,
                                muc_unread, muc_attention);
   hk_ext_cmd("", 'U', (guchar)MIN(255, unread_count), str_unread);
   g_free(str_unread);
+}
+
+//  hk_presence_subscription_request(jid, message)
+// Return non-zero if mcabber should stop processing the subscription request
+guint hk_subscription(LmMessageSubType mstype, const gchar *bjid,
+                      const gchar *msg)
+{
+#ifdef MODULES_ENABLE
+  guint h_result;
+  const char *stype;
+
+  if (mstype == LM_MESSAGE_SUB_TYPE_SUBSCRIBE)
+    stype = "subscribe";
+  else if (mstype == LM_MESSAGE_SUB_TYPE_UNSUBSCRIBE)
+    stype = "unsubscribe";
+  else if (mstype == LM_MESSAGE_SUB_TYPE_SUBSCRIBED)
+    stype = "subscribed";
+  else if (mstype == LM_MESSAGE_SUB_TYPE_UNSUBSCRIBED)
+    stype = "unsubscribed";
+  else return 0; // Should not happen
+
+  {
+    hk_arg_t args[] = {
+      { "type", stype },
+      { "jid", bjid },
+      { "message", msg ? msg : "" },
+      { NULL, NULL },
+    };
+    h_result = hk_run_handlers(HOOK_SUBSCRIPTION, args);
+  }
+  if (h_result != HOOK_HANDLER_RESULT_ALLOW_MORE_HANDLERS) {
+    scr_LogPrint(LPRINT_DEBUG, "Subscription message ignored (hook result).");
+    return h_result;
+  }
+#endif
+  return 0;
 }
 
 

@@ -1,8 +1,8 @@
 /*
  * xmpp_helper.c    -- Jabber protocol helper functions
  *
- * Copyright (C) 2008-2009 Frank Zschockelt <mcabber@freakysoft.de>
- * Copyright (C) 2005-2009 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2008-2010 Frank Zschockelt <mcabber@freakysoft.de>
+ * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -109,9 +109,11 @@ const gchar* lm_message_node_get_child_value(LmMessageNode *node,
 {
   LmMessageNode *tmp;
   tmp = lm_message_node_find_child(node, child);
-  if (tmp)
-    return lm_message_node_get_value(tmp);
-  else return NULL;
+  if (tmp) {
+    const gchar *val = lm_message_node_get_value(tmp);
+    return (val ? val : "");
+  }
+  return NULL;
 }
 
 static LmMessageNode *hidden = NULL;

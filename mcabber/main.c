@@ -2,7 +2,6 @@
  * main.c
  *
  * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
- * Parts of this file come from Cabber <cabber@ajmacias.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -48,6 +47,7 @@
 #include "events.h"
 
 #ifdef MODULES_ENABLE
+# include "compl.h"
 # include "modules.h"
 #endif
 
@@ -163,7 +163,7 @@ static void credits(void)
   const char *v_fmt = "MCabber %s -- Email: mcabber [at] lilotux [dot] net\n";
   char *v = mcabber_version();
   printf(v_fmt, v);
-  scr_LogPrint(LPRINT_LOGNORM|LPRINT_NOTUTF8, v_fmt, v);
+  scr_LogPrint(LPRINT_NORMAL|LPRINT_NOTUTF8, v_fmt, v);
   g_free(v);
 }
 
@@ -364,6 +364,7 @@ int main(int argc, char **argv)
   scr_init_bindings();
   caps_init();
 #ifdef MODULES_ENABLE
+  compl_init_system();
   modules_init();
 #endif
   /* Initialize charset */
@@ -379,19 +380,35 @@ int main(int argc, char **argv)
   if (ret == -2)
     exit(EXIT_FAILURE);
 
+  /* Display configuration settings */
+  {
+    const char *p;
+    if ((p = settings_opt_get("server")) != NULL)
+      scr_log_print(LPRINT_NORMAL, "Server: %s", p);
+    if ((p = settings_opt_get("jid")) != NULL) {
+      scr_log_print(LPRINT_NORMAL, "User JID: %s", p);
+    } else if (settings_opt_get("username")) {
+      /* TODO: remove after 0.10.2/3 */
+      scr_log_print(LPRINT_NORMAL, "** ERROR: The JID is missing, but "
+                    "the variable 'username' is defined in your "
+                    "configuration file.\n"
+                    "** Please update your configuration file and set "
+                    "the 'jid' variable.");
+    }
+
+    if (settings_opt_get("ssl_verify")) {  // Deprecated option
+      /* TODO: remove after 0.10.2/3 */
+      scr_log_print(LPRINT_NORMAL,
+                    "** ERROR: The option ssl_verify is deprecated.\n"
+                    "** Please update your configuration file and use "
+                    "the 'ssl_ignore_checks' variable.");
+    }
+  }
+
   /* If no password is stored, we ask for it before entering
      ncurses mode -- unless the username is unknown. */
   if (settings_opt_get("jid") && !settings_opt_get("password")) {
-    const char *p;
-    char *pwd;
-    p = settings_opt_get("server");
-    if (p)
-      printf("Server: %s\n", p);
-    p = settings_opt_get("jid");
-    if (p)
-      printf("User JID: %s\n", p);
-
-    pwd = ask_password("your Jabber password");
+    char *pwd = ask_password("your Jabber password");
     settings_set(SETTINGS_TYPE_OPTION, "password", pwd);
     g_free(pwd);
   }
