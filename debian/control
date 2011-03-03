@@ -2,8 +2,8 @@ Source: mcabber
 Section: net
 Priority: optional
 Maintainer: Mario Iseli <mario@debian.org>
-Uploaders: Gerfried Fuchs <rhonda@debian.at>
-Build-Depends: debhelper (>= 7), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, libotr2-dev (>= 3.1.0), libgcrypt11-dev, libaspell-dev, libloudmouth1-dev
+Uploaders: Gerfried Fuchs <rhonda@debian.org>
+Build-Depends: debhelper (>= 7), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, libotr2-dev (>= 3.1.0), libgcrypt11-dev, libaspell-dev, libloudmouth1-dev, quilt
 Homepage: http://www.mcabber.com/
 Standards-Version: 3.8.4
 
