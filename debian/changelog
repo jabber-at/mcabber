@@ -9,7 +9,7 @@ mcabber (0.10.0-1+squeeze1) squeeze; urgency=medium
   * Pull upstream commit ee8657ff9aa8 to fix two FD leaks
     (closes: #612799)
 
- -- 
+ -- Gerfried Fuchs <rhonda@debian.org>  Fri, 04 Mar 2011 20:06:56 +0100
 
 mcabber (0.10.0-1) unstable; urgency=low
 
