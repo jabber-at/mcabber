@@ -2,6 +2,8 @@ mcabber (0.10.0-1+squeeze1) squeeze; urgency=medium
 
   * Pull upstream commit 3695266e16c7 to fix crash after /status invisible
     (closes: #612797)
+  * Pull upstream commit e09763e16e49 to fix segfault related to url_regex
+    (closes: #612798)
 
  -- 
 

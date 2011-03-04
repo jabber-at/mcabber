@@ -1,0 +1,30 @@
+From: franky
+Subject: Fix segfault related to url_regex. The url_regex value should be reset when scr_terminate_curses() in order to avoid a race condition with OTR uninitialization routines, which can cause a segfault when exiting.
+Origin: upstream, http://mcabber.com/hg/index.cgi/rev/e09763e16e49
+Bug-Debian: http://bugs.debian.org/612798
+
+Index: mcabber-0.10.0/mcabber/screen.c
+===================================================================
+--- mcabber-0.10.0.orig/mcabber/screen.c	2011-02-10 20:46:03.000000000 +0100
++++ mcabber-0.10.0/mcabber/screen.c	2011-02-10 20:46:11.000000000 +0100
+@@ -163,7 +163,7 @@
+ } keyseq;
+ 
+ #ifdef HAVE_GLIB_REGEX
+-static GRegex *url_regex;
++static GRegex *url_regex = NULL;
+ #endif
+ 
+ GSList *keyseqlist;
+@@ -808,8 +808,10 @@
+   refresh();
+   endwin();
+ #ifdef HAVE_GLIB_REGEX
+-  if (url_regex)
++  if (url_regex) {
+     g_regex_unref(url_regex);
++    url_regex = NULL;
++  }
+ #endif
+   Curses = FALSE;
+   return;
