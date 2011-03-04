@@ -4,6 +4,8 @@ mcabber (0.10.0-1+squeeze1) squeeze; urgency=medium
     (closes: #612797)
   * Pull upstream commit e09763e16e49 to fix segfault related to url_regex
     (closes: #612798)
+  * Pull upstream commit 75a0a22bbf78 to fix commandline corruption
+    (closes: #612789)
 
  -- 
 
