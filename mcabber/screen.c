@@ -163,7 +163,7 @@ typedef struct {
 } keyseq;
 
 #ifdef HAVE_GLIB_REGEX
-static GRegex *url_regex;
+static GRegex *url_regex = NULL;
 #endif
 
 GSList *keyseqlist;
@@ -808,8 +808,10 @@ void scr_terminate_curses(void)
   refresh();
   endwin();
 #ifdef HAVE_GLIB_REGEX
-  if (url_regex)
+  if (url_regex) {
     g_regex_unref(url_regex);
+    url_regex = NULL;
+  }
 #endif
   Curses = FALSE;
   return;
@@ -3141,6 +3143,14 @@ static const char *scr_cmdhisto_next(char *mask, guint len)
   return cmdhisto_backup;
 }
 
+static char *_strmove(char *dst, const char *src)
+{
+  char *dest = dst;
+  while ((*dest++ = *src++) != '\0')
+    ;
+  return dest;
+}
+
 //  readline_transpose_chars()
 // Drag  the  character  before point forward over the character at
 // point, moving point forward as well.  If point is at the end  of
@@ -3221,10 +3231,7 @@ void readline_backward_kill_word(void)
 
   // Modify the line
   ptr_inputline = c;
-  for (;;) {
-    *c = *old++;
-    if (!*c++) break;
-  }
+  _strmove(ptr_inputline, old);
   check_offset(-1);
 }
 
@@ -3451,9 +3458,7 @@ void readline_backward_kill_char(void)
   src = ptr_inputline;
   c = prev_char(ptr_inputline, inputLine);
   ptr_inputline = c;
-  for ( ; *src ; )
-    *c++ = *src++;
-  *c = 0;
+  _strmove(ptr_inputline, src);
   check_offset(-1);
 }
 
@@ -3462,7 +3467,7 @@ void readline_forward_kill_char(void)
   if (!*ptr_inputline)
     return;
 
-  strcpy(ptr_inputline, next_char(ptr_inputline));
+  _strmove(ptr_inputline, next_char(ptr_inputline));
 }
 
 void readline_iline_start(void)
@@ -3486,7 +3491,7 @@ void readline_backward_kill_iline(void)
   if (*dest == COMMAND_CHAR && ptr_inputline != dest+1)
     dest = next_char(dest);
 
-  strcpy(dest, ptr_inputline);
+  _strmove(dest, ptr_inputline);
   ptr_inputline = dest;
   inputline_offset = 0;
 }
