@@ -6,6 +6,8 @@ mcabber (0.10.0-1+squeeze1) squeeze; urgency=medium
     (closes: #612798)
   * Pull upstream commit 75a0a22bbf78 to fix commandline corruption
     (closes: #612789)
+  * Pull upstream commit ee8657ff9aa8 to fix two FD leaks
+    (closes: #612799)
 
  -- 
 

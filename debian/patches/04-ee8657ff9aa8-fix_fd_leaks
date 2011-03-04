@@ -1,0 +1,32 @@
+From: franky
+Subject: Fix two FD leaks (could lead to FD starvation over time)
+Origin: upstream, http://mcabber.com/hg/index.cgi/rev/ee8657ff9aa8
+Bug-Debian: http://bugs.debian.org/612799
+
+Index: mcabber-0.10.0/mcabber/fifo.c
+===================================================================
+--- mcabber-0.10.0.orig/mcabber/fifo.c	2011-02-10 20:28:41.000000000 +0100
++++ mcabber-0.10.0/mcabber/fifo.c	2011-02-10 20:46:13.000000000 +0100
+@@ -121,6 +121,9 @@
+   if (fd == -1)
+     return FALSE;
+ 
++  if (fifo_channel)
++    g_io_channel_unref(fifo_channel);
++
+   fifo_channel = g_io_channel_unix_new(fd);
+ 
+   g_io_channel_set_flags(fifo_channel, G_IO_FLAG_NONBLOCK, NULL);
+Index: mcabber-0.10.0/mcabber/help.c
+===================================================================
+--- mcabber-0.10.0.orig/mcabber/help.c	2011-02-10 20:28:41.000000000 +0100
++++ mcabber-0.10.0/mcabber/help.c	2011-02-10 20:46:13.000000000 +0100
+@@ -195,6 +195,8 @@
+     ++lines;
+   }
+ 
++  g_io_channel_unref(channel);
++
+   g_string_free(line, TRUE);
+ 
+   if (!lines)
