@@ -1,3 +1,10 @@
+mcabber (0.10.1-1.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+  * Don't ship .la files (Closes: #622447).
+
+ -- Luk Claes <luk@debian.org>  Sat, 25 Jun 2011 16:19:57 +0200
+
 mcabber (0.10.1-1) unstable; urgency=low
 
   * New upstream bugfix release.
