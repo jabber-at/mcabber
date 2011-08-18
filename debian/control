@@ -2,10 +2,12 @@ Source: mcabber
 Section: net
 Priority: optional
 Maintainer: Mario Iseli <mario@debian.org>
-Uploaders: Gerfried Fuchs <rhonda@debian.at>, Franziska Lichtblau <rhalina@old-forest.org>
+Uploaders: Gerfried Fuchs <rhonda@debian.org>, Franziska Lichtblau <rhalina@old-forest.org>
 Build-Depends: debhelper (>= 7), autotools-dev, libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, libotr2-dev (>= 3.1.0), libgcrypt11-dev, libaspell-dev, libloudmouth1-dev, libasyncns-dev
 Homepage: http://www.mcabber.com/
 Standards-Version: 3.9.2
+Vcs-Browser: http://git.deb.at/w/pkg/mcabber.git
+Vcs-Git: git://git.deb.at/pkg/mcabber.git
 
 Package: mcabber
 Architecture: any

@@ -1,5 +1,6 @@
 mcabber (0.10.1-2) unstable; urgency=low
 
+  [ Franziska Lichtblau ]
   * Added Franziska Lichtblau to Uploaders
   * Added contrib-folder with useful scripts to
     /usr/share/doc/mcabber/examples/ (Closes: #596060)
@@ -8,7 +9,10 @@ mcabber (0.10.1-2) unstable; urgency=low
     build-arch + build-indep target
   * Upgrade to Standards-Verions 3.9.2, no changes needed 
 
- -- Franziska Lichtblau <rhalina@old-forest.org>  Sat, 30 Jul 2011 13:56:28 +0200
+  [ Gerfried Fuchs ]
+  * Added Vcs-* fields to debian/control.
+
+ -- Gerfried Fuchs <rhonda@debian.org>  Thu, 18 Aug 2011 16:45:27 +0200
 
 mcabber (0.10.1-1.1) unstable; urgency=low
 
