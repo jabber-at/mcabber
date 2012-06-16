@@ -1,3 +1,14 @@
+mcabber (0.10.1-3) unstable; urgency=low
+
+  * Added patch for storing passwords to MUCs in bookmarks. Thanks to Nico
+    Golde for the patch. (Closes: #650632)
+  * Updated german and english help output for the new /room command
+  * Overtook maintainership (Franziska Lichtblau) thanks to Mario Iseli for
+    the work done so far
+  * Removed Gerfried Fuchs from Uploaders - thanks for your work
+
+ -- Franziska Lichtblau <rhalina@old-forest.org>  Sat, 16 Jun 2012 15:34:56 +0200
+
 mcabber (0.10.1-2) unstable; urgency=low
 
   [ Franziska Lichtblau ]
