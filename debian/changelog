@@ -6,6 +6,10 @@ mcabber (0.10.1-3) unstable; urgency=low
   * Overtook maintainership (Franziska Lichtblau) thanks to Mario Iseli for
     the work done so far
   * Removed Gerfried Fuchs from Uploaders - thanks for your work
+  * Upgrade to Standards-Version 3.9.3 no changes needed
+  * Added hardening flags to debian/rules
+  * Added build-dependency to dpkg-dev (>= 1.16.1~) due to importing debian
+    buildflags
 
  -- Franziska Lichtblau <rhalina@old-forest.org>  Sat, 16 Jun 2012 15:34:56 +0200
 
