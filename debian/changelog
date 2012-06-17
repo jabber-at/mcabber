@@ -10,6 +10,8 @@ mcabber (0.10.1-3) unstable; urgency=low
   * Added hardening flags to debian/rules
   * Added build-dependency to dpkg-dev (>= 1.16.1~) due to importing debian
     buildflags
+  * Added source format 3.0 (quilt) - removed build-dependency to quilt and
+    dh_quilt_pach, dh_quilt_unpatch from debian/rules
 
  -- Franziska Lichtblau <rhalina@old-forest.org>  Sat, 16 Jun 2012 15:34:56 +0200
 
