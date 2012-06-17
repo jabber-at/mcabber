@@ -24,7 +24,7 @@ config.status:
 	CFLAGS="$(CFLAGS)" ./configure --host=$(DEB_HOST_GNU_TYPE) --build=$(DEB_BUILD_GNU_TYPE) --prefix=/usr --mandir=\$${prefix}/share/man --infodir=\$${prefix}/share/info --enable-gpgme --enable-aspell --enable-otr --enable-modules
 
 build: build-arch build-indep
-	dh_quilt_patch
+	#dh_quilt_patch
 build-arch: build-stamp
 build-indep: build-stamp
 
@@ -36,7 +36,7 @@ build-stamp:  config.status
 clean:
 	dh_testdir
 	dh_testroot
-	dh_quilt_unpatch
+	#dh_quilt_unpatch
 	rm -f build-stamp
 	[ ! -f Makefile ] || $(MAKE) distclean
 	rm -f config.sub config.guess

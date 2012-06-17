@@ -2,7 +2,7 @@ Source: mcabber
 Section: net
 Priority: optional
 Maintainer: Franziska Lichtblau <rhalina@old-forest.org>
-Build-Depends: debhelper (>= 7), autotools-dev, dpkg-dev (>= 1.16.1~), libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, libotr2-dev (>= 3.1.0), libgcrypt11-dev, libaspell-dev, libloudmouth1-dev, libasyncns-dev, quilt
+Build-Depends: debhelper (>= 7), autotools-dev, dpkg-dev (>= 1.16.1~), libglib2.0-dev, libncursesw5-dev, libssl-dev, libgpgme11-dev, libotr2-dev (>= 3.1.0), libgcrypt11-dev, libaspell-dev, libloudmouth1-dev, libasyncns-dev
 Homepage: http://www.mcabber.com/
 Standards-Version: 3.9.3
 Vcs-Browser: http://git.deb.at/w/pkg/mcabber.git
