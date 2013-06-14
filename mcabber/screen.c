@@ -43,10 +43,10 @@
 
 #ifdef WITH_ENCHANT
 # include <enchant.h>
-#endif
-
-#ifdef WITH_ASPELL
-# include <aspell.h>
+#else
+# ifdef WITH_ASPELL
+#  include <aspell.h>
+# endif
 #endif
 
 #include "screen.h"
@@ -61,7 +61,7 @@
 #include "xmpp.h"
 #include "main.h"
 
-#define get_color(col)  (COLOR_PAIR(col)|COLOR_ATTRIB[col])
+#define get_color(col)      (COLOR_PAIR(col)|COLOR_ATTRIB[col])
 #define compose_color(col)  (COLOR_PAIR(col->color_pair)|col->color_attrib)
 
 #define DEFAULT_LOG_WIN_HEIGHT (5+2)
@@ -72,6 +72,7 @@ const char *LocaleCharSet = "C";
 
 static unsigned short int Log_Win_Height;
 static unsigned short int Roster_Width;
+static gboolean colors_stalled = FALSE;
 
 // Default attention sign trigger levels
 static guint ui_attn_sign_prio_level_muc = ROSTER_UI_PRIO_MUC_HL_MESSAGE;
@@ -126,6 +127,7 @@ static int roster_hidden;
 static int chatmode;
 static int multimode;
 static char *multiline, *multimode_subj;
+static int roster_no_leading_space;
 
 static bool Curses;
 static bool log_win_on_top;
@@ -161,10 +163,6 @@ typedef struct {
   guint mkeycode;
   gint  value;
 } keyseq;
-
-#ifdef HAVE_GLIB_REGEX
-static GRegex *url_regex = NULL;
-#endif
 
 GSList *keyseqlist;
 static void add_keyseq(char *seqstr, guint mkeycode, gint value);
@@ -244,7 +242,7 @@ static int find_color(const char *name)
 
   // Directly support 256-color values
   result = atoi(name);
-  if (result > 0 && result < COLORS)
+  if (result > 0 && (result < COLORS || !Curses))
     return result;
 
   scr_LogPrint(LPRINT_LOGNORM, "ERROR: Wrong color: %s", name);
@@ -434,12 +432,14 @@ static void parse_colors(void)
     "msgout",
     "msghl",
     "status",
+    "log",
     "roster",
     "rostersel",
     "rosterselmsg",
     "rosternewmsg",
     "info",
     "msgin",
+    "readmark",
     NULL
   };
 
@@ -493,6 +493,10 @@ static void parse_colors(void)
           init_pair(i+1, ((color) ? find_color(color) : COLOR_WHITE),
                     find_color(backstatus));
           break;
+      case COLOR_LOG:
+          init_pair(i+1, ((color) ? find_color(color) : COLOR_WHITE),
+                    find_color(background));
+          break;
       case COLOR_ROSTER:
           init_pair(i+1, ((color) ? find_color(color) : COLOR_GREEN),
                     find_color(background));
@@ -515,6 +519,10 @@ static void parse_colors(void)
           break;
       case COLOR_MSGIN:
           init_pair(i+1, ((color) ? find_color(color) : COLOR_WHITE),
+                    find_color(background));
+          break;
+      case COLOR_READMARK:
+          init_pair(i+1, ((color) ? find_color(color) : COLOR_RED),
                     find_color(background));
           break;
     }
@@ -560,6 +568,8 @@ static void parse_colors(void)
       (*nickcols)->color_attrib = A_NORMAL;
     }
   }
+
+  colors_stalled = FALSE;
 }
 
 static void init_keycodes(void)
@@ -752,6 +762,13 @@ gboolean scr_curses_status(void)
   return Curses;
 }
 
+static gchar *scr_color_guard(const gchar *key, const gchar *new_value)
+{
+  if (g_strcmp0(settings_opt_get(key), new_value))
+    colors_stalled = TRUE;
+  return g_strdup(new_value);
+}
+
 void scr_init_curses(void)
 {
   /* Key sequences initialization */
@@ -779,6 +796,21 @@ void scr_init_curses(void)
 
   parse_colors();
 
+  settings_set_guard("color_background", scr_color_guard);
+  settings_set_guard("color_general", scr_color_guard);
+  settings_set_guard("color_info", scr_color_guard);
+  settings_set_guard("color_msgin", scr_color_guard);
+  settings_set_guard("color_msgout", scr_color_guard);
+  settings_set_guard("color_msghl", scr_color_guard);
+  settings_set_guard("color_bgstatus", scr_color_guard);
+  settings_set_guard("color_status", scr_color_guard);
+  settings_set_guard("color_log", scr_color_guard);
+  settings_set_guard("color_roster", scr_color_guard);
+  settings_set_guard("color_bgrostersel", scr_color_guard);
+  settings_set_guard("color_rostersel", scr_color_guard);
+  settings_set_guard("color_rosterselmsg", scr_color_guard);
+  settings_set_guard("color_rosternewmsg", scr_color_guard);
+
   getmaxyx(stdscr, maxY, maxX);
   Log_Win_Height = DEFAULT_LOG_WIN_HEIGHT;
   // Note scr_draw_main_window() should be called early after scr_init_curses()
@@ -786,16 +818,6 @@ void scr_init_curses(void)
 
   inputLine[0] = 0;
   ptr_inputline = inputLine;
-
-  if (settings_opt_get("url_regex")) {
-#ifdef HAVE_GLIB_REGEX
-    url_regex = g_regex_new(settings_opt_get("url_regex"),
-                            G_REGEX_OPTIMIZE, 0, NULL);
-#else
-    scr_LogPrint(LPRINT_LOGNORM, "ERROR: Your glib version is too old, "
-                 "cannot use url_regex.");
-#endif // HAVE_GLIB_REGEX
-  }
 
   Curses = TRUE;
   return;
@@ -807,12 +829,6 @@ void scr_terminate_curses(void)
   clear();
   refresh();
   endwin();
-#ifdef HAVE_GLIB_REGEX
-  if (url_regex) {
-    g_regex_unref(url_regex);
-    url_regex = NULL;
-  }
-#endif
   Curses = FALSE;
   return;
 }
@@ -1027,6 +1043,9 @@ static winbuf *scr_new_buddy(const char *title, int dont_show)
       tmp->bd = g_new0(buffdata, 1);
       hlog_read_history(title, &tmp->bd->hbuf,
                         maxX - Roster_Width - scr_getprefixwidth());
+
+      // Set a readmark to separate new content
+      hbuf_set_readmark(tmp->bd->hbuf, TRUE);
     }
 
     id = g_strdup(title);
@@ -1103,12 +1122,14 @@ void scr_line_prefix(hbb_line *line, char *pref, guint preflen)
 // (Re-)Display the given chat window.
 static void scr_update_window(winbuf *win_entry)
 {
-  int n;
+  int n, mark_offset = 0;
   guint prefixwidth;
   char pref[96];
   hbb_line **lines, *line;
   GList *hbuf_head;
-  int color;
+  int color = COLOR_GENERAL;
+  bool readmark = FALSE;
+  bool skipline = FALSE;
 
   prefixwidth = scr_getprefixwidth();
   prefixwidth = MIN(prefixwidth, sizeof pref);
@@ -1144,11 +1165,36 @@ static void scr_update_window(winbuf *win_entry)
   // Get the last CHAT_WIN_HEIGHT lines.
   lines = hbuf_get_lines(hbuf_head, CHAT_WIN_HEIGHT);
 
-  // Display these lines
-  for (n = 0; n < CHAT_WIN_HEIGHT; n++) {
-    wmove(win_entry->win, n, 0);
+  if (CHAT_WIN_HEIGHT > 1) {
+    // Do we have a read mark?
+    for (n = 0; n < CHAT_WIN_HEIGHT; n++) {
+      line = *(lines+n);
+      if (line) {
+        if (line->flags & HBB_PREFIX_READMARK) {
+          // If this is not the last line, we'll display a mark
+          if (n+1 < CHAT_WIN_HEIGHT && *(lines+n+1)) {
+            readmark = TRUE;
+            skipline = TRUE;
+            mark_offset = -1;
+          }
+        }
+      } else if (readmark) {
+        // There will be empty lines, so we don't need to skip the first line
+        skipline = FALSE;
+        mark_offset = 0;
+      }
+    }
+  }
+
+  // Display the lines
+  for (n = 0 ; n < CHAT_WIN_HEIGHT; n++) {
+    int winy = n + mark_offset;
+    wmove(win_entry->win, winy, 0);
     line = *(lines+n);
     if (line) {
+      if (skipline)
+        goto scr_update_window_skipline;
+
       if (line->flags & HBB_PREFIX_HLIGHT_OUT)
         color = COLOR_MSGOUT;
       else if (line->flags & HBB_PREFIX_HLIGHT)
@@ -1168,7 +1214,7 @@ static void scr_update_window(winbuf *win_entry)
       wprintw(win_entry->win, pref);
 
       // Make sure we are at the right position
-      wmove(win_entry->win, n, prefixwidth-1);
+      wmove(win_entry->win, winy, prefixwidth-1);
 
       // The MUC nick - overwrite with proper color
       if (line->mucnicklen) {
@@ -1229,7 +1275,27 @@ static void scr_update_window(winbuf *win_entry)
       wprintw(win_entry->win, "%s", line->text+line->mucnicklen);
       wclrtoeol(win_entry->win);
 
-      // Return the color back
+scr_update_window_skipline:
+      skipline = FALSE;
+      if (readmark && line->flags & HBB_PREFIX_READMARK) {
+        int i, w;
+        mark_offset++;
+
+        // Display the mark
+        winy = n + mark_offset;
+        wmove(win_entry->win, winy, 0);
+        color = COLOR_READMARK;
+        wattrset(win_entry->win, get_color(color));
+        g_snprintf(pref, prefixwidth, "             == ");
+        wprintw(win_entry->win, pref);
+        w = scr_gettextwidth() / 3;
+        for (i=0; i<w; i++)
+          wprintw(win_entry->win, "== ");
+        wclrtoeol(win_entry->win);
+        wattrset(win_entry->win, get_color(COLOR_GENERAL));
+      }
+
+      // Restore default ("general") color
       if (color != COLOR_GENERAL)
         wattrset(win_entry->win, get_color(COLOR_GENERAL));
 
@@ -1406,6 +1472,10 @@ static void scr_write_in_window(const char *winId, const char *text,
   if (!dont_show) {
     if (win_entry->bd->lock)
       setmsgflg = TRUE;
+    else
+      // If this is an outgoing message, remove the readmark
+      if (!special && (prefix_flags & (HBB_PREFIX_OUT|HBB_PREFIX_HLIGHT_OUT)))
+        hbuf_set_readmark(win_entry->bd->hbuf, FALSE);
     // Show and refresh the window
     top_panel(win_entry->panel);
     scr_update_window(win_entry);
@@ -1430,18 +1500,36 @@ void scr_update_main_status(int forceupdate)
 {
   char *sm = from_utf8(xmpp_getstatusmsg());
   const char *info = settings_opt_get("info");
+  guint prio = 0;
+  gpointer unread_ptr;
+  char unreadchar;
+
+  unread_ptr = unread_msg(NULL);
+  if (unread_ptr) {
+    prio = buddy_getuiprio(unread_ptr);
+    // If there's an unerad buffer but no priority set, let's consider the
+    // priority is 1.
+    if (!prio && buddy_getflags(unread_ptr) & ROSTER_FLAG_MSG)
+      prio = 1;
+  }
+
+  // Status bar unread message flag
+  if (prio >= ROSTER_UI_PRIO_MUC_HL_MESSAGE)
+    unreadchar = '!';
+  else if (prio > 0)
+    unreadchar = '#';
+  else
+    unreadchar = ' ';
 
   werase(mainstatusWnd);
   if (info) {
     char *info_locale = from_utf8(info);
-    mvwprintw(mainstatusWnd, 0, 0, "%c[%c] %s %s",
-              (unread_msg(NULL) ? '#' : ' '),
+    mvwprintw(mainstatusWnd, 0, 0, "%c[%c] %s %s", unreadchar,
               imstatus2char[xmpp_getstatus()],
               info_locale, (sm ? sm : ""));
     g_free(info_locale);
   } else
-    mvwprintw(mainstatusWnd, 0, 0, "%c[%c] %s",
-              (unread_msg(NULL) ? '#' : ' '),
+    mvwprintw(mainstatusWnd, 0, 0, "%c[%c] %s", unreadchar,
               imstatus2char[xmpp_getstatus()], (sm ? sm : ""));
   if (forceupdate) {
     top_panel(inputPanel);
@@ -1462,6 +1550,8 @@ void scr_draw_main_window(unsigned int fullinit)
   gchar *ver, *message;
   int chat_y_pos, chatstatus_y_pos, log_y_pos;
   int roster_x_pos, chat_x_pos;
+
+  roster_no_leading_space = settings_opt_get_int("roster_no_leading_space");
 
   Log_Win_Height = DEFAULT_LOG_WIN_HEIGHT;
   requested_size = settings_opt_get_int("log_win_height");
@@ -1540,6 +1630,8 @@ void scr_draw_main_window(unsigned int fullinit)
     wbkgd(logWnd,         get_color(COLOR_GENERAL));
     wbkgd(chatstatusWnd,  get_color(COLOR_STATUS));
     wbkgd(mainstatusWnd,  get_color(COLOR_STATUS));
+
+    wattrset(logWnd,      get_color(COLOR_LOG));
   } else {
     /* Resize/move windows */
     wresize(rosterWnd, CHAT_WIN_HEIGHT, Roster_Width);
@@ -1706,6 +1798,8 @@ void scr_update_chat_status(int forceupdate)
   unsigned short btype, isgrp, ismuc, isspe;
   const char *btypetext = "Unknown";
   const char *fullname;
+  char *fullnameres = NULL;
+  const char *activeres;
   const char *msg = NULL;
   char status;
   char *buf, *buf_locale;
@@ -1772,6 +1866,8 @@ void scr_update_chat_status(int forceupdate)
 
   status = '?';
 
+  activeres = buddy_getactiveresource(BUDDATA(current_buddy));
+
   if (ismuc) {
     if (buddy_getinsideroom(BUDDATA(current_buddy)))
       status = 'C';
@@ -1779,24 +1875,30 @@ void scr_update_chat_status(int forceupdate)
       status = 'x';
   } else if (xmpp_getstatus() != offline) {
     enum imstatus budstate;
-    budstate = buddy_getstatus(BUDDATA(current_buddy), NULL);
+    budstate = buddy_getstatus(BUDDATA(current_buddy), activeres);
     if (budstate < imstatus_size)
       status = imstatus2char[budstate];
   }
 
   // No status message for MUC rooms
   if (!ismuc) {
-    GSList *resources, *p_res, *p_next_res;
-    resources = buddy_getresources(BUDDATA(current_buddy));
+    if (activeres) {
+      fullnameres = g_strdup_printf("%s/%s", fullname, activeres);
+      fullname = fullnameres;
+      msg = buddy_getstatusmsg(BUDDATA(current_buddy), activeres);
+    } else {
+      GSList *resources, *p_res, *p_next_res;
+      resources = buddy_getresources(BUDDATA(current_buddy));
 
-    for (p_res = resources ; p_res ; p_res = p_next_res) {
-      p_next_res = g_slist_next(p_res);
-      // Store the status message of the latest resource (highest priority)
-      if (!p_next_res)
-        msg = buddy_getstatusmsg(BUDDATA(current_buddy), p_res->data);
-      g_free(p_res->data);
+      for (p_res = resources ; p_res ; p_res = p_next_res) {
+        p_next_res = g_slist_next(p_res);
+        // Store the status message of the latest resource (highest priority)
+        if (!p_next_res)
+          msg = buddy_getstatusmsg(BUDDATA(current_buddy), p_res->data);
+        g_free(p_res->data);
+      }
+      g_slist_free(resources);
     }
-    g_slist_free(resources);
   } else {
     msg = buddy_gettopic(BUDDATA(current_buddy));
   }
@@ -1808,6 +1910,7 @@ void scr_update_chat_status(int forceupdate)
   replace_nl_with_dots(buf);
   buf_locale = from_utf8(buf);
   mvwprintw(chatstatusWnd, 0, 1, "%s", buf_locale);
+  g_free(fullnameres);
   g_free(buf_locale);
   g_free(buf);
 
@@ -1816,9 +1919,9 @@ void scr_update_chat_status(int forceupdate)
     char eventchar = 0;
     guint event;
 
-    // We do not specify the resource here, so one of the resources with the
-    // highest priority will be used.
-    event = buddy_resource_getevents(BUDDATA(current_buddy), NULL);
+    // We specify active resource here, so when there is none then the resource
+    // with the highest priority will be used.
+    event = buddy_resource_getevents(BUDDATA(current_buddy), activeres);
 
     if (event == ROSTER_EVENT_ACTIVE)
       eventchar = 'A';
@@ -1862,6 +1965,8 @@ void scr_draw_roster(void)
   char status, pending;
   enum imstatus currentstatus = xmpp_getstatus();
   int x_pos;
+  char *space;
+  int prefix_length;
 
   // We can reset update_roster
   update_roster = FALSE;
@@ -1917,6 +2022,15 @@ void scr_draw_roster(void)
     x_pos = 1; // 1 char offset (vertical line)
   else
     x_pos = 0;
+
+  space = g_new0(char, 2);
+  if (roster_no_leading_space) {
+    space[0] = '\0';
+    prefix_length = 6;
+  } else {
+    space[0] = ' ';
+    prefix_length = 7;
+  }
 
   name = g_new0(char, 4*Roster_Width);
   rline = g_new0(char, 4*Roster_Width+1);
@@ -2008,8 +2122,8 @@ void scr_draw_roster(void)
       }
     }
 
-    if (Roster_Width > 7)
-      g_utf8_strncpy(name, buddy_getname(BUDDATA(buddy)), Roster_Width-7);
+    if (Roster_Width > prefix_length)
+      g_utf8_strncpy(name, buddy_getname(BUDDATA(buddy)), Roster_Width-prefix_length);
     else
       name[0] = 0;
 
@@ -2025,16 +2139,16 @@ void scr_draw_roster(void)
         int group_count = 0;
         foreach_group_member(BUDDATA(buddy), increment_if_buddy_not_filtered,
                              &group_count);
-        snprintf(rline, 4*Roster_Width, " %c+++ %s (%i)", pending, name,
+        snprintf(rline, 4*Roster_Width, "%s%c+++ %s (%i)", space, pending, name,
                  group_count);
         /* Do not display the item count if there isn't enough space */
         if (g_utf8_strlen(rline, 4*Roster_Width) >= Roster_Width)
-          snprintf(rline, 4*Roster_Width, " %c+++ %s", pending, name);
+          snprintf(rline, 4*Roster_Width, "%s%c+++ %s", space, pending, name);
       }
       else
-        snprintf(rline, 4*Roster_Width, " %c--- %s", pending, name);
+        snprintf(rline, 4*Roster_Width, "%s%c--- %s", space, pending, name);
     } else if (isspe) {
-      snprintf(rline, 4*Roster_Width, " %c%s", pending, name);
+      snprintf(rline, 4*Roster_Width, "%s%c%s", space, pending, name);
     } else {
       char sepleft  = '[';
       char sepright = ']';
@@ -2047,9 +2161,8 @@ void scr_draw_roster(void)
           sepright = '}';
         }
       }
-
       snprintf(rline, 4*Roster_Width,
-               " %c%c%c%c %s", pending, sepleft, status, sepright, name);
+               "%s%c%c%c%c %s", space, pending, sepleft, status, sepright, name);
     }
 
     rline_locale = from_utf8(rline);
@@ -2058,6 +2171,7 @@ void scr_draw_roster(void)
     i++;
   }
 
+  g_free(space);
   g_free(rline);
   g_free(name);
   top_panel(inputPanel);
@@ -2088,22 +2202,6 @@ void scr_roster_visibility(int status)
   }
 }
 
-#ifdef HAVE_GLIB_REGEX
-static inline void scr_log_urls(const gchar *string)
-{
-  GMatchInfo *match_info;
-
-  g_regex_match_full(url_regex, string, -1, 0, 0, &match_info, NULL);
-  while (g_match_info_matches(match_info)) {
-    gchar *url = g_match_info_fetch(match_info, 0);
-    scr_print_logwindow(url);
-    g_free(url);
-    g_match_info_next(match_info, NULL);
-  }
-  g_match_info_free(match_info);
-}
-#endif
-
 static void scr_write_message(const char *bjid, const char *text,
                               time_t timestamp, guint prefix_flags,
                               unsigned mucnicklen, gpointer xep184)
@@ -2131,10 +2229,6 @@ void scr_write_incoming_message(const char *jidfrom, const char *text,
         ~HBB_PREFIX_PGPCRYPT & ~HBB_PREFIX_OTRCRYPT))
     prefix |= HBB_PREFIX_IN;
 
-#ifdef HAVE_GLIB_REGEX
-  if (url_regex)
-    scr_log_urls(text);
-#endif
   scr_write_message(jidfrom, text, timestamp, prefix, mucnicklen, NULL);
 }
 
@@ -2153,10 +2247,10 @@ void scr_write_outgoing_message(const char *jidto, const char *text,
     scr_show_window(jidto, FALSE);
 }
 
-void scr_remove_receipt_flag(const char *bjid, gpointer xep184)
+void scr_remove_receipt_flag(const char *bjid, gconstpointer xep184)
 {
   winbuf *win_entry = scr_search_window(bjid, FALSE);
-  if (win_entry) {
+  if (win_entry && xep184) {
     hbuf_remove_receipt(win_entry->bd->hbuf, xep184);
     if (chatmode && (buddy_search_jid(bjid) == current_buddy))
       scr_update_buddy_window();
@@ -2310,12 +2404,17 @@ static void set_current_buddy(GList *newbuddy)
 
   prev_st = buddy_getstatus(BUDDATA(current_buddy), NULL);
   buddy_setflags(BUDDATA(current_buddy), ROSTER_FLAG_LOCK, FALSE);
-  if (chatmode)
+  if (chatmode) {
+    scr_buffer_readmark(TRUE);
     alternate_buddy = current_buddy;
+  }
   current_buddy = newbuddy;
   // Lock the buddy in the buddylist if we're in chat mode
-  if (chatmode)
+  if (chatmode) {
     buddy_setflags(BUDDATA(current_buddy), ROSTER_FLAG_LOCK, TRUE);
+    // Remove the readmark if it is at the end of the buffer
+    scr_buffer_readmark(-1);
+  }
   // We should rebuild the buddylist but not everytime
   if (!(buddylist_get_filter() & 1<<prev_st))
     buddylist_build();
@@ -2327,8 +2426,10 @@ static void set_current_buddy(GList *newbuddy)
 void scr_roster_top(void)
 {
   set_current_buddy(buddylist);
-  if (chatmode)
+  if (chatmode) {
+    last_activity_buddy = current_buddy;
     scr_show_buddy_window();
+  }
 }
 
 //  scr_roster_bottom()
@@ -2336,8 +2437,10 @@ void scr_roster_top(void)
 void scr_roster_bottom(void)
 {
   set_current_buddy(g_list_last(buddylist));
-  if (chatmode)
+  if (chatmode) {
+    last_activity_buddy = current_buddy;
     scr_show_buddy_window();
+  }
 }
 
 //  scr_roster_up_down(updown, n)
@@ -2346,16 +2449,28 @@ void scr_roster_bottom(void)
 void scr_roster_up_down(int updown, unsigned int n)
 {
   unsigned int i;
+  GList *new_buddy = current_buddy;
+  GList *tmp_buddy;
 
-  if (updown < 0) {
-    for (i = 0; i < n; i++)
-      set_current_buddy(g_list_previous(current_buddy));
-  } else {
-    for (i = 0; i < n; i++)
-      set_current_buddy(g_list_next(current_buddy));
+  if (!current_buddy)
+    return;
+
+  for (i = 0; i < n; i++) {
+    if (updown < 0)
+      tmp_buddy = g_list_previous(new_buddy);
+    else
+      tmp_buddy = g_list_next(new_buddy);
+    if (tmp_buddy)
+      new_buddy = tmp_buddy;
   }
-  if (chatmode)
+  if (new_buddy == current_buddy)
+    return;
+
+  set_current_buddy(new_buddy);
+  if (chatmode) {
+    last_activity_buddy = current_buddy;
     scr_show_buddy_window();
+  }
 }
 
 //  scr_roster_prev_group()
@@ -2370,8 +2485,10 @@ void scr_roster_prev_group(void)
       break;
     if (buddy_gettype(BUDDATA(bud)) & ROSTER_TYPE_GROUP) {
       set_current_buddy(bud);
-      if (chatmode)
+      if (chatmode) {
+        last_activity_buddy = current_buddy;
         scr_show_buddy_window();
+      }
       break;
     }
   }
@@ -2389,8 +2506,10 @@ void scr_roster_next_group(void)
       break;
     if (buddy_gettype(BUDDATA(bud)) & ROSTER_TYPE_GROUP) {
       set_current_buddy(bud);
-      if (chatmode)
+      if (chatmode) {
+        last_activity_buddy = current_buddy;
         scr_show_buddy_window();
+      }
       break;
     }
   }
@@ -2401,8 +2520,10 @@ void scr_roster_next_group(void)
 void scr_roster_search(char *str)
 {
   set_current_buddy(buddy_search(str));
-  if (chatmode)
+  if (chatmode) {
+    last_activity_buddy = current_buddy;
     scr_show_buddy_window();
+  }
 }
 
 //  scr_roster_jump_jid(bjid)
@@ -2423,8 +2544,10 @@ void scr_roster_jump_jid(char *barejid)
   buddylist_build();
   // Jump to the buddy
   set_current_buddy(buddy_search_jid(barejid));
-  if (chatmode)
+  if (chatmode) {
+    last_activity_buddy = current_buddy;
     scr_show_buddy_window();
+  }
 }
 
 //  scr_roster_unread_message(next)
@@ -2443,7 +2566,11 @@ void scr_roster_unread_message(int next)
   else      refbuddata = NULL;
 
   unread_ptr = unread_msg(refbuddata);
-  if (!unread_ptr) return;
+  if (!unread_ptr) {
+    if (!last_activity_buddy || g_list_position(buddylist, last_activity_buddy) == -1)
+      return;
+    unread_ptr = BUDDATA(last_activity_buddy);
+  }
 
   if (!(buddy_gettype(unread_ptr) & ROSTER_TYPE_SPECIAL)) {
     gpointer ngroup;
@@ -2470,8 +2597,10 @@ void scr_roster_jump_alternate(void)
   if (!alternate_buddy || g_list_position(buddylist, alternate_buddy) == -1)
     return;
   set_current_buddy(alternate_buddy);
-  if (chatmode)
+  if (chatmode) {
+    last_activity_buddy = current_buddy;
     scr_show_buddy_window();
+  }
 }
 
 //  scr_roster_display(filter)
@@ -2533,6 +2662,7 @@ void scr_buffer_scroll_up_down(int updown, unsigned int nblines)
   hbuf_top = win_entry->bd->top;
 
   if (updown == -1) {   // UP
+    n = 0;
     if (!hbuf_top) {
       hbuf_top = g_list_last(win_entry->bd->hbuf);
       if (!win_entry->bd->cleared) {
@@ -2540,9 +2670,10 @@ void scr_buffer_scroll_up_down(int updown, unsigned int nblines)
         else nbl += CHAT_WIN_HEIGHT - 1;
       } else {
         win_entry->bd->cleared = FALSE;
+        n++; // We'll scroll one line less
       }
     }
-    for (n=0 ; hbuf_top && n < nbl && g_list_previous(hbuf_top) ; n++)
+    for ( ; hbuf_top && n < nbl && g_list_previous(hbuf_top) ; n++)
       hbuf_top = g_list_previous(hbuf_top);
     win_entry->bd->top = hbuf_top;
   } else {              // DOWN
@@ -2591,20 +2722,27 @@ void scr_buffer_clear(void)
 // value: winbuf structure
 // data: int, set to 1 if the buffer should be closed.
 // NOTE: does not work for special buffers.
-static void buffer_purge(gpointer key, gpointer value, gpointer data)
+static gboolean buffer_purge(gpointer key, gpointer value, gpointer data)
 {
   int *p_closebuf = data;
   winbuf *win_entry = value;
+  gboolean retval = FALSE;
 
   // Delete the current hbuf
   hbuf_free(&win_entry->bd->hbuf);
 
   if (*p_closebuf) {
-    g_hash_table_remove(winbufhash, key);
+    GSList *roster_elt;
+    retval = TRUE;
+    roster_elt = roster_find(key, jidsearch,
+        ROSTER_TYPE_USER|ROSTER_TYPE_AGENT);
+    if (roster_elt)
+      buddy_setactiveresource(roster_elt->data, NULL);
   } else {
     win_entry->bd->cleared = FALSE;
     win_entry->bd->top = NULL;
   }
+  return retval;
 }
 
 //  scr_buffer_purge(closebuf, jid)
@@ -2640,7 +2778,8 @@ void scr_buffer_purge(int closebuf, const char *jid)
   if (!isspe) {
     p_closebuf = g_new(guint, 1);
     *p_closebuf = closebuf;
-    buffer_purge((gpointer)cjid, win_entry, p_closebuf);
+    if(buffer_purge((gpointer)cjid, win_entry, p_closebuf))
+      g_hash_table_remove(winbufhash, cjid);
     roster_msg_setflag(cjid, FALSE, FALSE);
     g_free(p_closebuf);
     if (closebuf && !hold_chatmode) {
@@ -2677,7 +2816,7 @@ void scr_buffer_purge_all(int closebuf)
   p_closebuf = g_new(guint, 1);
 
   *p_closebuf = closebuf;
-  g_hash_table_foreach(winbufhash, buffer_purge, p_closebuf);
+  g_hash_table_foreach_remove(winbufhash, buffer_purge, p_closebuf);
   g_free(p_closebuf);
 
   if (closebuf) {
@@ -2734,6 +2873,32 @@ void scr_buffer_scroll_lock(int lock)
   // Finished :)
   update_panels();
 }
+
+//  scr_buffer_readmark(action)
+// Update the readmark flag for the current buffer
+// If action = 1, set the readmark flag on the last message
+// If action = 0, reset the readmark flag
+// If action = -1, remove the readmark flag iff it is on the last line
+void scr_buffer_readmark(gchar action)
+{
+  winbuf *win_entry;
+  guint isspe;
+
+  // Get win_entry
+  if (!current_buddy) return;
+  isspe = buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_SPECIAL;
+  if (isspe) return; // Maybe not necessary
+  win_entry = scr_search_window(CURRENT_JID, isspe);
+  if (!win_entry) return;
+
+  if (!win_entry->bd->lock) {
+    if (action >= 0)
+      hbuf_set_readmark(win_entry->bd->hbuf, action);
+    else
+      hbuf_remove_trailing_readmark(win_entry->bd->hbuf);
+  }
+}
+
 
 //  scr_buffer_top_bottom()
 // Jump to the head/tail of the current buddy window
@@ -2794,7 +2959,7 @@ void scr_buffer_search(int direction, const char *text)
     // Finished :)
     update_panels();
   } else
-    scr_LogPrint(LPRINT_NORMAL, "Search string not found");
+    scr_LogPrint(LPRINT_NORMAL, "Search string not found.");
 }
 
 //  scr_buffer_percent(n)
@@ -2844,6 +3009,41 @@ void scr_buffer_date(time_t t)
   if (!win_entry) return;
 
   search_res = hbuf_jump_date(win_entry->bd->hbuf, t);
+
+  win_entry->bd->cleared = FALSE;
+  win_entry->bd->top = search_res;
+
+  if (!search_res)
+    scr_log_print(LPRINT_NORMAL, "Date not found.");
+
+  // Refresh the window
+  scr_update_window(win_entry);
+
+  // Finished :)
+  update_panels();
+}
+
+//  scr_buffer_jump_readmark()
+// Jump to the buffer readmark, if there's one
+void scr_buffer_jump_readmark(void)
+{
+  winbuf *win_entry;
+  GList *search_res;
+  guint isspe;
+
+  // Get win_entry
+  if (!current_buddy) return;
+  isspe = buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_SPECIAL;
+  if (isspe) return;
+  win_entry = scr_search_window(CURRENT_JID, isspe);
+  if (!win_entry) return;
+
+  search_res = hbuf_jump_readmark(win_entry->bd->hbuf);
+
+  if (!search_res) {
+    scr_log_print(LPRINT_NORMAL, "Readmark not found.");
+    return;
+  }
 
   win_entry->bd->cleared = FALSE;
   win_entry->bd->top = search_res;
@@ -2906,8 +3106,11 @@ void scr_buffer_list(void)
 // Public function to (un)set chatmode...
 inline void scr_set_chatmode(int enable)
 {
+  gboolean enter_chatmode = enable && chatmode == FALSE;
   chatmode = enable;
   scr_update_chat_status(TRUE);
+  if (enter_chatmode)
+    scr_buffer_readmark(-1);
 }
 
 //  scr_get_chatmode()
@@ -3074,7 +3277,7 @@ void scr_append_multiline(const char *line)
 
 //  scr_cmdhisto_addline()
 // Add a line to the inputLine history
-static inline void scr_cmdhisto_addline(char *line)
+static void scr_cmdhisto_addline(char *line)
 {
   int max_histo_lines;
 
@@ -3097,6 +3300,19 @@ static inline void scr_cmdhisto_addline(char *line)
 
   cmdhisto = g_list_append(cmdhisto, g_strdup(line));
   cmdhisto_nblines++;
+}
+
+//  scr_cmdhisto_reset()
+// Reset the inputLine history
+static void scr_cmdhisto_reset(void)
+{
+  while (cmdhisto_nblines) {
+    g_free(cmdhisto->data);
+    cmdhisto = g_list_delete_link(cmdhisto, cmdhisto);
+    cmdhisto_nblines--;
+  }
+  cmdhisto_backup[0] = 0;
+  cmdhisto_cur = NULL;
 }
 
 //  scr_cmdhisto_prev()
@@ -3342,6 +3558,7 @@ void readline_forward_char(void)
 int readline_accept_line(int down_history)
 {
   scr_check_auto_away(TRUE);
+  last_activity_buddy = current_buddy;
   if (process_line(inputLine))
     return 255;
   // Add line to history
@@ -3362,6 +3579,13 @@ int readline_accept_line(int down_history)
     cmdhisto_cur = NULL;
   }
   return 0;
+}
+
+//  readline_clear_history()
+// Clear command line history.
+void readline_clear_history(void)
+{
+  scr_cmdhisto_reset();
 }
 
 void readline_cancel_completion(void)
@@ -3401,6 +3625,8 @@ void readline_refresh_screen(void)
 void readline_disable_chat_mode(guint show_roster)
 {
   scr_check_auto_away(TRUE);
+  if (chatmode)
+    scr_buffer_readmark(TRUE);
   currentWindow = NULL;
   chatmode = FALSE;
   if (current_buddy)
@@ -3507,6 +3733,14 @@ void readline_send_multiline(void)
   // Validate current multi-line
   if (multimode)
     process_command(mkcmdstr("msay send"), TRUE);
+}
+
+void readline_insert(const char *toinsert)
+{
+  if (!toinsert || !*toinsert) return;
+
+  scr_insert_text(toinsert);
+  check_offset(0);
 }
 
 //  which_row()
@@ -3970,6 +4204,8 @@ void scr_getch(keycode *kcode)
 
 void scr_do_update(void)
 {
+  if (colors_stalled)
+    parse_colors();
   doupdate();
 }
 
@@ -4051,6 +4287,7 @@ void scr_process_key(keycode kcode)
         readline_do_completion();
         break;
     case 13:    // Enter
+    case 343:   // Enter on Maemo
         if (readline_accept_line(FALSE) == 255) {
           mcabber_set_terminate_ui();
           return;
@@ -4146,9 +4383,6 @@ void spellcheck_init(void)
      spell_checker = NULL;
      spell_broker = NULL;
   }
-
-  spell_broker = enchant_broker_init();
-  spell_checker = enchant_broker_request_dict(spell_broker, spell_lang);
 #endif
 #ifdef WITH_ASPELL
   if (spell_checker) {
@@ -4157,9 +4391,23 @@ void spellcheck_init(void)
     spell_checker = NULL;
     spell_config = NULL;
   }
+#endif
 
+  if (!spell_lang) { // Cannot initialize: language not specified
+    scr_LogPrint(LPRINT_LOGNORM, "Error: Cannot initialize spell checker, language not specified.");
+    scr_LogPrint(LPRINT_LOGNORM, "Please set the 'spell_lang' variable.");
+    return;
+  }
+
+#ifdef WITH_ENCHANT
+  spell_broker = enchant_broker_init();
+  spell_checker = enchant_broker_request_dict(spell_broker, spell_lang);
+#endif
+
+#ifdef WITH_ASPELL
   spell_config = new_aspell_config();
-  aspell_config_replace(spell_config, "encoding", spell_encoding);
+  if (spell_encoding)
+    aspell_config_replace(spell_config, "encoding", spell_encoding);
   aspell_config_replace(spell_config, "lang", spell_lang);
   possible_err = new_aspell_speller(spell_config);
 

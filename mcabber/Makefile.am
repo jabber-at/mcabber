@@ -7,7 +7,7 @@ mcabber_SOURCES = main.c main.h roster.c roster.h events.c events.h \
 		  xmpp.c xmpp.h xmpp_helper.c xmpp_helper.h xmpp_defines.h \
 		  xmpp_iq.c xmpp_iq.h xmpp_iqrequest.c xmpp_iqrequest.h \
 		  xmpp_muc.c xmpp_muc.h xmpp_s10n.c xmpp_s10n.h \
-		  caps.c caps.h fifo.c fifo.h help.c help.h
+		  caps.c caps.h help.c help.h
 
 if OTR
 mcabber_SOURCES += otr.c otr.h nohtml.c nohtml.h
@@ -16,7 +16,8 @@ endif
 LDADD = $(GLIB_LIBS) $(LOUDMOUTH_LIBS) $(GPGME_LIBS) $(LIBOTR_LIBS) \
 				$(ENCHANT_LIBS) $(LIBIDN_LIBS)
 
-AM_CPPFLAGS = -I$(top_srcdir) $(GLIB_CFLAGS) $(LOUDMOUTH_CFLAGS) \
+AM_CPPFLAGS = -I$(top_builddir) -I$(top_srcdir) \
+				$(GLIB_CFLAGS) $(LOUDMOUTH_CFLAGS) \
 				$(GPGME_CFLAGS) $(LIBOTR_CFLAGS) \
 				$(ENCHANT_CFLAGS) $(LIBIDN_CFLAGS)
 
@@ -26,7 +27,7 @@ if HGCSET
 BUILT_SOURCES = hgcset.h
 
 hgcset.h:
-	../hgcset.sh
+	$(top_srcdir)/hgcset.sh "$(top_srcdir)/mcabber" "$(top_builddir)/mcabber"
 
 .PHONY: hgcset.h
 endif
@@ -42,7 +43,7 @@ mcabberinclude_HEADERS = main.h roster.h events.h \
 			 xmpp_iq.h xmpp_iqrequest.h \
 			 xmpp_muc.h xmpp_s10n.h \
 			 caps.h fifo.h help.h modules.h api.h \
-			 $(top_srcdir)/include/config.h
+			 $(top_builddir)/include/config.h
 
 if OTR
 mcabberinclude_HEADERS += otr.h nohtml.h
@@ -53,6 +54,8 @@ mcabberinclude_HEADERS += hgcset.h
 endif
 
 mcabberincludedir = $(includedir)/mcabber
+else
+mcabber_SOURCES += fifo.c fifo.h
 endif
 
 #SUBDIRS =

@@ -297,7 +297,8 @@ GList *hbuf_previous_persistent(GList *l_line)
 
   while (l_line) {
     hbuf_b_elt = (hbuf_block*)l_line->data;
-    if (hbuf_b_elt->flags & HBB_FLAG_PERSISTENT)
+    if (hbuf_b_elt->flags & HBB_FLAG_PERSISTENT &&
+        (hbuf_b_elt->flags & ~HBB_PREFIX_READMARK))
       return l_line;
     l_line = g_list_previous(l_line);
   }
@@ -317,16 +318,24 @@ hbb_line **hbuf_get_lines(GList *hbuf, unsigned int n)
   guint last_persist_prefixflags = 0;
   GList *last_persist;  // last persistent flags
   hbb_line **array, **array_elt;
+  hbb_line *prev_array_elt = NULL;
 
   // To be able to correctly highlight multi-line messages,
   // we need to look at the last non-null prefix, which should be the first
-  // line of the message.
+  // line of the message.  We also need to check if there's a readmark flag
+  // somewhere in the message.
   last_persist = hbuf_previous_persistent(hbuf);
   while (last_persist) {
     blk = (hbuf_block*)last_persist->data;
     if ((blk->flags & HBB_FLAG_PERSISTENT) && blk->prefix.flags) {
-      last_persist_prefixflags = blk->prefix.flags;
-      break;
+      // This can be either the beginning of the message,
+      // or a persistent line with a readmark flag (or both).
+      if (blk->prefix.flags & ~HBB_PREFIX_READMARK) { // First message line
+        last_persist_prefixflags |= blk->prefix.flags;
+        break;
+      } else { // Not the first line, but we need to keep the readmark flag
+        last_persist_prefixflags = blk->prefix.flags;
+      }
     }
     last_persist = g_list_previous(last_persist);
   }
@@ -346,17 +355,30 @@ hbb_line **hbuf_get_lines(GList *hbuf, unsigned int n)
       (*array_elt)->mucnicklen = blk->prefix.mucnicklen;
       (*array_elt)->text       = g_strndup(blk->ptr, maxlen);
 
-      if ((blk->flags & HBB_FLAG_PERSISTENT) && blk->prefix.flags) {
+      if ((blk->flags & HBB_FLAG_PERSISTENT) &&
+          (blk->prefix.flags & ~HBB_PREFIX_READMARK)) {
+        // This is a new message: persistent block flag and no prefix flag
+        // (except a possible readmark flag)
         last_persist_prefixflags = blk->prefix.flags;
       } else {
         // Propagate highlighting flags
         (*array_elt)->flags |= last_persist_prefixflags &
                                (HBB_PREFIX_HLIGHT_OUT | HBB_PREFIX_HLIGHT |
-                                HBB_PREFIX_INFO | HBB_PREFIX_IN);
+                                HBB_PREFIX_INFO | HBB_PREFIX_IN |
+                                HBB_PREFIX_READMARK);
         // Continuation of a message - omit the prefix
         (*array_elt)->flags |= HBB_PREFIX_CONT;
         (*array_elt)->mucnicklen = 0; // The nick is in the first one
+
+        // If there is a readmark on this line, update last_persist_prefixflags
+        if (blk->flags & HBB_FLAG_PERSISTENT)
+          last_persist_prefixflags |= blk->prefix.flags & HBB_PREFIX_READMARK;
+        // Remove readmark flag from the previous line
+        if (prev_array_elt && last_persist_prefixflags & HBB_PREFIX_READMARK)
+          prev_array_elt->flags &= ~HBB_PREFIX_READMARK;
       }
+
+      prev_array_elt = *array_elt;
 
       hbuf = g_list_next(hbuf);
     } else
@@ -421,6 +443,27 @@ GList *hbuf_jump_percent(GList *hbuf, int pc)
   return g_list_nth(hbuf, pc*hlen/100);
 }
 
+//  hbuf_jump_readmark(hbuf)
+// Return a pointer to the line following the readmark
+// or NULL if no mark was found.
+GList *hbuf_jump_readmark(GList *hbuf)
+{
+  hbuf_block *blk;
+  GList *r = NULL;
+
+  hbuf = g_list_last(hbuf);
+  for ( ; hbuf; hbuf = g_list_previous(hbuf)) {
+    blk = (hbuf_block*)(hbuf->data);
+    if (blk->prefix.flags & HBB_PREFIX_READMARK)
+      return r;
+    if ((blk->flags & HBB_FLAG_PERSISTENT) &&
+        (blk->prefix.flags & ~HBB_PREFIX_READMARK))
+      r = hbuf;
+  }
+
+  return NULL;
+}
+
 //  hbuf_dump_to_file(hbuf, filename)
 // Save the buffer to a file.
 void hbuf_dump_to_file(GList *hbuf, const char *filename)
@@ -458,10 +501,11 @@ void hbuf_dump_to_file(GList *hbuf, const char *filename)
     line.mucnicklen = blk->prefix.mucnicklen;
     line.text       = g_strndup(blk->ptr, maxlen);
 
-    if ((blk->flags & HBB_FLAG_PERSISTENT) && blk->prefix.flags) {
+    if ((blk->flags & HBB_FLAG_PERSISTENT) &&
+        (blk->prefix.flags & ~HBB_PREFIX_READMARK)) {
       last_persist_prefixflags = blk->prefix.flags;
     } else {
-      // Propagate highlighting flags
+      // Propagate necessary highlighting flags
       line.flags |= last_persist_prefixflags &
                     (HBB_PREFIX_HLIGHT_OUT | HBB_PREFIX_HLIGHT |
                      HBB_PREFIX_INFO | HBB_PREFIX_IN);
@@ -481,7 +525,7 @@ void hbuf_dump_to_file(GList *hbuf, const char *filename)
 //  hbuf_remove_receipt(hbuf, xep184)
 // Remove the Receipt Flag for the message with the given xep184 id
 // Returns TRUE if it was found and removed, otherwise FALSE
-gboolean hbuf_remove_receipt(GList *hbuf, gpointer xep184)
+gboolean hbuf_remove_receipt(GList *hbuf, gconstpointer xep184)
 {
   hbuf_block *blk;
 
@@ -489,13 +533,60 @@ gboolean hbuf_remove_receipt(GList *hbuf, gpointer xep184)
 
   for ( ; hbuf; hbuf = g_list_previous(hbuf)) {
     blk = (hbuf_block*)(hbuf->data);
-    if (blk->prefix.xep184 == xep184) {
+    if (!g_strcmp0(blk->prefix.xep184, xep184)) {
+      g_free(blk->prefix.xep184);
       blk->prefix.xep184 = NULL;
       blk->prefix.flags ^= HBB_PREFIX_RECEIPT;
       return TRUE;
     }
   }
   return FALSE;
+}
+
+//  hbuf_set_readmark(hbuf, action)
+// Set/Reset the readmark Flag
+// If action is TRUE, set a mark to the latest line,
+// if action is FALSE, remove a previous readmark flag.
+void hbuf_set_readmark(GList *hbuf, gboolean action)
+{
+  hbuf_block *blk;
+
+  if (!hbuf) return;
+
+  hbuf = hbuf_previous_persistent(g_list_last(hbuf));
+
+  if (action) {
+    // Add a readmark flag
+    blk = (hbuf_block*)(hbuf->data);
+    blk->prefix.flags |= HBB_PREFIX_READMARK;
+
+    // Shift hbuf in order to remove previous flags
+    // (maybe it can be optimized out, if there's no risk
+    //  we have several marks)
+    hbuf = g_list_previous(hbuf);
+  }
+
+  // Remove old mark
+  for ( ; hbuf; hbuf = g_list_previous(hbuf)) {
+    blk = (hbuf_block*)(hbuf->data);
+    if (blk->prefix.flags & HBB_PREFIX_READMARK) {
+      blk->prefix.flags &= ~HBB_PREFIX_READMARK;
+      break;
+    }
+  }
+}
+
+//  hbuf_remove_trailing_readmark(hbuf)
+// Unset the buffer readmark if it is on the last line
+void hbuf_remove_trailing_readmark(GList *hbuf)
+{
+  hbuf_block *blk;
+
+  if (!hbuf) return;
+
+  hbuf = g_list_last(hbuf);
+  blk = (hbuf_block*)(hbuf->data);
+  blk->prefix.flags &= ~HBB_PREFIX_READMARK;
 }
 
 //  hbuf_get_blocks_number()
