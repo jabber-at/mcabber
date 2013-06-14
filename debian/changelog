@@ -1,6 +1,8 @@
 mcabber (0.10.1-4.1) unstable; urgency=low
 
   * This is a Non-maintainer upload.
+  * Do not remove config.sub and config.guess during clean, they are part of
+    the git-repository.
 
  -- Mathias Ertl <apt-repository@fsinf.at>  Fri, 14 Jun 2013 18:46:32 +0200
 
