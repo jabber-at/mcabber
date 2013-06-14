@@ -1,6 +1,7 @@
 mcabber (0.10.2-1.1) unstable; urgency=low
 
   * Version bump from upstream.
+  * Disable mcabber_fix_aspell.patch, fixed upstream in this version.
 
  -- Mathias Ertl <apt-repository@fsinf.at>  Fri, 14 Jun 2013 20:07:57 +0200
 
