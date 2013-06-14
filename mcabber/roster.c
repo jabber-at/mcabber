@@ -55,6 +55,13 @@ char *strautowhois[] = {    /* Should match enum in roster.h */
   "on",
 };
 
+char *strflagjoins[] = {    /* Should match enum in roster.h */
+  "default",
+  "none",
+  "joins",
+  "all"
+};
+
 /* Resource structure */
 
 typedef struct {
@@ -87,6 +94,7 @@ typedef struct {
   guint type;
   enum subscr subscription;
   GSList *resource;
+  res *active_resource;
 
   /* For groupchats */
   gchar *nickname;
@@ -94,6 +102,7 @@ typedef struct {
   guint inside_room;
   guint print_status;
   guint auto_whois;
+  guint flag_joins;
 
   /* on_server is TRUE if the item is present on the server roster */
   guint on_server;
@@ -119,6 +128,7 @@ static GHashTable *unread_jids;
 GList *buddylist;
 GList *current_buddy;
 GList *alternate_buddy;
+GList *last_activity_buddy;
 
 static roster roster_special;
 
@@ -256,6 +266,9 @@ static void del_resource(roster *rost, const char *resname)
     p_res->status_msg = NULL;
   }
 
+  if (rost->active_resource == p_res)
+    rost->active_resource = NULL;
+
   // Free allocations and delete resource node
   free_resource_data(p_res);
   rost->resource = g_slist_delete_link(rost->resource, p_res_elt);
@@ -270,6 +283,7 @@ static inline void free_roster_user_data(roster *roster_usr)
   if (!roster_usr)
     return;
   g_free((gchar*)roster_usr->jid);
+  //g_free((gchar*)roster_usr->active_resource);
   g_free((gchar*)roster_usr->name);
   g_free((gchar*)roster_usr->nickname);
   g_free((gchar*)roster_usr->topic);
@@ -952,6 +966,7 @@ void buddylist_build(void)
   roster *roster_elt;
   roster *roster_current_buddy = NULL;
   roster *roster_alternate_buddy = NULL;
+  roster *roster_last_activity_buddy = NULL;
   int shrunk_group;
 
   // We need to remember which buddy is selected.
@@ -961,6 +976,9 @@ void buddylist_build(void)
   if (alternate_buddy)
     roster_alternate_buddy = BUDDATA(alternate_buddy);
   alternate_buddy = NULL;
+  if (last_activity_buddy)
+    roster_last_activity_buddy = BUDDATA(last_activity_buddy);
+  last_activity_buddy = NULL;
 
   // Destroy old buddylist
   if (buddylist) {
@@ -1018,6 +1036,8 @@ void buddylist_build(void)
     current_buddy = g_list_find(buddylist, roster_current_buddy);
   if (roster_alternate_buddy)
     alternate_buddy = g_list_find(buddylist, roster_alternate_buddy);
+  if (roster_last_activity_buddy)
+    last_activity_buddy = g_list_find(buddylist, roster_last_activity_buddy);
   // current_buddy initialization
   if (!current_buddy || (g_list_position(buddylist, current_buddy) == -1))
     current_buddy = g_list_first(buddylist);
@@ -1199,6 +1219,18 @@ enum room_autowhois buddy_getautowhois(gpointer rosterdata)
 {
   roster *roster_usr = rosterdata;
   return roster_usr->auto_whois;
+}
+
+void buddy_setflagjoins(gpointer rosterdata, enum room_flagjoins fjoins)
+{
+  roster *roster_usr = rosterdata;
+  roster_usr->flag_joins = fjoins;
+}
+
+enum room_flagjoins buddy_getflagjoins(gpointer rosterdata)
+{
+  roster *roster_usr = rosterdata;
+  return roster_usr->flag_joins;
 }
 
 //  buddy_getgroupname()
@@ -1424,6 +1456,32 @@ GSList *buddy_getresources_locale(gpointer rosterdata)
   return reslist;
 }
 
+//  buddy_getactiveresource(roster_data)
+// Returns name of active (selected for chat) resource
+const char *buddy_getactiveresource(gpointer rosterdata)
+{
+  roster *roster_usr = rosterdata;
+  res *resource;
+
+  if (!roster_usr) {
+    if (!current_buddy) return NULL;
+    roster_usr = BUDDATA(current_buddy);
+  }
+  
+  resource = roster_usr->active_resource;
+  if (!resource) return NULL;
+  return resource->name;
+}
+
+void buddy_setactiveresource(gpointer rosterdata, const char *resname)
+{
+  roster *roster_usr = rosterdata;
+  res *p_res = NULL;
+  if (resname)
+    p_res = get_resource(roster_usr, resname);
+  roster_usr->active_resource = p_res;
+}
+
 /*
 //  buddy_isresource(roster_data)
 // Return true if there is at least one resource
@@ -1609,10 +1667,12 @@ void foreach_group_member(gpointer groupdata,
 
   sl_roster_usrelt = roster_elt->list;
   while (sl_roster_usrelt) {  // user list loop
+    GSList *next_sl_usrelt;
     roster_usrelt = (roster*) sl_roster_usrelt->data;
 
+    next_sl_usrelt = g_slist_next(sl_roster_usrelt);
     pfunc(roster_usrelt, param);
-    sl_roster_usrelt = g_slist_next(sl_roster_usrelt);
+    sl_roster_usrelt = next_sl_usrelt;
   }
 }
 

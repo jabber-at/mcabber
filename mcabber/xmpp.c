@@ -163,10 +163,9 @@ void xmpp_updatebuddy(const char *bjid, const char *name, const char *group)
   x = lm_message_node_add_child(iq->node, "query", NULL);
   lm_message_node_set_attribute(x, "xmlns", NS_ROSTER);
   x = lm_message_node_add_child(x, "item", NULL);
-  lm_message_node_set_attributes(x,
-                                 "jid", cleanjid,
-                                 "name", name,
-                                 NULL);
+  lm_message_node_set_attribute(x, "jid", cleanjid);
+  if (name)
+    lm_message_node_set_attribute(x, "name", name);
 
   if (group)
     lm_message_node_add_child(x, "group", group);
@@ -199,7 +198,9 @@ void xmpp_delbuddy(const char *bjid)
     y = lm_message_node_add_child(iq->node, "query", NULL);
     lm_message_node_set_attribute(y, "xmlns", NS_REGISTER);
     lm_message_node_add_child(y, "remove", NULL);
-    lm_connection_send(lconnection, iq, NULL);
+    handler = lm_message_handler_new(handle_iq_dummy, NULL, FALSE);
+    lm_connection_send_with_reply(lconnection, iq, handler, NULL);
+    lm_message_handler_unref(handler);
     lm_message_unref(iq);
   }
 
@@ -241,7 +242,7 @@ void xmpp_request(const char *fjid, enum iqreq_type reqtype)
     xmlns = NS_VERSION;
     strreqtype = "version";
   } else if (reqtype == iqreq_time) {
-    xmlns = NS_TIME;
+    xmlns = NS_XMPP_TIME;
     strreqtype = "time";
   } else if (reqtype == iqreq_last) {
     xmlns = NS_LAST;
@@ -294,15 +295,6 @@ void xmpp_request(const char *fjid, enum iqreq_type reqtype)
   g_slist_free(resources);
 }
 
-static LmHandlerResult cb_xep184(LmMessageHandler *h, LmConnection *c,
-                                 LmMessage *m, gpointer user_data)
-{
-  char *from = jidtodisp(lm_message_get_from(m));
-  scr_remove_receipt_flag(from, h);
-  g_free(from);
-  return LM_HANDLER_RESULT_REMOVE_MESSAGE;
-}
-
 //  xmpp_send_msg(jid, text, type, subject,
 //                otrinject, *encrypted, type_overwrite)
 // When encrypted is not NULL, the function set *encrypted to 1 if the
@@ -317,14 +309,17 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
 #ifdef HAVE_LIBOTR
   int otr_msg = 0;
 #endif
+  char *barejid;
 #if defined HAVE_GPGME || defined XEP0022 || defined XEP0085
-  char *rname, *barejid;
+  char *rname;
   GSList *sl_buddy;
 #endif
 #if defined XEP0022 || defined XEP0085
   LmMessageNode *event;
-  guint use_xep85 = 0;
   struct xep0085 *xep85 = NULL;
+#if defined XEP0022
+  guint use_xep85 = 0;
+#endif
 #endif
   gchar *enc = NULL;
 
@@ -346,10 +341,10 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
       subtype = LM_MESSAGE_SUB_TYPE_CHAT;
   }
 
+  barejid = jidtodisp(fjid);
 #if defined HAVE_GPGME || defined HAVE_LIBOTR || \
     defined XEP0022 || defined XEP0085
   rname = strchr(fjid, JID_RESOURCE_SEPARATOR);
-  barejid = jidtodisp(fjid);
   sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
 
   // If we can get a resource name, we use it.  Else we use NULL,
@@ -403,7 +398,6 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
   }
 #endif // HAVE_GPGME
 
-  g_free(barejid);
 #endif // HAVE_GPGME || defined XEP0022 || defined XEP0085
 
   x = lm_message_new_with_sub_type(fjid, LM_MESSAGE_TYPE_MESSAGE, subtype);
@@ -425,12 +419,13 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
   // XEP-0184: Message Receipts
   if (sl_buddy && xep184 &&
       caps_has_feature(buddy_resource_getcaps(sl_buddy->data, rname),
-                       NS_RECEIPTS)) {
-    lm_message_node_set_attribute
-            (lm_message_node_add_child(x->node, "request", NULL),
-             "xmlns", NS_RECEIPTS);
-    *xep184 = lm_message_handler_new(cb_xep184, NULL, NULL);
+                       NS_RECEIPTS, barejid)) {
+    lm_message_node_set_attribute(lm_message_node_add_child(x->node, "request",
+                                                            NULL),
+                                  "xmlns", NS_RECEIPTS);
+    *xep184 = g_strdup(lm_message_get_id(x));
   }
+  g_free(barejid);
 
 #if defined XEP0022 || defined XEP0085
   // If typing notifications are disabled, we can skip all this stuff...
@@ -455,8 +450,10 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
     lm_message_node_set_attribute(event, "xmlns", NS_CHATSTATES);
     if (xep85->support == CHATSTATES_SUPPORT_UNKNOWN)
       xep85->support = CHATSTATES_SUPPORT_PROBED;
+#ifdef XEP0022
     else
       use_xep85 = 1;
+#endif
     xep85->last_state_sent = ROSTER_EVENT_ACTIVE;
   }
 #endif
@@ -489,13 +486,11 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
 #endif
 
 xmpp_send_msg_no_chatstates:
+#ifdef WITH_DEPRECATED_STATUS_INVISIBLE
   if (mystatus != invisible)
+#endif
     update_last_use();
-  if (xep184 && *xep184) {
-    lm_connection_send_with_reply(lconnection, x, *xep184, NULL);
-    lm_message_handler_unref(*xep184);
-  } else
-    lm_connection_send(lconnection, x, NULL);
+  lm_connection_send(lconnection, x, NULL);
   lm_message_unref(x);
 }
 
@@ -631,6 +626,7 @@ static void xmpp_send_xep22_event(const char *fjid, guint type)
 void xmpp_send_chatstate(gpointer buddy, guint chatstate)
 {
   const char *bjid;
+  const char *activeres;
 #ifdef XEP0085
   GSList *resources, *p_res, *p_next;
   struct xep0085 *xep85 = NULL;
@@ -641,6 +637,7 @@ void xmpp_send_chatstate(gpointer buddy, guint chatstate)
 
   bjid = buddy_getjid(buddy);
   if (!bjid) return;
+  activeres = buddy_getactiveresource(buddy);
 
 #ifdef XEP0085
   /* Send the chatstate to the last resource (which should have the highest
@@ -654,9 +651,11 @@ void xmpp_send_chatstate(gpointer buddy, guint chatstate)
     xep85 = buddy_resource_xep85(buddy, p_res->data);
     if (xep85 && xep85->support == CHATSTATES_SUPPORT_OK) {
       // If p_next is NULL, this is the highest (prio) resource, i.e.
-      // the one we are probably writing to.
-      if (!p_next || (xep85->last_state_sent != ROSTER_EVENT_ACTIVE &&
-                      chatstate == ROSTER_EVENT_ACTIVE))
+      // the one we are probably writing to - unless there is defined an
+      // active resource
+      if (!g_strcmp0(p_res->data, activeres) || (!p_next && !activeres) ||
+             (xep85->last_state_sent != ROSTER_EVENT_ACTIVE &&
+              chatstate == ROSTER_EVENT_ACTIVE))
         xmpp_send_xep85_chatstate(bjid, p_res->data, chatstate);
     }
     g_free(p_res->data);
@@ -668,7 +667,7 @@ void xmpp_send_chatstate(gpointer buddy, guint chatstate)
     return;
 #endif
 #ifdef XEP0022
-  xep22 = buddy_resource_xep22(buddy, NULL);
+  xep22 = buddy_resource_xep22(buddy, activeres);
   if (xep22 && xep22->support == CHATSTATES_SUPPORT_OK) {
     xmpp_send_xep22_event(bjid, chatstate);
   }
@@ -968,7 +967,6 @@ static void handle_state_events(const char *from, LmMessageNode *node)
 {
 #if defined XEP0022 || defined XEP0085
   LmMessageNode *state_ns = NULL;
-  const char *body;
   char *rname, *bjid;
   GSList *sl_buddy;
   guint events;
@@ -1020,8 +1018,6 @@ static void handle_state_events(const char *from, LmMessageNode *node)
     return;
   }
 
-  body = lm_message_node_get_child_value(node, "body");
-
   if (which_xep == XEP_85) { /* XEP-0085 */
     xep85->support = CHATSTATES_SUPPORT_OK;
 
@@ -1039,6 +1035,7 @@ static void handle_state_events(const char *from, LmMessageNode *node)
     events = xep85->last_state_rcvd;
   } else {              /* XEP-0022 */
 #ifdef XEP0022
+    const char *body = lm_message_node_get_child_value(node, "body");
     const char *msgid;
     xep22->support = CHATSTATES_SUPPORT_OK;
     xep22->last_state_rcvd = ROSTER_EVENT_NONE;
@@ -1107,17 +1104,6 @@ static void gotmessage(LmMessageSubType type, const char *from,
     check_signature(bjid, rname, node_signed, decrypted_pgp);
 #endif
 
-#ifdef HAVE_LIBOTR
-  if (otr_enabled()) {
-    decrypted_otr = (char*)body;
-    otr_msg = otr_receive(&decrypted_otr, bjid, &free_msg);
-    if (!decrypted_otr) {
-      goto gotmessage_return;
-    }
-    body = decrypted_otr;
-  }
-#endif
-
   // Check for unexpected groupchat messages
   // If we receive a groupchat message from a room we're not a member of,
   // this is probably a server issue and the best we can do is to send
@@ -1158,13 +1144,24 @@ static void gotmessage(LmMessageSubType type, const char *from,
       (type != LM_MESSAGE_SUB_TYPE_GROUPCHAT)) {
     char *sbjid = jidtodisp(lm_connection_get_jid(lconnection));
     const char *server = strchr(sbjid, JID_DOMAIN_SEPARATOR);
-    if (g_strcmp0(server, bjid)) {
+    if (server && g_strcmp0(server+1, bjid)) {
       scr_LogPrint(LPRINT_LOGNORM, "Blocked a message from <%s>", bjid);
       g_free(sbjid);
       goto gotmessage_return;
     }
     g_free(sbjid);
   }
+
+#ifdef HAVE_LIBOTR
+  if (otr_enabled()) {
+    decrypted_otr = (char*)body;
+    otr_msg = otr_receive(&decrypted_otr, bjid, &free_msg);
+    if (!decrypted_otr) {
+      goto gotmessage_return;
+    }
+    body = decrypted_otr;
+  }
+#endif
 
   { // format and pass message for further processing
     gchar *fullbody = NULL;
@@ -1202,7 +1199,7 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
                                        LmMessage *m, gpointer user_data)
 {
   const char *p, *from=lm_message_get_from(m);
-  char *r, *s;
+  char *bjid, *res;
   LmMessageNode *x;
   const char *body = NULL;
   const char *enc = NULL;
@@ -1218,26 +1215,27 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
   if (x && (p = lm_message_node_get_value(x)) != NULL)
     enc = p;
 
+  // Get the bare-JID/room (bjid) and the resource/nickname (res)
+  bjid = g_strdup(lm_message_get_from(m));
+  res = strchr(bjid, JID_RESOURCE_SEPARATOR);
+  if (res) *res++ = 0;
+
   p = lm_message_node_get_child_value(m->node, "subject");
   if (p != NULL) {
     if (mstype != LM_MESSAGE_SUB_TYPE_GROUPCHAT) {
       // Chat message
       subject = p;
-    } else {                                      // Room topic
+    } else {
+      // Room topic
       GSList *roombuddy;
       gchar *mbuf;
       const gchar *subj = p;
-      // Get the room (s) and the nickname (r)
-      s = g_strdup(lm_message_get_from(m));
-      r = strchr(s, JID_RESOURCE_SEPARATOR);
-      if (r) *r++ = 0;
-      else   r = s;
       // Set the new topic
-      roombuddy = roster_find(s, jidsearch, 0);
+      roombuddy = roster_find(bjid, jidsearch, 0);
       if (roombuddy)
         buddy_settopic(roombuddy->data, subj);
       // Display inside the room window
-      if (r == s) {
+      if (!res) {
         // No specific resource (this is certainly history)
         if (*subj)
           mbuf = g_strdup_printf("The topic has been set to: %s", subj);
@@ -1245,15 +1243,14 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
           mbuf = g_strdup_printf("The topic has been cleared");
       } else {
         if (*subj)
-          mbuf = g_strdup_printf("%s has set the topic to: %s", r, subj);
+          mbuf = g_strdup_printf("%s has set the topic to: %s", res, subj);
         else
-          mbuf = g_strdup_printf("%s has cleared the topic", r);
+          mbuf = g_strdup_printf("%s has cleared the topic", res);
       }
-      scr_WriteIncomingMessage(s, mbuf, 0,
+      scr_WriteIncomingMessage(bjid, mbuf, 0,
                                HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
       if (settings_opt_get_int("log_muc_conf"))
-        hlog_write_message(s, 0, -1, mbuf);
-      g_free(s);
+        hlog_write_message(bjid, 0, -1, mbuf);
       g_free(mbuf);
       // The topic is displayed in the chat status line, so refresh now.
       scr_update_chat_status(TRUE);
@@ -1274,11 +1271,14 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
   } else {
     handle_state_events(from, m->node);
   }
+
   if (from && (body || subject))
     gotmessage(mstype, from, body, enc, subject, timestamp,
                lm_message_node_find_xmlns(m->node, NS_SIGNED));
-  // Report received message if message receipt was requested
-  if (lm_message_node_get_child(m->node, "request")) {
+
+  // Report received message if message delivery receipt was requested
+  if (lm_message_node_get_child(m->node, "request") &&
+      (roster_getsubscription(bjid) & sub_from)) {
     const gchar *mid;
     LmMessageNode *y;
     LmMessage *rcvd = lm_message_new(from, LM_MESSAGE_TYPE_MESSAGE);
@@ -1292,12 +1292,39 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
     lm_message_unref(rcvd);
   }
 
+  { // xep184 receipt confirmation
+    LmMessageNode *received = lm_message_node_get_child(m->node, "received");
+    if (received && !g_strcmp0(lm_message_node_get_attribute(received, "xmlns"), NS_RECEIPTS)) {
+      char       *jid = jidtodisp(from);
+      const char *id  = lm_message_node_get_attribute(received, "id");
+      // This is for backward compatibility; if the remote client didn't add
+      // the id as an attribute of the 'received' tag, we use the message id:
+      if (!id)
+        id = lm_message_get_id(m);
+      scr_remove_receipt_flag(jid, id);
+      g_free(jid);
+    }
+  }
+
   if (from) {
     x = lm_message_node_find_xmlns(m->node, NS_MUC_USER);
     if (x && !strcmp(x->name, "x"))
-      got_muc_message(from, x);
+      got_muc_message(from, x, timestamp);
+
+    x = lm_message_node_find_xmlns(m->node, NS_X_CONFERENCE);
+
+    if (x && !strcmp(x->name, "x")) {
+      const char *jid = lm_message_node_get_attribute(x, "jid");
+      if (jid) {
+        const char *reason = lm_message_node_get_attribute(x, "reason");
+        const char *password = lm_message_node_get_attribute(x, "password");
+        // We won't send decline stanzas as it is a Direct Invitation
+        got_invite(from, jid, reason, password, FALSE);
+      }
+    }
   }
 
+  g_free(bjid);
   return LM_HANDLER_RESULT_REMOVE_MESSAGE;
 }
 
@@ -1305,28 +1332,99 @@ static LmHandlerResult cb_caps(LmMessageHandler *h, LmConnection *c,
                                LmMessage *m, gpointer user_data)
 {
   char *ver = user_data;
+  char *hash;
+  const char *from = lm_message_get_from(m);
+  char *bjid = jidtodisp(from);
   LmMessageSubType mstype = lm_message_get_sub_type(m);
 
-  caps_add(ver);
-  if (mstype == LM_MESSAGE_SUB_TYPE_ERROR) {
-    display_server_error(lm_message_node_get_child(m->node, "error"),
-                         lm_message_get_from(m));
-  } else if (mstype == LM_MESSAGE_SUB_TYPE_RESULT) {
+  hash = strchr(ver, ',');
+  if (hash)
+    *hash++ = '\0';
+
+  if (mstype == LM_MESSAGE_SUB_TYPE_RESULT) {
     LmMessageNode *info;
     LmMessageNode *query = lm_message_node_get_child(m->node, "query");
 
+    if (caps_has_hash(ver, bjid))
+      goto caps_callback_return;
+
+    caps_add(ver);
+
     info = lm_message_node_get_child(query, "identity");
-    if (info)
-      caps_set_identity(ver, lm_message_node_get_attribute(info, "category"),
-                        lm_message_node_get_attribute(info, "name"),
-                        lm_message_node_get_attribute(info, "type"));
+    while (info) {
+      if (!g_strcmp0(info->name, "identity"))
+        caps_add_identity(ver, lm_message_node_get_attribute(info, "category"),
+                          lm_message_node_get_attribute(info, "name"),
+                          lm_message_node_get_attribute(info, "type"),
+                          lm_message_node_get_attribute(info, "xml:lang"));
+        info = info->next;
+    }
+
     info = lm_message_node_get_child(query, "feature");
     while (info) {
       if (!g_strcmp0(info->name, "feature"))
         caps_add_feature(ver, lm_message_node_get_attribute(info, "var"));
       info = info->next;
     }
+
+    info = lm_message_node_get_child(query, "x");
+    {
+      LmMessageNode *field;
+      LmMessageNode *value;
+      const char *formtype, *var;
+      while (info) {
+        if (!g_strcmp0(info->name, "x")
+            && !g_strcmp0(lm_message_node_get_attribute(info, "type"),
+                          "result")
+            && !g_strcmp0(lm_message_node_get_attribute(info, "xmlns"),
+                          "jabber:x:data")) {
+          field = lm_message_node_get_child(info, "field");
+          formtype = NULL;
+          while (field) {
+            if (!g_strcmp0(field->name, "field")
+                && !g_strcmp0(lm_message_node_get_attribute(field, "var"),
+                              "FORM_TYPE")
+                && !g_strcmp0(lm_message_node_get_attribute(field, "type"),
+                              "hidden")) {
+              value = lm_message_node_get_child(field, "value");
+              if (value)
+                formtype = lm_message_node_get_value(value);
+            }
+            field = field->next;
+          }
+          if (formtype) {
+            caps_add_dataform(ver, formtype);
+            field = lm_message_node_get_child(info, "field");
+            while (field) {
+              var = lm_message_node_get_attribute(field, "var");
+              if (!g_strcmp0(field->name, "field")
+                  && (g_strcmp0(var, "FORM_TYPE")
+                  || g_strcmp0(lm_message_node_get_attribute(field, "type"),
+                               "hidden"))) {
+                value = lm_message_node_get_child(field, "value");
+                while (value) {
+                  if (!g_strcmp0(value->name, "value"))
+                    caps_add_dataform_field(ver, formtype, var,
+                      lm_message_node_get_value(value));
+                  value = value->next;
+                }
+              }
+              field = field->next;
+            }
+          }
+        }
+        info = info->next;
+      }
+    }
+
+    if (caps_verify(ver, hash))
+      caps_copy_to_persistent(ver, lm_message_node_to_string(query));
+    else
+      caps_move_to_local(ver, bjid);
   }
+
+caps_callback_return:
+  g_free(bjid);
   g_free(ver);
   return LM_HANDLER_RESULT_REMOVE_MESSAGE;
 }
@@ -1441,12 +1539,15 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
   caps = lm_message_node_find_xmlns(m->node, NS_CAPS);
   if (caps && ust != offline) {
     const char *ver = lm_message_node_get_attribute(caps, "ver");
+    const char *hash = lm_message_node_get_attribute(caps, "hash");
     GSList *sl_buddy = NULL;
 
-    if (!ver) {
-      scr_LogPrint(LPRINT_LOGNORM, "Error: malformed caps version (%s)", bjid);
+    if (!hash) {
+      // No support for legacy format
       goto handle_presence_return;
     }
+    if (!ver || !g_strcmp0(ver, "") || !g_strcmp0(hash, ""))
+      goto handle_presence_return;
 
     if (rname)
       sl_buddy = roster_find(bjid, jidsearch, ROSTER_TYPE_USER);
@@ -1454,7 +1555,7 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
     if (sl_buddy && buddy_getonserverflag(sl_buddy->data)) {
       buddy_resource_setcaps(sl_buddy->data, rname, ver);
 
-      if (!caps_has_hash(ver)) {
+      if (!caps_has_hash(ver, bjid) && !caps_restore_from_persistent(ver)) {
         char *node;
         LmMessageHandler *handler;
         LmMessage *iq = lm_message_new_with_sub_type(from, LM_MESSAGE_TYPE_IQ,
@@ -1468,7 +1569,9 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
                  "node", node,
                  NULL);
         g_free(node);
-        handler = lm_message_handler_new(cb_caps, g_strdup(ver), NULL);
+        handler = lm_message_handler_new(cb_caps,
+                                         g_strdup_printf("%s,%s",ver,hash),
+                                         NULL);
         lm_connection_send_with_reply(connection, iq, handler, NULL);
         lm_message_unref(iq);
         lm_message_handler_unref(handler);
@@ -1920,7 +2023,27 @@ void xmpp_setstatus(enum imstatus st, const char *recipient, const char *msg,
   // (But we want to update internal status even when disconnected,
   // in order to avoid some problems during network failures)
   if (isonline) {
+#ifdef WITH_DEPRECATED_STATUS_INVISIBLE
     const char *s_msg = (st != invisible ? msg : NULL);
+#else
+    // XXX Could be removed if/when we get rid of status invisible
+    // completely.
+    const char *s_msg = msg;
+#endif
+
+    if (!recipient) {
+      // This is a global status, send presence to chatrooms
+#ifdef WITH_DEPRECATED_STATUS_INVISIBLE
+      if (st != invisible)
+#endif
+      {
+        struct T_presence room_presence;
+        room_presence.st = st;
+        room_presence.msg = msg;
+        foreach_buddy(ROSTER_TYPE_ROOM, &roompresence, &room_presence);
+      }
+    }
+
     m = lm_message_new_presence(st, recipient, s_msg);
     xmpp_insert_entity_capabilities(m->node, st); // Entity Caps (XEP-0115)
 #ifdef HAVE_GPGME
@@ -1942,16 +2065,6 @@ void xmpp_setstatus(enum imstatus st, const char *recipient, const char *msg,
   // If we didn't change our _global_ status, we are done
   if (recipient) return;
 
-  if (isonline) {
-    // Send presence to chatrooms
-    if (st != invisible) {
-      struct T_presence room_presence;
-      room_presence.st = st;
-      room_presence.msg = msg;
-      foreach_buddy(ROSTER_TYPE_ROOM, &roompresence, &room_presence);
-    }
-  }
-
   if (isonline || !st) {
     // We'll have to update the roster if we switch to/from offline because
     // we don't know the presences of buddies when offline...
@@ -1959,7 +2072,11 @@ void xmpp_setstatus(enum imstatus st, const char *recipient, const char *msg,
       update_roster = TRUE;
 
     if (isonline || mystatus || st)
+#ifdef WITH_DEPRECATED_STATUS_INVISIBLE
       hk_mystatuschange(0, mystatus, st, (st != invisible ? msg : ""));
+#else
+      hk_mystatuschange(0, mystatus, st, msg);
+#endif
     mystatus = st;
   }
 
@@ -2008,6 +2125,7 @@ void xmpp_setprevstatus(void)
 void send_storage(LmMessageNode *store)
 {
   LmMessage *iq;
+  LmMessageHandler *handler;
   LmMessageNode *query;
 
   if (!rosternotes) return;
@@ -2018,7 +2136,9 @@ void send_storage(LmMessageNode *store)
   lm_message_node_set_attribute(query, "xmlns", NS_PRIVATE);
   lm_message_node_insert_childnode(query, store);
 
-  lm_connection_send(lconnection, iq, NULL);
+  handler = lm_message_handler_new(handle_iq_dummy, NULL, FALSE);
+  lm_connection_send_with_reply(lconnection, iq, handler, NULL);
+  lm_message_handler_unref(handler);
   lm_message_unref(iq);
 }
 
@@ -2065,6 +2185,29 @@ const char *xmpp_get_bookmark_nick(const char *bjid)
   return NULL;
 }
 
+int xmpp_get_bookmark_autojoin(const char *bjid)
+{
+  LmMessageNode *x;
+
+  if (!bookmarks || !bjid)
+    return 0;
+
+  // Walk through the storage bookmark tags
+  for (x = bookmarks->children ; x; x = x->next) {
+    // If the node is a conference item, check the jid.
+    if (x->name && !strcmp(x->name, "conference")) {
+      const char *fjid = lm_message_node_get_attribute(x, "jid");
+      if (fjid && !strcasecmp(bjid, fjid)) {
+        const char *autojoin;
+        autojoin = lm_message_node_get_attribute(x, "autojoin");
+        if (autojoin && (!strcmp(autojoin, "1") || !strcmp(autojoin, "true")))
+          return 1;
+        return 0;
+      }
+    }
+  }
+  return 0;
+}
 
 //  xmpp_get_all_storage_bookmarks()
 // Return a GSList with all storage bookmarks.
@@ -2092,7 +2235,7 @@ GSList *xmpp_get_all_storage_bookmarks(void)
       autojoin = lm_message_node_get_attribute(x, "autojoin");
       nick = lm_message_node_get_child_value(x, "nick");
       name = lm_message_node_get_attribute(x, "name");
-      if (autojoin && !strcmp(autojoin, "1"))
+      if (autojoin && (!strcmp(autojoin, "1") || !strcmp(autojoin, "true")))
         bm_elt->autojoin = 1;
       if (nick)
         bm_elt->nick = g_strdup(nick);
@@ -2105,13 +2248,14 @@ GSList *xmpp_get_all_storage_bookmarks(void)
 }
 
 //  xmpp_set_storage_bookmark(roomid, name, nick, passwd, autojoin,
-//                          printstatus, autowhois)
+//                          printstatus, autowhois, flagjoins, group)
 // Update the private storage bookmarks: add a conference room.
 // If name is nil, we remove the bookmark.
 void xmpp_set_storage_bookmark(const char *roomid, const char *name,
                                const char *nick, const char *passwd,
                                int autojoin, enum room_printstatus pstatus,
-                               enum room_autowhois awhois)
+                               enum room_autowhois awhois,
+                               enum room_flagjoins fjoins, const char *group)
 {
   LmMessageNode *x;
   bool changed = FALSE;
@@ -2162,6 +2306,10 @@ void xmpp_set_storage_bookmark(const char *roomid, const char *name,
       lm_message_node_set_attributes(x, "autowhois",
                                      (awhois == autowhois_on) ? "1" : "0",
                                      NULL);
+    if (fjoins)
+      lm_message_node_add_child(x, "flag_joins", strflagjoins[fjoins]);
+    if (group && *group)
+      lm_message_node_add_child(x, "group", group);
     changed = TRUE;
     scr_LogPrint(LPRINT_LOGNORM, "Updating bookmarks...");
   }

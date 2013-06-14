@@ -22,6 +22,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>   // snprintf
 
 #include "xmpp_helper.h"
 #include "settings.h"
@@ -71,7 +72,6 @@ struct xmpp_error xmpp_errors[] = {
     "Disconnected",          "service-unavailable",     "cancel"},
   {0, NULL, NULL, NULL, NULL}
 };
-
 
 #ifdef MODULES_ENABLE
 static GSList *xmpp_additional_features = NULL;
@@ -224,6 +224,7 @@ const char *entity_version(enum imstatus status)
   caps_add("");
   caps_set_identity("", "client", PACKAGE_STRING, "pc");
   caps_add_feature("", NS_DISCO_INFO);
+  caps_add_feature("", NS_CAPS);
   caps_add_feature("", NS_MUC);
   // advertise ChatStates only if they aren't disabled
   if (!settings_opt_get_int("disable_chatstates"))
@@ -234,6 +235,7 @@ const char *entity_version(enum imstatus status)
   caps_add_feature("", NS_PING);
   caps_add_feature("", NS_COMMANDS);
   caps_add_feature("", NS_RECEIPTS);
+  caps_add_feature("", NS_X_CONFERENCE);
   if (!settings_opt_get_int("iq_last_disable") &&
       (!settings_opt_get_int("iq_last_disable_when_notavail") ||
        status != notavail))
@@ -303,9 +305,11 @@ LmMessage *lm_message_new_presence(enum imstatus st,
         lm_message_node_add_child(x->node, "show", imstatus_showmap[st]);
         break;
 
+#ifdef WITH_DEPRECATED_STATUS_INVISIBLE
     case invisible:
         lm_message_node_set_attribute(x->node, "type", "invisible");
         break;
+#endif
 
     case offline:
         lm_message_node_set_attribute(x->node, "type", "unavailable");

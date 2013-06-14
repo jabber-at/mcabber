@@ -90,6 +90,15 @@ enum room_autowhois {
   autowhois_on
 };
 
+extern char *strflagjoins[];
+
+enum room_flagjoins {
+  flagjoins_default,
+  flagjoins_none,
+  flagjoins_joins,
+  flagjoins_all
+};
+
 struct role_affil {
   enum { type_role, type_affil } type;
   union {
@@ -159,6 +168,7 @@ struct pgp_data {
 extern GList *buddylist;
 extern GList *current_buddy;
 extern GList *alternate_buddy;
+extern GList *last_activity_buddy;
 
 // Macros...
 
@@ -213,6 +223,8 @@ void    buddy_setprintstatus(gpointer rosterdata, enum room_printstatus);
 enum room_printstatus buddy_getprintstatus(gpointer rosterdata);
 void    buddy_setautowhois(gpointer rosterdata, enum room_autowhois);
 enum room_autowhois buddy_getautowhois(gpointer rosterdata);
+void    buddy_setflagjoins(gpointer rosterdata, enum room_flagjoins);
+enum room_flagjoins buddy_getflagjoins(gpointer rosterdata);
 void    buddy_settype(gpointer rosterdata, guint type);
 guint   buddy_gettype(gpointer rosterdata);
 guint   buddy_getsubscription(gpointer rosterdata);
@@ -226,6 +238,8 @@ gchar   buddy_getresourceprio(gpointer rosterdata, const char *resname);
 //int   buddy_isresource(gpointer rosterdata);
 GSList *buddy_getresources(gpointer rosterdata);
 GSList *buddy_getresources_locale(gpointer rosterdata);
+const char *buddy_getactiveresource(gpointer rosterdata);
+void    buddy_setactiveresource(gpointer rosterdata, const char *resname);
 void    buddy_resource_setname(gpointer rosterdata, const char *resname,
                                const char *newname);
 void    buddy_resource_setevents(gpointer rosterdata, const char *resname,

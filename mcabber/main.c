@@ -41,10 +41,13 @@
 #include "utils.h"
 #include "pgp.h"
 #include "otr.h"
-#include "fifo.h"
 #include "xmpp.h"
 #include "help.h"
 #include "events.h"
+
+#ifndef MODULES_ENABLE
+# include "fifo.h"
+#endif
 
 #ifdef MODULES_ENABLE
 # include "compl.h"
@@ -77,7 +80,9 @@ char *mcabber_version(void)
 
 static void mcabber_terminate(const char *msg)
 {
+#ifndef MODULES_ENABLE
   fifo_deinit();
+#endif
   xmpp_disconnect();
   scr_terminate_curses();
 
@@ -115,7 +120,8 @@ void sig_handler(int signum)
     mcabber_terminate("Killed by SIGINT");
 #ifdef USE_SIGWINCH
   } else if (signum == SIGWINCH) {
-    ungetch(KEY_RESIZE);
+    if (scr_curses_status())
+      ungetch(KEY_RESIZE);
 #endif
   } else {
     scr_LogPrint(LPRINT_LOGNORM, "Caught signal: %d", signum);
@@ -358,13 +364,13 @@ int main(int argc, char **argv)
   }
 
   /* Initialize command system, roster and default key bindings */
+  compl_init_system();
   cmd_init();
   roster_init();
   settings_init();
   scr_init_bindings();
   caps_init();
 #ifdef MODULES_ENABLE
-  compl_init_system();
   modules_init();
 #endif
   /* Initialize charset */
@@ -449,8 +455,10 @@ int main(int argc, char **argv)
 
   chatstates_disabled = settings_opt_get_int("disable_chatstates");
 
+#ifndef MODULES_ENABLE
   /* Initialize FIFO named pipe */
-  fifo_init(settings_opt_get("fifo_name"));
+  fifo_init();
+#endif
 
   /* Load previous roster state */
   hlog_load_state();
@@ -495,11 +503,12 @@ int main(int argc, char **argv)
   }
 
   evs_deinit();
-  scr_terminate_curses();
 #ifdef MODULES_ENABLE
   modules_deinit();
 #endif
+#ifndef MODULES_ENABLE
   fifo_deinit();
+#endif
 #ifdef HAVE_LIBOTR
   otr_terminate();
 #endif
@@ -512,6 +521,8 @@ int main(int argc, char **argv)
   if (settings_opt_get_int("spell_enable"))
     spellcheck_deinit();
 #endif
+
+  scr_terminate_curses();
   /* Save pending message state */
   hlog_save_state();
   caps_free();

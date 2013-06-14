@@ -43,12 +43,14 @@ enum colors {
   COLOR_MSGOUT,
   COLOR_MSGHL,
   COLOR_STATUS,
+  COLOR_LOG,
   COLOR_ROSTER,
   COLOR_ROSTERSEL,
   COLOR_ROSTERSELNMSG,
   COLOR_ROSTERNMSG,
   COLOR_INFO,
   COLOR_MSGIN,
+  COLOR_READMARK,
   COLOR_max
 };
 
@@ -107,7 +109,7 @@ void scr_draw_roster(void);
 void scr_update_main_status(int forceupdate);
 void scr_update_chat_status(int forceupdate);
 void scr_roster_visibility(int status);
-void scr_remove_receipt_flag(const char *jidto, gpointer xep184);
+void scr_remove_receipt_flag(const char *jidto, gconstpointer xep184);
 void scr_show_buddy_window(void);
 int  scr_buddy_buffer_exists(const char *jid);
 void scr_update_buddy_window(void);
@@ -155,6 +157,8 @@ void scr_buffer_date(time_t t);
 void scr_buffer_dump(const char *file);
 void scr_buffer_list(void);
 void scr_buffer_scroll_up_down(int updown, unsigned int nblines);
+void scr_buffer_readmark(gchar action);
+void scr_buffer_jump_readmark(void);
 
 bool scr_roster_color(const char *status, const char *wildcard,
                       const char *color);
@@ -172,6 +176,7 @@ void readline_capitalize_word(void);
 void readline_backward_char(void);
 void readline_forward_char(void);
 int  readline_accept_line(int down_history);
+void readline_clear_history(void);
 void readline_cancel_completion(void);
 void readline_do_completion(void);
 void readline_refresh_screen(void);
@@ -187,6 +192,7 @@ void readline_iline_end(void);
 void readline_backward_kill_iline(void);
 void readline_forward_kill_iline(void);
 void readline_send_multiline(void);
+void readline_insert(const char *toinsert);
 
 
 // For backward compatibility:

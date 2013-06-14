@@ -27,6 +27,8 @@ struct bookmark {
   guint autojoin;
   /* enum room_printstatus pstatus; */
   /* enum room_autowhois awhois; */
+  /* enum room_flagjoins fjoins; */
+  /* const char *group; */
 };
 
 extern LmConnection* lconnection;
@@ -70,12 +72,14 @@ GSList *xmpp_get_all_storage_rosternotes(void);
 void xmpp_set_storage_bookmark(const char *roomid, const char *name,
                                const char *nick, const char *passwd,
                                int autojoin, enum room_printstatus pstatus,
-                               enum room_autowhois awhois);
+                               enum room_autowhois awhois,
+                               enum room_flagjoins fjoins, const char *group);
 struct annotation *xmpp_get_storage_rosternotes(const char *barejid,
                                                 int silent);
 void xmpp_set_storage_rosternotes(const char *barejid, const char *note);
 guint xmpp_is_bookmarked(const char *bjid);
 const char *xmpp_get_bookmark_nick(const char *bjid);
+int xmpp_get_bookmark_autojoin(const char *bjid);
 
 void xmpp_request(const char *fjid, enum iqreq_type reqtype);
 void request_vcard(const char *bjid);
