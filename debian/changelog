@@ -1,3 +1,9 @@
+mcabber (0.10.1-4.1) unstable; urgency=low
+
+  * This is a Non-maintainer upload.
+
+ -- Mathias Ertl <apt-repository@fsinf.at>  Fri, 14 Jun 2013 18:46:32 +0200
+
 mcabber (0.10.1-4) unstable; urgency=low
 
   * Integrated patch from upstream VCS fixing segmentation fault when using
