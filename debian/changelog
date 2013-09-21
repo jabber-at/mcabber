@@ -1,4 +1,4 @@
-mcabber (0.10.2-1.1) unstable; urgency=low
+mcabber (0.10.2-1) unstable; urgency=low
 
   * Version bump from upstream.
   * Disable mcabber_fix_aspell.patch, fixed upstream in this version.
