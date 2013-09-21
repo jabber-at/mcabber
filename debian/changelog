@@ -4,7 +4,7 @@ mcabber (0.10.2-1) unstable; urgency=low
   * Disable mcabber_fix_aspell.patch, fixed upstream in this version.
   * Disable mcabber_bookmark_password.patch, it no longer applies.
 
- -- Mathias Ertl <apt-repository@fsinf.at>  Fri, 14 Jun 2013 20:07:57 +0200
+ -- Mathias Ertl <mati@fsinf.at>  Fri, 14 Jun 2013 20:07:57 +0200
 
 mcabber (0.10.1-4.1) unstable; urgency=low
 
@@ -13,7 +13,7 @@ mcabber (0.10.1-4.1) unstable; urgency=low
     the git-repository.
   * Update Standards-Version to most recent 3.9.4.
 
- -- Mathias Ertl <apt-repository@fsinf.at>  Fri, 14 Jun 2013 18:46:32 +0200
+ -- Mathias Ertl <mati@fsinf.at>  Fri, 14 Jun 2013 18:46:32 +0200
 
 mcabber (0.10.1-4) unstable; urgency=low
 
