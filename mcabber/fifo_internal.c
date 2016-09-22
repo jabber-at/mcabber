@@ -1,5 +1,5 @@
 /*
- * fifo.c       -- Read commands from a named pipe
+ * fifo_internal.c      -- Read commands from a named pipe
  *
  * Copyright (C) 2008,2009 Mikael Berthe <mikael@lilotux.net>
  * Copyright (C) 2009      Myhailo Danylenko <isbear@ukrpost.net>
@@ -15,9 +15,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdlib.h>
@@ -72,8 +70,7 @@ static guint fifo_callback(GIOChannel *channel,
       scr_LogPrint(logflag, "%s FIFO command: %s",
                    (fifo_ignore ? "Ignoring" : "Executing"), buf);
       if (!fifo_ignore) {
-        if (process_command(buf, TRUE) == 255)
-          mcabber_set_terminate_ui();
+        process_command(buf, TRUE);
       }
 
       g_free(buf);

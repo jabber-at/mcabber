@@ -12,6 +12,11 @@ set jid = yourusername@domain
 # enclose it with quotes: set password = " example password "
 #set password = yourpassword
 
+# Read password from output of the given command.
+# This is a way to use password managers like 'pass' in order
+# to avoid writing plain passwords into config files.
+#set password_eval = "your command"
+
 # You can provide a server name if you want mcabber to connect
 # to a specific server.
 #set server = your.jabber.server
@@ -32,7 +37,8 @@ set jid = yourusername@domain
 #set priority_away = 0
 
 # Set 'ignore_self_presence' to 1 if you do not want to see your own
-# presence in your roster (default: 0).
+# presence in your roster (default: 0).  Other resources will still be
+# displayed.
 set ignore_self_presence = 1
 
 # SSL/TLS options:
@@ -42,13 +48,22 @@ set ignore_self_presence = 1
 # ssl to 1.  It's not possible to use old-style SSL and TLS together.
 #set ssl = 0
 set tls = 1
+# It is possible to set the allowed ciphers which openssl/gnutls can use for
+# the encrypted connection.
+# openssl (get the name of the available ciphers via 'openssl ciphers'):
+#set ssl_ciphers = ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-SHA384
+# gnutls (check the priorities option of 'man gnutls_priority_init'):
+#set ssl_ciphers = PFS
+# If you'd like to explicitly specify trusted certificates, set the ssl_ca
+# option to a certificate file or path.
+#set ssl_ca = ~/.mcabber/trusted_cert.pem
 # Moreover, it's possible to check whether the fingerprint of the
 # ssl certificate matches ssl_fingerprint.
 # You can get the fingerprint of your server either with gnutls or openssl:
 # 1. gnutls-cli -p 5223 $your_server
-# 2. openssl s_client -connect $your_server:5223 | \
-#    openssl x509 -fingerprint -md5 -noout
-#set ssl_fingerprint = 97:5C:00:3F:1D:77:45:25:E2:C5:70:EC:83:C8:87:EE
+# 2. openssl s_client -starttls xmpp -connect $yourserver:5222 | \
+#    openssl x509 -fingerprint -sha256 -noout
+#set ssl_fingerprint = SHA256:647d2eef7f972001d4fe8b6bedb3007d095dcd982ebb6773c6fb74adb8cc27c0
 # Set ssl_ignore_checks to 1 to disable all certificate checks except the
 # fingerprint check.
 #set ssl_ignore_checks = 0
@@ -69,6 +84,14 @@ set tls = 1
 # can change it here.  If this number is < 0, mcabber will keep asking
 # until the passphrase is good.
 #set pgp_passphrase_retries = 2
+#
+# You can specify the path to the gpg binary, e.g. to force the use of
+# GnuPG version 1 on systems which have both versions installed.
+#set gpg_path = /usr/bin/gpg
+#
+# If GnuPG should use a custom configuration directory, you can set
+# 'gpg_home' to the desired path.
+#set gpg_home = ~/.mcabber/gpg
 
 # Conference nickname
 # This nickname is used when joining a room, when no nick is explicitly
@@ -110,7 +133,7 @@ set tls = 1
 # checking with the following options (you can't change them once mcabber is
 # running).
 #set spell_enable = 1
-#set spell_lang = en_US
+#set spell_lang = en_US ru_RU
 #set spell_encoding = iso8859-1
 #set spell_encoding = UTF-8
 
@@ -137,6 +160,16 @@ set cmdhistory_lines = 250
 # by setting the option 'completion_ignore_case' to 1.
 #set completion_ignore_case = 0
 
+# Message Carbons (XEP-0280)
+# If you want to enable Message Carbons at startup (and if your server
+# supports them), set the 'carbons' option to 1.  Default is 0.
+#set carbons = 1
+
+# Set the 'clear_unread_on_carbon' option to 1 if the unread messages flag
+# should be cleared when an outgoing copy of a message sent to that contact
+# is received from another client. Default is 0.
+#set clear_unread_on_carbon = 1
+
 # Typing notifications, Chat States, Events (XEP-22/85)
 # Set disable_chatstates to 1 if you don't want to use typing notifications.
 # Note: changing this option once mcabber is running has no effect.
@@ -148,10 +181,10 @@ set cmdhistory_lines = 250
 # (and status messages) to the log files (default: 0).
 # You can load (read) the messages history: set load_logs = 1
 # If you enable load_logs, you can use the 'max_history_age' setting below.
-# Default logging directory (logging_dir) is $HOME/.mcabber/histo/
+# The default logging directory (logging_dir) is $HOME/.mcabber/histo/
+# (or $XDG_CONFIG_HOME/mcabber/histo/).
 # Defaults for logging, load_logs are 0 (disabled)
-# Note: the logging directory must exist if you enable logging, mcabber
-#       will not create it.
+# Note: the logging directory path is created if absent.
 # Note: these options, except 'max_history_age' and 'max_history_blocks',
 # are used at startup time.
 #set logging = 1
@@ -185,6 +218,14 @@ set max_history_blocks = 8
 # Set iq_version_hide_os to 1 if you do not want to allow people to retrieve
 # your OS version.
 #set iq_version_hide_os = 0
+#
+# Set iq_version_hide_version to 1 if you do not want to allow people to
+# retrieve your mcabber version.
+#set iq_version_hide_version = 0
+#
+# Set iq_time_hide to 1 if you do not want to allow people to retrieve
+# your OS time.
+#set iq_time_hide = 0
 #
 # Set iq_last_disable to 1 if you want to disable response to jabber:iq:last
 # queries (XEP-0012).  Set iq_last_disable_when_notavail to 1 if you want
@@ -397,6 +438,8 @@ set escdelay = 50
 # rostersel:   text color of the selected roster item
 # rosterselmsg:text color of the selected roster item, if there is a new msg
 # rosternewmsg: text color of items with unread messages
+# readmark:   text color of the "read mark" line in buffers
+# timestamp:  text color in the chat window for delayed timestamps
 #
 #set color_background   = black
 #set color_general      = white
@@ -413,6 +456,7 @@ set escdelay = 50
 #set color_rosterselmsg = red
 #set color_rosternewmsg = red
 #set color_readmark     = red
+#set color_timestamp    = brightblue
 
 # You can color roster items by their status and JID.  For example, to have
 # all roster items white, just all contacts from jabber.org that are away,
@@ -445,6 +489,10 @@ set escdelay = 50
 # (left/right).
 #set log_win_on_top = 0
 #set roster_win_on_right = 0
+#
+# The attention sign (default: '!') used when a private message is received
+# can be changed with the 'attention_char' option.
+#set attention_char = !
 #
 # By default, the displayed name of a contact in the roster window will
 # be the JID if no name has been specified.  You can use the following
@@ -489,6 +537,14 @@ set escdelay = 50
 # Useful when your buddies are chatting from their non-highest priority
 # resources, forcing you to use /say_to command.
 #set roster_autolock_resource = 1
+#
+# Automatic locking of buffer when scrolled up, and unlocking when scrolled
+# to bottom.
+# Set 'buffer_smart_scrolling' to 1 to enable.
+# Note: manual command "/buffer scroll_lock" will not work when smart scrolling
+# is enabled. Command "/buffer scroll_unlock" will only work if there is a new
+# message received.
+#set buffer_smart_scrolling = 0
 
 # Contacts PGP information
 # You can provide a PGP key to be used for a given Jabber user, or

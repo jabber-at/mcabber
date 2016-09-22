@@ -1,7 +1,7 @@
 /*
  * pgp.c        -- PGP utility functions
  *
- * Copyright (C) 2006-2009 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2006-2015 Mikael Berthe <mikael@lilotux.net>
  * Some parts inspired by centericq (impgp.cc)
  *
  * This program is free software; you can redistribute it and/or modify
@@ -15,9 +15,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <config.h>
@@ -32,13 +30,16 @@
 #include <glib.h>
 
 #include "pgp.h"
+#include "settings.h"
+#include "utils.h"
 #include "logprint.h"
 
-#define MIN_GPGME_VERSION "1.0.0"
+#define MIN_GPGME_VERSION "1.1.0"
 
 static struct gpg_struct
 {
-  int enabled;
+  int   enabled;
+  int   version1;
   char *private_key;
   char *passphrase;
 } gpg;
@@ -52,6 +53,10 @@ static struct gpg_struct
 int gpg_init(const char *priv_key, const char *passphrase)
 {
   gpgme_error_t err;
+
+  gpgme_ctx_t ctx;
+  gpgme_engine_info_t info;
+  const char *gpg_path, *gpg_home;
 
   // Check for version and OpenPGP protocol support.
   if (!gpgme_check_version(MIN_GPGME_VERSION)) {
@@ -71,12 +76,52 @@ int gpg_init(const char *priv_key, const char *passphrase)
   gpgme_set_locale(NULL, LC_CTYPE, setlocale(LC_CTYPE, NULL));
   gpgme_set_locale(NULL, LC_MESSAGES, setlocale(LC_MESSAGES, NULL));
 
+  // The path to the gpg binary can be specified in order to force
+  // version 1, for example.
+  gpg_path = settings_opt_get("gpg_path");
+  gpg_home = settings_opt_get("gpg_home");
+  if (gpg_path || gpg_home) {
+    char *xp_gpg_home = expand_filename(gpg_home);
+    err = gpgme_set_engine_info(GPGME_PROTOCOL_OpenPGP, gpg_path, xp_gpg_home);
+    g_free(xp_gpg_home);
+    if (err) return -1;
+  }
+
   // Store private data.
   gpg_set_private_key(priv_key);
   gpg_set_passphrase(passphrase);
 
+  err = gpgme_new(&ctx);
+  if (err) return -1;
+
+  // Check OpenPGP engine version; with version 2+ the agent is mandatory
+  // and we do not manage the passphrase.
+  gpgme_set_protocol(ctx, GPGME_PROTOCOL_OpenPGP);
+  if (err) return -1;
+
+  err = gpgme_get_engine_info(&info);
+  if (!err) {
+    while (info && info->protocol != gpgme_get_protocol(ctx))
+      info = info->next;
+
+    if (info && info->version) {
+      if (!strncmp(info->version, "1.", 2))
+        gpg.version1 = TRUE;
+      scr_log_print(LPRINT_DEBUG, "GPGME: Engine version is '%s'.",
+                    info->version);
+    }
+  }
+
+  gpgme_release(ctx);
   gpg.enabled = 1;
   return 0;
+}
+
+//  gpg_is_version1()
+// Return TRUE if the GnuPG OpenPGP engine version is 1.x
+int gpg_is_version1(void)
+{
+  return gpg.version1;
 }
 
 //  gpg_terminate()
@@ -116,6 +161,13 @@ void gpg_set_private_key(const char *priv_keyid)
     gpg.private_key = g_strdup(priv_keyid);
   else
     gpg.private_key = NULL;
+}
+
+//  gpg_get_private_key_id()
+// Return the current private key id (static string).
+const char *gpg_get_private_key_id(void)
+{
+  return gpg.private_key;
 }
 
 //  strip_header_footer(data)
@@ -223,19 +275,24 @@ char *gpg_verify(const char *gpg_data, const char *text,
       if (!err) {
         gpgme_verify_result_t vr = gpgme_op_verify_result(ctx);
         if (vr && vr->signatures) {
-          char *r = vr->signatures->fpr;
-          // Found the fingerprint.  Let's try to get the key id.
-          if (!gpgme_get_key(ctx, r, &key, 0) && key) {
-            r = key->subkeys->keyid;
-            gpgme_key_release(key);
-          }
-          // r is a static variable, let's copy it.
-          verified_key = g_strdup(r);
-          *sigsum = vr->signatures->summary;
-          // For some reason summary could be 0 when status is 0 too,
-          // which means the signature is valid...
-          if (!*sigsum && !vr->signatures->status)
-            *sigsum = GPGME_SIGSUM_GREEN;
+            gpgme_signature_t s = NULL;
+            // check all signatures and stop if the first could be verified
+            for (s = vr->signatures; s && !verified_key; s = s->next) {
+                // Found the fingerprint.  Let's try to get the key id.
+                if (NULL != s->fpr) {
+                    if (!gpgme_get_key(ctx, s->fpr, &key, 0)) {
+                        if (key) {
+                            verified_key = g_strdup(key->subkeys->keyid);
+                            gpgme_key_release(key);
+                        }
+                    }
+                }
+                *sigsum = s->summary;
+                // For some reason summary could be 0 when status is 0 too,
+                // which means the signature is valid...
+                if ((!*sigsum) && (!s->status))
+                    *sigsum = GPGME_SIGSUM_GREEN;
+            }
         }
       }
       gpgme_data_release(data_text);
@@ -257,7 +314,6 @@ char *gpg_sign(const char *gpg_data)
 {
   gpgme_ctx_t ctx;
   gpgme_data_t in, out;
-  char *p;
   char *signed_data = NULL;
   size_t nread;
   gpgme_key_t key;
@@ -277,9 +333,12 @@ char *gpg_sign(const char *gpg_data)
   gpgme_set_textmode(ctx, 0);
   gpgme_set_armor(ctx, 1);
 
-  p = getenv("GPG_AGENT_INFO");
-  if (!(p && strchr(p, ':')))
-    gpgme_set_passphrase_cb(ctx, passphrase_cb, 0);
+  if (gpg.version1) {
+    // GPG_AGENT_INFO isn't used by GnuPG version 2+
+    char *p = getenv("GPG_AGENT_INFO");
+    if (!(p && strchr(p, ':')))
+      gpgme_set_passphrase_cb(ctx, passphrase_cb, 0);
+  }
 
   err = gpgme_get_key(ctx, gpg.private_key, &key, 1);
   if (err || !key) {
@@ -296,7 +355,9 @@ char *gpg_sign(const char *gpg_data)
     err = gpgme_data_new(&out);
     if (!err) {
       err = gpgme_op_sign(ctx, in, out, GPGME_SIG_MODE_DETACH);
-      if (!err) {
+      if (err) {
+        gpgme_data_release(out);
+      } else {
         signed_data = gpgme_data_release_and_get_mem(out, &nread);
         if (signed_data) {
           // We need to add a trailing NULL
@@ -305,8 +366,6 @@ char *gpg_sign(const char *gpg_data)
           signed_data = strip_header_footer(dd);
           g_free(dd);
         }
-      } else {
-        gpgme_data_release(out);
       }
     }
     gpgme_data_release(in);
@@ -325,7 +384,7 @@ char *gpg_decrypt(const char *gpg_data)
 {
   gpgme_ctx_t ctx;
   gpgme_data_t in, out;
-  char *p, *data;
+  char *data;
   char *decrypted_data = NULL;
   size_t nread;
   gpgme_error_t err;
@@ -344,9 +403,12 @@ char *gpg_decrypt(const char *gpg_data)
 
   gpgme_set_protocol(ctx, GPGME_PROTOCOL_OpenPGP);
 
-  p = getenv("GPG_AGENT_INFO");
-  if (!(p && strchr(p, ':')))
-    gpgme_set_passphrase_cb(ctx, passphrase_cb, 0);
+  if (gpg.version1) {
+    // GPG_AGENT_INFO isn't used by GnuPG version 2+
+    char *p = getenv("GPG_AGENT_INFO");
+    if (!(p && strchr(p, ':')))
+      gpgme_set_passphrase_cb(ctx, passphrase_cb, 0);
+  }
 
   // Surround the given data with the prefix & suffix
   data = g_new(char, sizeof(prefix) + sizeof(suffix) + strlen(gpg_data));
@@ -359,7 +421,9 @@ char *gpg_decrypt(const char *gpg_data)
     err = gpgme_data_new(&out);
     if (!err) {
       err = gpgme_op_decrypt(ctx, in, out);
-      if (!err) {
+      if (err) {
+        gpgme_data_release(out);
+      } else {
         decrypted_data = gpgme_data_release_and_get_mem(out, &nread);
         if (decrypted_data) {
           // We need to add a trailing NULL
@@ -367,8 +431,6 @@ char *gpg_decrypt(const char *gpg_data)
           free(decrypted_data);
           decrypted_data = dd;
         }
-      } else {
-        gpgme_data_release(out);
       }
     }
     gpgme_data_release(in);
@@ -381,20 +443,25 @@ char *gpg_decrypt(const char *gpg_data)
   return decrypted_data;
 }
 
-//  gpg_encrypt(gpg_data, keyid)
-// Return encrypted gpg_data with the key keyid (or NULL).
+//  gpg_encrypt(gpg_data, keyids[], n)
+// Return encrypted gpg_data with the n keys from the keyids array (or NULL).
 // The returned string must be freed with g_free() after use.
-char *gpg_encrypt(const char *gpg_data, const char *keyid)
+char *gpg_encrypt(const char *gpg_data, const char *keyids[], size_t nkeys)
 {
   gpgme_ctx_t ctx;
   gpgme_data_t in, out;
   char *encrypted_data = NULL, *edata;
   size_t nread;
-  gpgme_key_t key;
+  gpgme_key_t *keys;
   gpgme_error_t err;
+  unsigned i;
 
   if (!gpg.enabled)
     return NULL;
+
+  if (!keyids || !nkeys) {
+    return NULL;
+  }
 
   err = gpgme_new(&ctx);
   if (err) {
@@ -407,29 +474,54 @@ char *gpg_encrypt(const char *gpg_data, const char *keyid)
   gpgme_set_textmode(ctx, 0);
   gpgme_set_armor(ctx, 1);
 
-  err = gpgme_get_key(ctx, keyid, &key, 0);
-  if (!err && key) {
-    gpgme_key_t keys[] = { key, 0 };
+  keys = g_new0(gpgme_key_t, 1+nkeys);
+  if (!keys) {
+    gpgme_release(ctx);
+    return NULL;
+  }
+
+  for (i = 0; i < nkeys; i++) {
+    err = gpgme_get_key(ctx, keyids[i], &keys[i], 0);
+    if (err || !keys[i]) {
+      scr_LogPrint(LPRINT_LOGNORM, "GPGME encryption error: cannot use key %s",
+                   keyids[i]);
+      // We need to have err not null to ensure we won't try to encrypt
+      // without this key.
+      if (!err) err = GPG_ERR_UNKNOWN_ERRNO;
+      break;
+    }
+  }
+
+  if (!err) {
     err = gpgme_data_new_from_mem(&in, gpg_data, strlen(gpg_data), 0);
     if (!err) {
       err = gpgme_data_new(&out);
       if (!err) {
         err = gpgme_op_encrypt(ctx, keys, GPGME_ENCRYPT_ALWAYS_TRUST, in, out);
-        if (!err)
-          encrypted_data = gpgme_data_release_and_get_mem(out, &nread);
-        else
+        if (err) {
           gpgme_data_release(out);
+        } else {
+          encrypted_data = gpgme_data_release_and_get_mem(out, &nread);
+          if (encrypted_data) {
+            // We need to add a trailing NULL
+            char *dd = g_strndup(encrypted_data, nread);
+            free(encrypted_data);
+            encrypted_data = dd;
+          }
+        }
       }
       gpgme_data_release(in);
     }
-    gpgme_key_release(key);
-  } else {
-    scr_LogPrint(LPRINT_LOGNORM, "GPGME encryption error: key not found");
-    err = 0;
+
+    if (err && err != GPG_ERR_CANCELED) {
+      scr_LogPrint(LPRINT_LOGNORM|LPRINT_NOTUTF8,
+                   "GPGME encryption error: %s", gpgme_strerror(err));
+    }
   }
-  if (err && err != GPG_ERR_CANCELED)
-    scr_LogPrint(LPRINT_LOGNORM|LPRINT_NOTUTF8,
-                 "GPGME encryption error: %s", gpgme_strerror(err));
+
+  for (i = 0; keys[i]; i++)
+    gpgme_key_release(keys[i]);
+  g_free(keys);
   gpgme_release(ctx);
   edata = strip_header_footer(encrypted_data);
   if (encrypted_data)

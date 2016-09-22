@@ -1,3 +1,135 @@
+dev (41)
+
+ * Stable api 1.0.3:1
+ * Stable api 1.0.2:1
+ * Stable api 1.0.1:1
+ * Change prototype of otr_send()
+ * Changeset 0c78d31c753d
+
+  -- Mikael Berthe, 2015-11-05
+
+dev (40)
+
+ * Add settings_get_mcabber_config_dir()
+ * Changeset ccd4ffa41a1b
+
+  -- Mikael Berthe, 2015-10-17
+
+dev (39)
+
+ * Add gpg_is_version1()
+ * Changeset 8811fe9d6ef0
+
+  -- Mikael Berthe, 2015-10-07
+
+dev (38)
+
+ * Change prototype of hk_message_out()
+ * Add HBB_PREFIX_CARBON
+ * Add option 'clear_unread_on_carbon'
+ * Min API 38
+ * Changeset ee3a40ffcd8b
+
+  -- Mikael Berthe, 2015-10-04
+
+dev (37)
+
+ * Add gpg_get_private_key_id()
+ * Changeset 84252c616919
+
+  -- Mikael Berthe, 2015-10-04
+
+dev (36)
+
+ * Change prototype of gpg_encrypt()
+ * Min API 36
+ * Changeset e3b66c8ead4f
+
+  -- Mikael Berthe, 2015-10-04
+
+dev (35)
+
+ * Stable api 1.0.0:1
+ * Change prototype of hk_message_in()
+ * Min API 35
+ * Changeset 443d05b24762
+
+  -- Mikael Berthe, 2014-10-04
+
+dev (34)
+
+ * Add carbons_enabled()
+ * Changeset 2ce6dd6861ea
+
+  -- Mikael Berthe, 2014-10-04
+
+dev (33)
+
+ * Changeset 2f294c2b6778
+   Change readline_do_completion() prototype
+ * Changesets 2f294c2b6778, d3348deb32bd
+   Add iline compl_do_fwd, iline compl_do_bwd
+   Remove iline compl_do
+
+  -- Mikael Berthe, 2014-07-06
+
+dev (32)
+
+   Add "hook-mdr-received" hook
+ * Changeset e702073612de
+
+  -- Mikael Berthe, 2014-07-06
+
+dev (31)
+
+   Add xmpp_get_bookmark_password()
+ * Changeset f063e36425a2
+
+  -- Mikael Berthe, 2014-07-06
+
+dev (30)
+
+ * Message carbons
+
+  -- Mikael Berthe, 2014-05-11
+
+dev (29)
+
+ * Changeset 113d3b96ae3e
+   Add option 'attention_char'
+
+  -- Mikael Berthe, 2014-05-11
+
+dev (28)
+
+ * Stable api 0.10.3:1
+ * Changeset 88b6e9707e02
+   Add option 'ssl_ciphers'
+ * Changeset 91a8f3740a1a
+   Add option 'ssl_ca'
+ * Changeset 16b04d64ec88
+   Add 'color_timestamp' and HBB_PREFIX_DELAYED
+
+  -- Mikael Berthe, 2014-05-08
+
+dev (27)
+
+ * Changeset 8da280d34b48
+   Rename the FIFO code file names (internal + module)
+ * Changeset 9fb1ccf291cc
+   Switch to libotr v4 API
+
+  -- Mikael Berthe, 2013-09-29
+
+dev (26)
+
+ * Changeset 69699ba3010f
+   Add 'iq_time_hide'
+ * Changeset 79659eb4f66f
+   Add 'iq_version_hide_version'
+
+  -- Mikael Berthe, 2013-04-28
+
 dev (25)
 
  * Stable api 0.10.2:1

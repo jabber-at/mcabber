@@ -9,14 +9,16 @@
 #include <gpgme.h>
 
 int   gpg_init(const char *priv_key, const char *passphrase);
+int   gpg_is_version1(void);
 void  gpg_terminate(void);
 void  gpg_set_passphrase(const char *passphrase);
 void  gpg_set_private_key(const char *priv_keyid);
+const char *gpg_get_private_key_id(void);
 char *gpg_verify(const char *gpg_data, const char *text,
                  gpgme_sigsum_t *sigsum);
 char *gpg_sign(const char *gpg_data);
 char *gpg_decrypt(const char *gpg_data);
-char *gpg_encrypt(const char *gpg_data, const char *keyid);
+char *gpg_encrypt(const char *gpg_data, const char *keyid[], size_t n);
 
 int   gpg_test_passphrase(void);
 

@@ -27,8 +27,9 @@
 #define COMPL_OTR         20
 #define COMPL_OTRPOLICY   21
 #define COMPL_MODULE      22
+#define COMPL_CARBONS     23
 /* private */
-#define COMPL_MAX_ID      22
+#define COMPL_MAX_ID      23
 
 void compl_init_system(void); /* private */
 
@@ -50,7 +51,7 @@ guint   new_completion(const gchar *prefix, GSList *compl_cat,
                        const gchar *suffix);
 void    done_completion(void);
 guint   cancel_completion(void);
-const char *complete(void);
+const char *complete(gboolean fwd);
 
 #endif /* __MCABBER_COMPL_H__ */
 

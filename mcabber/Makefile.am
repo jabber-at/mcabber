@@ -7,7 +7,7 @@ mcabber_SOURCES = main.c main.h roster.c roster.h events.c events.h \
 		  xmpp.c xmpp.h xmpp_helper.c xmpp_helper.h xmpp_defines.h \
 		  xmpp_iq.c xmpp_iq.h xmpp_iqrequest.c xmpp_iqrequest.h \
 		  xmpp_muc.c xmpp_muc.h xmpp_s10n.c xmpp_s10n.h \
-		  caps.c caps.h help.c help.h
+		  caps.c caps.h help.c help.h carbons.c carbons.h
 
 if OTR
 mcabber_SOURCES += otr.c otr.h nohtml.c nohtml.h
@@ -26,10 +26,10 @@ CLEANFILES = hgcset.h
 if HGCSET
 BUILT_SOURCES = hgcset.h
 
-hgcset.h:
+hgcset.h: remake_hgcset
 	$(top_srcdir)/hgcset.sh "$(top_srcdir)/mcabber" "$(top_builddir)/mcabber"
 
-.PHONY: hgcset.h
+.PHONY: remake_hgcset
 endif
 
 if INSTALL_HEADERS
@@ -55,7 +55,7 @@ endif
 
 mcabberincludedir = $(includedir)/mcabber
 else
-mcabber_SOURCES += fifo.c fifo.h
+mcabber_SOURCES += fifo_internal.c fifo.h
 endif
 
 #SUBDIRS =

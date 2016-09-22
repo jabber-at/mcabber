@@ -15,9 +15,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "xmpp_helper.h"
@@ -30,6 +28,10 @@
 // Send a s10n message with the passed subtype
 void xmpp_send_s10n(const char *bjid, LmMessageSubType type)
 {
+  if (G_UNLIKELY(!bjid || !*bjid)) {
+    scr_LogPrint(LPRINT_LOGNORM, "Empty JID.");
+    return;
+  }
   LmMessage *x = lm_message_new_with_sub_type(bjid,
                                               LM_MESSAGE_TYPE_PRESENCE,
                                               type);
