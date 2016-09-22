@@ -14,9 +14,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <glib.h>
@@ -101,7 +99,7 @@ void caps_add(const char *hash)
   c->features = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
   c->identities = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, identity_destroy);
   c->forms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, form_destroy);
-  g_hash_table_insert(caps_cache, g_strdup(hash), c);
+  g_hash_table_replace(caps_cache, g_strdup(hash), c);
 }
 
 void caps_remove(const char *hash)
@@ -280,10 +278,15 @@ const char *caps_generate(void)
   guint8 digest[20];
   gsize digest_size = 20;
   gchar *hash, *old_hash = NULL;
-  caps *old_caps;
-  caps *c = g_hash_table_lookup(caps_cache, "");
+  caps *old_caps, *c;
+  gpointer key;
+
+  if (!g_hash_table_lookup_extended(caps_cache, "", &key, (gpointer *)&c))
+    return NULL;
 
   g_hash_table_steal(caps_cache, "");
+  g_free(key);
+
   sha1 = g_checksum_new(G_CHECKSUM_SHA1);
 
   langs = g_hash_table_get_keys(c->identities);
@@ -447,13 +450,13 @@ void caps_copy_to_persistent(const char* hash, char* xml)
   int fd;
 
   g_free (xml);
-  
+
   c = g_hash_table_lookup (caps_cache, hash);
-  if (!c) 
+  if (!c)
     goto caps_copy_return;
 
   file = caps_get_filename (hash);
-  if (!file) 
+  if (!file)
     goto caps_copy_return;
 
   fd = open (file, O_WRONLY|O_CREAT|O_EXCL, S_IRUSR|S_IWUSR);
@@ -531,7 +534,7 @@ void caps_copy_to_persistent(const char* hash, char* xml)
 
             g_key_file_set_string_list (key_file, group, field->data,
                                         (const gchar**)string_list, i);
-            
+
             g_strfreev (string_list);
           }
         }

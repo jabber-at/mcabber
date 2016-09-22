@@ -2,7 +2,7 @@
  /ROOM join|leave|names|nick|remove|topic|unlock|destroy
  /ROOM privmsg|invite|whois|kick|ban|unban|role|affil
  /ROOM setopt print_status|auto_whois|flag_joins [value]
- /ROOM bookmark [add|del] [-autojoin|+autojoin] [-|nick]
+ /ROOM bookmark [add|del] [-autojoin|+autojoin] [-|nick] [password]
 
 The 'room' command handles Multi-User Chat room actions.
 
@@ -18,8 +18,9 @@ The 'room' command handles Multi-User Chat room actions.
  Send private message "msg" to "nick"
 /room remove
  Remove the current room from the roster (you must have left this room before)
-/room topic -|newtopic
+/room topic [-u] -|newtopic
  Set topic for current room
+ When the option -u (unescape) is used, a string '\n' is expanded and sent as an actual newline character, and '\t' is expanded to a real tabulation.
  (The topic is cleared if newtopic is "-")
 /room unlock
  Unlock current room (if you are the owner)
@@ -35,8 +36,8 @@ The 'room' command handles Multi-User Chat room actions.
  Invite jid to the current room
 /room kick nick [reason]
  Kick "nick" from the current room
-/room role jid role [reason]
- Change jid's role (role can be "none", "visitor", "participant", "moderator")
+/room role nick role [reason]
+ Change nick's role (role can be "none", "visitor", "participant", "moderator")
 /room affil jid affil [reason]
  Change jid's affiliation (affil can be "none", "member", "admin", "owner")
 /room setopt print_status|auto_whois|flag_joins [value]
@@ -45,7 +46,8 @@ The 'room' command handles Multi-User Chat room actions.
  For auto_whois, the possible values are "default", "off", "on".
  For flag_joins, the possible values are "default", "none", "joins", "all".
  When the value is "default", the options muc_print_status / muc_auto_whois / muc_flag_joins is used.
+/room bookmark [add|del] [-autojoin|+autojoin] [-|nick] [password]
+ Add, remove or update a bookmark (default is add) and optionally store a password for entering the MUC.
 /room bookmark [add|del] [-autojoin|+autojoin] [-|nick]
- Add, remove or update a bookmark (default is add).
  If autojoin is set, mcabber will automatically join the MUC room when it connects to the server.
  To see the list of bookmarks, use /room bookmark in the status buffer.

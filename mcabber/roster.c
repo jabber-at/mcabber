@@ -14,9 +14,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <string.h>
@@ -75,9 +73,6 @@ typedef struct {
   gchar *realjid;       /* for chatrooms, if buddy's real jid is known */
   guint events;
   char *caps;
-#ifdef XEP0022
-  struct xep0022 xep22;
-#endif
 #ifdef XEP0085
   struct xep0085 xep85;
 #endif
@@ -155,10 +150,6 @@ static inline void free_resource_data(res *p_res)
   g_free((gchar*)p_res->status_msg);
   g_free((gchar*)p_res->name);
   g_free((gchar*)p_res->realjid);
-#ifdef XEP0022
-  g_free(p_res->xep22.last_msgid_sent);
-  g_free(p_res->xep22.last_msgid_rcvd);
-#endif
 #ifdef HAVE_GPGME
   g_free(p_res->pgpdata.sign_keyid);
 #endif
@@ -1357,17 +1348,6 @@ void buddy_resource_setcaps(gpointer rosterdata, const char *resname,
   }
 }
 
-struct xep0022 *buddy_resource_xep22(gpointer rosterdata, const char *resname)
-{
-#ifdef XEP0022
-  roster *roster_usr = rosterdata;
-  res *p_res = get_resource(roster_usr, resname);
-  if (p_res)
-    return &p_res->xep22;
-#endif
-  return NULL;
-}
-
 struct xep0085 *buddy_resource_xep85(gpointer rosterdata, const char *resname)
 {
 #ifdef XEP0085
@@ -1467,7 +1447,7 @@ const char *buddy_getactiveresource(gpointer rosterdata)
     if (!current_buddy) return NULL;
     roster_usr = BUDDATA(current_buddy);
   }
-  
+
   resource = roster_usr->active_resource;
   if (!resource) return NULL;
   return resource->name;

@@ -14,9 +14,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <loudmouth/loudmouth.h>
@@ -183,7 +181,7 @@ static const char *COMMAND_ME = "/me ";
 
 void hk_message_in(const char *bjid, const char *resname,
                    time_t timestamp, const char *msg, LmMessageSubType type,
-                   guint encrypted)
+                   guint encrypted, gboolean carbon)
 {
   int new_guy = FALSE;
   int is_groupchat = FALSE; // groupchat message
@@ -211,6 +209,9 @@ void hk_message_in(const char *bjid, const char *resname,
     message_flags |= HBB_PREFIX_PGPCRYPT;
   else if (encrypted == ENCRYPTED_OTR)
     message_flags |= HBB_PREFIX_OTRCRYPT;
+
+  if (carbon)
+    message_flags |= HBB_PREFIX_CARBON;
 
   if (type == LM_MESSAGE_SUB_TYPE_GROUPCHAT) {
     rtype = ROSTER_TYPE_ROOM;
@@ -251,6 +252,7 @@ void hk_message_in(const char *bjid, const char *resname,
       { "groupchat", is_groupchat ? "true" : "false" },
       { "delayed", strdelay },
       { "error", error_msg_subtype ? "true" : "false" },
+      { "carbon", carbon ? "true" : "false" },
       { NULL, NULL },
     };
     h_result = hk_run_handlers(HOOK_PRE_MESSAGE_IN, args);
@@ -405,6 +407,7 @@ void hk_message_in(const char *bjid, const char *resname,
       { "attention", attention ? "true" : "false" },
       { "delayed", strdelay },
       { "error", error_msg_subtype ? "true" : "false" },
+      { "carbon", carbon ? "true" : "false" },
       { NULL, NULL },
     };
     hk_run_handlers(HOOK_POST_MESSAGE_IN, args);
@@ -445,10 +448,10 @@ void hk_message_in(const char *bjid, const char *resname,
 // normal messages.
 void hk_message_out(const char *bjid, const char *nick,
                     time_t timestamp, const char *msg,
-                    guint encrypted, gpointer xep184)
+                    guint encrypted, gboolean carbon, gpointer xep184)
 {
   char *wmsg = NULL, *bmsg = NULL, *mmsg = NULL;
-  guint cryptflag = 0;
+  guint message_flags = 0;
 
   if (nick) {
     wmsg = bmsg = g_strdup_printf("PRIV#<%s> %s", nick, msg);
@@ -472,10 +475,14 @@ void hk_message_out(const char *bjid, const char *nick,
   // cases scr_write_outgoing_message() will load the history and we'd
   // have the message twice...
   if (encrypted == ENCRYPTED_PGP)
-    cryptflag = HBB_PREFIX_PGPCRYPT;
+    message_flags |= HBB_PREFIX_PGPCRYPT;
   else if (encrypted == ENCRYPTED_OTR)
-    cryptflag = HBB_PREFIX_OTRCRYPT;
-  scr_write_outgoing_message(bjid, wmsg, cryptflag, xep184);
+    message_flags |= HBB_PREFIX_OTRCRYPT;
+
+  if (carbon)
+    message_flags |= HBB_PREFIX_CARBON | HBB_PREFIX_NOFLAG;
+
+  scr_write_outgoing_message(bjid, wmsg, message_flags, xep184);
 
   // We don't log private messages
   if (!nick)
@@ -549,8 +556,8 @@ void hk_statuschange(const char *bjid, const char *resname, gchar prio,
       (st_in_buf == 1 && (status == offline || oldstat == offline))) {
     // Write the status change in the buddy's buffer, only if it already exists
     if (scr_buddy_buffer_exists(bjid)) {
-      bn = g_strdup_printf("Buddy status has changed: [%c>%c] %s",
-                           imstatus2char[oldstat], imstatus2char[status],
+      bn = g_strdup_printf("Buddy status has changed: [%c>%c] [%s] %s",
+                           imstatus2char[oldstat], imstatus2char[status], rn,
                            ((status_msg) ? status_msg : ""));
       scr_write_incoming_message(bjid, bn, timestamp,
                                  HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
@@ -632,8 +639,7 @@ void hk_postconnect(void)
   scr_LogPrint(LPRINT_LOGNORM, "Running hook-post-connect...");
 
   cmdline = from_utf8(hook_command);
-  if (process_command(cmdline, TRUE) == 255)
-    mcabber_set_terminate_ui();
+  process_command(cmdline, TRUE);
 
   g_free(cmdline);
 }
@@ -659,8 +665,7 @@ void hk_predisconnect(void)
   scr_LogPrint(LPRINT_LOGNORM, "Running hook-pre-disconnect...");
 
   cmdline = from_utf8(hook_command);
-  if (process_command(cmdline, TRUE) == 255)
-    mcabber_set_terminate_ui();
+  process_command(cmdline, TRUE);
 
   g_free(cmdline);
 }

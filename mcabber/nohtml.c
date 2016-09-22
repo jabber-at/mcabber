@@ -15,9 +15,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  *
  * Some parts come from libjabber/str.c:
@@ -38,17 +36,15 @@
  */
 char *html_strip(const char *htmlbuf)
 {
-  int i, j=0;
+  int i, j=0, html_len;
   char *nohtml;
 
   if (!htmlbuf) return(NULL);
 
   nohtml = g_strdup(htmlbuf);
 
-  if (!strchr(htmlbuf, '&') && !strchr(htmlbuf, '<'))
-    return(nohtml);
-
-  for (i = 0; i < (int)strlen(htmlbuf); i++) {
+  html_len = (int)strlen(htmlbuf);
+  for (i = 0; i < html_len; i++) {
     if (htmlbuf[i] == '&') {
       if (!strncmp(&htmlbuf[i],"&amp;",5)) {
         nohtml[j] = '&';
@@ -65,15 +61,26 @@ char *html_strip(const char *htmlbuf)
       } else if (!strncmp(&htmlbuf[i],"&gt;", 4)) {
         nohtml[j] = '>';
         i += 3;
+      } else {
+        nohtml[j] = htmlbuf[i];
       }
-    } else if (!strncmp(&htmlbuf[i],"<br>", 4) ||
-               !strncmp(&htmlbuf[i],"<br/>", 5)) {
-      nohtml[j] = '\n';
-      i += (htmlbuf[i+3] == '/' ? 4 : 3);
     } else if (htmlbuf[i] == '<') {
-      /* Let's strip all unknown tags */
-      j--;
-      while (htmlbuf[++i] != '>');
+      if (!strncmp(&htmlbuf[i],"<br>", 4)) {
+        nohtml[j] = '\n';
+        i += 3;
+      } else if (!strncmp(&htmlbuf[i],"<br/>", 5)) {
+        nohtml[j] = '\n';
+        i += 4;
+      } else if (!strncmp(&htmlbuf[i],"<FONT>", 6)) {
+        /* Let's strip <FONT> from Adium */
+        i += 5;
+        j--;
+      } else if (!strncmp(&htmlbuf[i],"</FONT>", 7)) {
+        i += 6;
+        j--;
+      } else {
+        nohtml[j] = htmlbuf[i];
+      }
     } else
       nohtml[j] = htmlbuf[i];
     j++;

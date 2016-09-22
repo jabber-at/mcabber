@@ -17,6 +17,7 @@
 #define HOOK_PRE_MESSAGE_IN     "hook-pre-message-in"
 #define HOOK_POST_MESSAGE_IN    "hook-post-message-in"
 #define HOOK_MESSAGE_OUT        "hook-message-out"
+#define HOOK_MDR_RECEIVED       "hook-mdr-received"
 #define HOOK_STATUS_CHANGE      "hook-status-change"
 #define HOOK_MY_STATUS_CHANGE   "hook-my-status-change"
 #define HOOK_POST_CONNECT       "hook-post-connect"
@@ -46,10 +47,10 @@ guint hk_run_handlers(const gchar *hookname, hk_arg_t *args);
 
 void hk_message_in(const char *bjid, const char *resname,
                    time_t timestamp, const char *msg, LmMessageSubType type,
-                   guint encrypted);
+                   guint encrypted, gboolean carbon);
 void hk_message_out(const char *bjid, const char *nickname,
                     time_t timestamp, const char *msg,
-                    guint encrypted,  gpointer xep184);
+                    guint encrypted, gboolean carbon, gpointer xep184);
 void hk_statuschange(const char *bjid, const char *resname, gchar prio,
                      time_t timestamp, enum imstatus status,
                      char const *status_msg);

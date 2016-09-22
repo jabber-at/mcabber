@@ -1,3 +1,89 @@
+mcabber (1.0.3)
+
+ * Link with the tinfo library
+ * Fix default modules directory on OpenBSD (Tim van der Molen)
+ * Create history log dir if it doesn't exist (Andrey Utkin)
+ * [OTR] Do not send empty subjects when using otr (franky)
+ * [UI] /set does not display password values anymore (Egor Kovetskiy)
+ * [MUC] Use nick to set the role
+ * Misc help/documentation updates
+
+ -- Mikael, 2016-09-18
+
+mcabber (1.0.2)
+
+ * Compatible with Loudmouth >=1.5.3 with SHA256 support (Frank Zschockelt)
+ * Ignore the untrusted certificate warning when user sets a fingerprint
+   (Frank Zschockelt)
+ * Stop HTML-escaping OTR messages - only strip known tags (Frank Zschockelt)
+ * Read $HOME/.mcabberrc if there is no mcabber configuration directory
+ * Minor documentation updates
+
+ -- Mikael, 2016-02-27
+
+mcabber (1.0.1)
+
+ * [PGP] Improved PGP-encryption support
+ * [PGP] Improved support for GnuPG v2+
+ * [PGP] Encrypt messages with our own PGP key and decrypt our own
+   encrypted messages when Carbons are enabled
+ * [PGP] New PGP options: 'gpg_path' and 'gpg_home' (Holger Weiß)
+ * [PGP] Check all signatures and stop immediately if one could be verified
+   (Sven Gaerner)
+ * Improved Carbons support (Holger Weiß)
+ * New option: 'clear_unread_on_carbon' (Holger Weiß)
+ * Improve SSL fingerprint management;
+   Display the server SSL fingerprint when we connect
+ * Use XDG configuration directory if it contains a configuration file
+ * Fix a few memory leaks
+ * Fix external password support (especially on OS X)
+ * Fix resizing when mcabber is built with --enable-sigwinch
+ * Fix reading of history log files w/o LF character (Sam Whited)
+ * Minor documentation updates
+ * Other misc. bugfixes and cleanups
+
+ -- Mikael, 2016-01-27
+
+mcabber (1.0.0)
+
+ * Message Carbons support / XEP-0280 (Roeland Jago Douma)
+ * Support for using external password managers (Christian Burkert)
+ * [UI] Add a backward completion (Oleg)
+ * [UI] Multilanguage spell checking (Dmitry Potapov)
+ * [UI] New option 'buffer_smart_scrolling' to lock buffer automatically
+   when scrolled up (Hermitifier)
+ * [UI] New command /roster next_open_buffer
+ * [UI] New option 'attention_char'
+ * [UI] Try to display the GLib warnings in the log window
+ * [UI] Display the number of occupants in MUC rooms (shizeeque)
+ * [UI] New option switch /room topic -u to unescape the topic (shizeeque)
+ * [MUC] Support for storing MUC room passwords (Nico Golde)
+ * [MUC] Use bookmarked password (if any) when using "/room join"
+ * [Hooks] New "hook-mdr-received" hook
+ * Remove support for obsolete XEP 22 (Frank Zschockelt)
+ * Misc. bugfixes and minor improvements
+
+ -- Mikael, 2015-06-28
+
+mcabber (0.10.3)
+
+ * [UI] Add option 'iq_time_hide'
+ * [UI] Add 'iq_version_hide_os', 'iq_version_hide_version'
+ * Improved handling of damaged history log files
+ * Switch to libotr v4 API (Myhailo Danylenko)
+ * Add SSL options (Frank Zschockelt)
+   These options require a patched Loudmouth library.
+   - "ssl_ciphers" to define the allowed ciphers
+   - "ssl_ca" to set additional trusted certificates
+ * Fix compilation for old loudmouth libraries (Frank Zschockelt)
+ * Add 'color_timestamp' to highlight timestamp added by server (Hermitifier)
+ * New python based event script using OS X 10.8 notification center (Sharoon
+   Thomas)
+ * Handle SIGHUP signal (Dominik George)
+ * Misc. bugfixes
+
+ -- Mikael, 2014-05-08
+
 mcabber (0.10.2)
 
  * Update receipts handling according to recent XEP updates (Myhailo Danylenko)

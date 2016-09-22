@@ -18,9 +18,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <string.h>
@@ -79,7 +77,7 @@ const struct adhoc_status adhoc_status_list[] = {
   {"online", "Online", "avail"},
   {"chat", "Chat", "free"},
   {"dnd", "Do not disturb", "dnd"},
-  {"xd", "Extended away", "notavail"},
+  {"xa", "Extended away", "notavail"},
   {"away", "Away", "away"},
 #ifdef WITH_DEPRECATED_STATUS_INVISIBLE
   {"invisible", "Invisible", "invisible"},
@@ -103,6 +101,8 @@ static LmMessage *lm_message_new_iq_error(LmMessage *m, guint error)
   LmMessageNode *err;
   int i;
 
+  if (G_UNLIKELY(!m)) return NULL;
+
   for (i = 0; xmpp_errors[i].code; ++i)
     if (xmpp_errors[i].code == error)
       break;
@@ -124,8 +124,10 @@ void send_iq_error(LmConnection *c, LmMessage *m, guint error)
 {
   LmMessage *r;
   r = lm_message_new_iq_error(m, error);
-  lm_connection_send(c, r, NULL);
-  lm_message_unref(r);
+  if (r) {
+    lm_connection_send(c, r, NULL);
+    lm_message_unref(r);
+  }
 }
 
 static void lm_message_node_add_dataform_result(LmMessageNode *node,
@@ -337,6 +339,9 @@ static LmHandlerResult handle_iq_command_leave_groupchats(LmMessageHandler *h,
   LmMessageNode *command, *x;
 
   x = lm_message_node_get_child(m->node, "command");
+  if (!x)
+    return LM_HANDLER_RESULT_REMOVE_MESSAGE;
+
   action = lm_message_node_get_attribute(x, "action");
   node = lm_message_node_get_attribute(x, "node");
   sessionid = (char*)lm_message_node_get_attribute(x, "sessionid");
@@ -436,6 +441,10 @@ LmHandlerResult handle_iq_commands(LmMessageHandler *h,
   requester_jid = lm_message_get_from(m);
 
   cmd = lm_message_node_get_child(m->node, "command");
+  if (!cmd) {
+    //send_iq_error(c, m, XMPP_ERROR_BAD_REQUEST);
+    return LM_HANDLER_RESULT_REMOVE_MESSAGE;
+  }
   if (jid_equal(lm_connection_get_jid(c), requester_jid)) {
     const char *action, *node;
     action = lm_message_node_get_attribute(cmd, "action");
@@ -454,12 +463,14 @@ LmHandlerResult handle_iq_commands(LmMessageHandler *h,
       LmMessage *r;
       LmMessageNode *err;
       r = lm_message_new_iq_error(m, XMPP_ERROR_BAD_REQUEST);
-      err = lm_message_node_get_child(r->node, "error");
-      lm_message_node_set_attribute
-              (lm_message_node_add_child(err, "malformed-action", NULL),
-               "xmlns", NS_COMMANDS);
-      lm_connection_send(c, r, NULL);
-      lm_message_unref(r);
+      if (r) {
+        err = lm_message_node_get_child(r->node, "error");
+        lm_message_node_set_attribute
+          (lm_message_node_add_child(err, "malformed-action", NULL),
+           "xmlns", NS_COMMANDS);
+        lm_connection_send(c, r, NULL);
+        lm_message_unref(r);
+      }
     }
   } else {
     send_iq_error(c, m, XMPP_ERROR_FORBIDDEN);
@@ -473,9 +484,10 @@ LmHandlerResult handle_iq_disco_items(LmMessageHandler *h,
                                       LmMessage *m, gpointer ud)
 {
   LmMessageNode *query;
-  const char *node;
+  const char *node = NULL;
   query = lm_message_node_get_child(m->node, "query");
-  node = lm_message_node_get_attribute(query, "node");
+  if (query)
+    node = lm_message_node_get_attribute(query, "node");
   if (node) {
     if (!strcmp(node, NS_COMMANDS)) {
       return handle_iq_commands_list(NULL, c, m, ud);
@@ -702,18 +714,15 @@ LmHandlerResult handle_iq_version(LmMessageHandler *h, LmConnection *c,
 {
   LmMessage *r;
   LmMessageNode *query;
-  char *os = NULL;
-  char *ver = mcabber_version();
 
   if (!settings_opt_get_int("iq_hide_requests")) {
     scr_LogPrint(LPRINT_LOGNORM, "Received an IQ version request from <%s>",
                  lm_message_get_from(m));
   }
-  if (!settings_opt_get_int("iq_version_hide_os")) {
-    struct utsname osinfo;
-    uname(&osinfo);
-    os = g_strdup_printf("%s %s %s", osinfo.sysname, osinfo.release,
-                         osinfo.machine);
+
+  if (settings_opt_get_int("iq_version_hide")) {
+    send_iq_error(c, m, XMPP_ERROR_SERVICE_UNAVAILABLE);
+    return LM_HANDLER_RESULT_REMOVE_MESSAGE;
   }
 
   r = lm_message_new_iq_from_query(m, LM_MESSAGE_SUB_TYPE_RESULT);
@@ -722,13 +731,25 @@ LmHandlerResult handle_iq_version(LmMessageHandler *h, LmConnection *c,
   lm_message_node_set_attribute(query, "xmlns", NS_VERSION);
 
   lm_message_node_add_child(query, "name", PACKAGE_NAME);
-  lm_message_node_add_child(query, "version", ver);
-  if (os) {
+
+  // MCabber version
+  if (!settings_opt_get_int("iq_version_hide_version")) {
+    char *ver = mcabber_version();
+    lm_message_node_add_child(query, "version", ver);
+    g_free(ver);
+  }
+
+  // OS details
+  if (!settings_opt_get_int("iq_version_hide_os")) {
+    char *os;
+    struct utsname osinfo;
+    uname(&osinfo);
+    os = g_strdup_printf("%s %s %s", osinfo.sysname, osinfo.release,
+                         osinfo.machine);
     lm_message_node_add_child(query, "os", os);
     g_free(os);
   }
 
-  g_free(ver);
   lm_connection_send(c, r, NULL);
   lm_message_unref(r);
   return LM_HANDLER_RESULT_REMOVE_MESSAGE;
@@ -749,6 +770,11 @@ LmHandlerResult handle_iq_time(LmMessageHandler *h, LmConnection *c,
   if (!settings_opt_get_int("iq_hide_requests")) {
     scr_LogPrint(LPRINT_LOGNORM, "Received an IQ time request from <%s>",
                  lm_message_get_from(m));
+  }
+
+  if (settings_opt_get_int("iq_time_hide")) {
+    send_iq_error(c, m, XMPP_ERROR_SERVICE_UNAVAILABLE);
+    return LM_HANDLER_RESULT_REMOVE_MESSAGE;
   }
 
   buf = g_new0(char, 512);
@@ -799,6 +825,11 @@ LmHandlerResult handle_iq_time202(LmMessageHandler *h, LmConnection *c,
   if (!settings_opt_get_int("iq_hide_requests")) {
     scr_LogPrint(LPRINT_LOGNORM, "Received an IQ time request from <%s>",
                  lm_message_get_from(m));
+  }
+
+  if (settings_opt_get_int("iq_time_hide")) {
+    send_iq_error(c, m, XMPP_ERROR_SERVICE_UNAVAILABLE);
+    return LM_HANDLER_RESULT_REMOVE_MESSAGE;
   }
 
   buf = g_new0(char, 512);

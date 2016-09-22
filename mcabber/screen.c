@@ -1,7 +1,7 @@
 /*
  * screen.c     -- UI stuff
  *
- * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2014 Mikael Berthe <mikael@lilotux.net>
  * Parts of this file come from the Cabber project <cabber@ajmacias.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -15,9 +15,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -68,6 +66,8 @@
 #define DEFAULT_ROSTER_WIDTH    24
 #define CHAT_WIN_HEIGHT (maxY-1-Log_Win_Height)
 
+#define DEFAULT_ATTENTION_CHAR '!'
+
 const char *LocaleCharSet = "C";
 
 static unsigned short int Log_Win_Height;
@@ -82,9 +82,12 @@ static inline void check_offset(int);
 static void scr_cancel_current_completion(void);
 static void scr_end_current_completion(void);
 static void scr_insert_text(const char*);
-static void scr_handle_tab(void);
+static void scr_handle_tab(gboolean fwd);
 
-#if defined XEP0022 || defined XEP0085
+static void scr_glog_print(const gchar *log_domain, GLogLevelFlags log_level,
+                           const gchar *message, gpointer user_data);
+
+#ifdef XEP0085
 static gboolean scr_chatstates_timeout();
 #endif
 
@@ -95,10 +98,12 @@ static void spellcheck(char *, char *);
 static GHashTable *winbufhash;
 
 typedef struct {
-  GList  *hbuf;
-  GList  *top;     // If top is NULL, we'll display the last lines
-  char    cleared; // For ex, user has issued a /clear command...
-  char    lock;
+  GList    *hbuf;
+  GList    *top;      // If top is NULL, we'll display the last lines
+  char      cleared;  // For ex, user has issued a /clear command...
+  char      lock;
+  char      refcount; // refcount > 0 if there are other users of this struct
+                      // e.g. with symlinked history
 } buffdata;
 
 typedef struct {
@@ -181,19 +186,24 @@ inline void scr_set_chatmode(int enable);
 
 #define SPELLBADCHAR 5
 
+#if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
+typedef struct {
 #ifdef WITH_ENCHANT
-EnchantBroker *spell_broker;
-EnchantDict *spell_checker;
+  EnchantBroker *broker;
+  EnchantDict *checker;
 #endif
-
 #ifdef WITH_ASPELL
-AspellConfig *spell_config;
-AspellSpeller *spell_checker;
+  AspellConfig *config;
+  AspellSpeller *checker;
+#endif
+} spell_checker;
+
+GSList* spell_checkers = NULL;
 #endif
 
 typedef struct {
-	int color_pair;
-	int color_attrib;
+  int color_pair;
+  int color_attrib;
 } ccolor;
 
 typedef struct {
@@ -410,7 +420,7 @@ bool scr_roster_color(const char *status, const char *wildcard,
     }
     if (found) {
       rostercolor *rc = found->data;
-			g_free(rc->color);
+      g_free(rc->color);
       rc->color = cl;
     } else {
       rostercolor *rc = g_new(rostercolor, 1);
@@ -440,6 +450,7 @@ static void parse_colors(void)
     "info",
     "msgin",
     "readmark",
+    "timestamp",
     NULL
   };
 
@@ -525,6 +536,10 @@ static void parse_colors(void)
           init_pair(i+1, ((color) ? find_color(color) : COLOR_RED),
                     find_color(background));
           break;
+      case COLOR_TIMESTAMP:
+          init_pair(i+1, ((color) ? find_color(color) : COLOR_WHITE),
+                    find_color(background));
+          break;
     }
   }
   for (i = COLOR_max; i < (COLOR_max + COLORS); i++)
@@ -562,8 +577,8 @@ static void parse_colors(void)
     }
     if (!nickcols) { // Fallback to have something
       nickcolcount = 1;
-			nickcols = g_new(ccolor*, 1);
-			*nickcols = g_new(ccolor, 1);
+      nickcols = g_new(ccolor*, 1);
+      *nickcols = g_new(ccolor, 1);
       (*nickcols)->color_pair = COLOR_GENERAL;
       (*nickcols)->color_attrib = A_NORMAL;
     }
@@ -810,6 +825,7 @@ void scr_init_curses(void)
   settings_set_guard("color_rostersel", scr_color_guard);
   settings_set_guard("color_rosterselmsg", scr_color_guard);
   settings_set_guard("color_rosternewmsg", scr_color_guard);
+  settings_set_guard("color_timestamp", scr_color_guard);
 
   getmaxyx(stdscr, maxY, maxX);
   Log_Win_Height = DEFAULT_LOG_WIN_HEIGHT;
@@ -820,6 +836,8 @@ void scr_init_curses(void)
   ptr_inputline = inputLine;
 
   Curses = TRUE;
+
+  g_log_set_handler("GLib", G_LOG_LEVEL_MASK, scr_glog_print, NULL);
   return;
 }
 
@@ -985,6 +1003,13 @@ void scr_log_print(unsigned int flag, const char *fmt, ...)
   g_free(btext);
 }
 
+// This is a GLogFunc for Glib log messages
+static void scr_glog_print(const gchar *log_domain, GLogLevelFlags log_level,
+                           const gchar *message, gpointer user_data)
+{
+  scr_log_print(LPRINT_NORMAL, "[%s] %s", log_domain, message);
+}
+
 static winbuf *scr_search_window(const char *winId, int special)
 {
   char *id;
@@ -1013,6 +1038,7 @@ int scr_buddy_buffer_exists(const char *bjid)
 static winbuf *scr_new_buddy(const char *title, int dont_show)
 {
   winbuf *tmp;
+  char *id;
 
   tmp = g_new0(winbuf, 1);
 
@@ -1030,43 +1056,48 @@ static winbuf *scr_new_buddy(const char *title, int dont_show)
   update_panels();
 
   // If title is NULL, this is a special buffer
-  if (title) {
-    char *id;
-    id = hlog_get_log_jid(title);
-    if (id) {
-      winbuf *wb = scr_search_window(id, FALSE);
-      if (!wb)
-        wb = scr_new_buddy(id, TRUE);
-      tmp->bd=wb->bd;
-      g_free(id);
-    } else {  // Load buddy history from file (if enabled)
-      tmp->bd = g_new0(buffdata, 1);
-      hlog_read_history(title, &tmp->bd->hbuf,
-                        maxX - Roster_Width - scr_getprefixwidth());
-
-      // Set a readmark to separate new content
-      hbuf_set_readmark(tmp->bd->hbuf, TRUE);
-    }
-
-    id = g_strdup(title);
-    mc_strtolower(id);
-    g_hash_table_insert(winbufhash, id, tmp);
-  } else {
+  if (!title) {
     tmp->bd = g_new0(buffdata, 1);
+    return tmp;
   }
+
+  id = hlog_get_log_jid(title);
+  if (id) {
+    // This is a symlinked history log file.
+    // Let's check if the target JID buffer has already been created.
+    winbuf *wb = scr_search_window(id, FALSE);
+    if (!wb)
+      wb = scr_new_buddy(id, TRUE);
+    tmp->bd = wb->bd;
+    tmp->bd->refcount++;
+    g_free(id);
+  } else {  // Load buddy history from file (if enabled)
+    tmp->bd = g_new0(buffdata, 1);
+    hlog_read_history(title, &tmp->bd->hbuf,
+                      maxX - Roster_Width - scr_getprefixwidth());
+
+    // Set a readmark to separate new content
+    hbuf_set_readmark(tmp->bd->hbuf, TRUE);
+  }
+
+  id = g_strdup(title);
+  mc_strtolower(id);
+  g_hash_table_insert(winbufhash, id, tmp);
+
   return tmp;
 }
 
 //  scr_line_prefix(line, pref, preflen)
 // Use data from the hbb_line structure and write the prefix
 // to pref (not exceeding preflen, trailing null byte included).
-void scr_line_prefix(hbb_line *line, char *pref, guint preflen)
+size_t scr_line_prefix(hbb_line *line, char *pref, guint preflen)
 {
   char date[64];
+  size_t timepreflen = 0;
 
   if (line->timestamp &&
       !(line->flags & (HBB_PREFIX_SPECIAL|HBB_PREFIX_CONT))) {
-    strftime(date, 30, gettprefix(), localtime(&line->timestamp));
+    timepreflen = strftime(date, 30, gettprefix(), localtime(&line->timestamp));
   } else
     strcpy(date, "           ");
 
@@ -1108,7 +1139,7 @@ void scr_line_prefix(hbb_line *line, char *pref, guint preflen)
         receiptflag = '-';
       g_snprintf(pref, preflen, "%s%c%c> ", date, receiptflag, cryptflag);
     } else if (line->flags & HBB_PREFIX_SPECIAL) {
-      strftime(date, 30, getspectprefix(), localtime(&line->timestamp));
+      timepreflen = strftime(date, 30, getspectprefix(), localtime(&line->timestamp));
       g_snprintf(pref, preflen, "%s   ", date);
     } else {
       g_snprintf(pref, preflen, "%s    ", date);
@@ -1116,6 +1147,7 @@ void scr_line_prefix(hbb_line *line, char *pref, guint preflen)
   } else {
     g_snprintf(pref, preflen, "                ");
   }
+  return timepreflen;
 }
 
 //  scr_update_window()
@@ -1130,6 +1162,9 @@ static void scr_update_window(winbuf *win_entry)
   int color = COLOR_GENERAL;
   bool readmark = FALSE;
   bool skipline = FALSE;
+  int autolock;
+
+  autolock = settings_opt_get_int("buffer_smart_scrolling");
 
   prefixwidth = scr_getprefixwidth();
   prefixwidth = MIN(prefixwidth, sizeof pref);
@@ -1137,6 +1172,8 @@ static void scr_update_window(winbuf *win_entry)
   // Should the window be empty?
   if (win_entry->bd->cleared) {
     werase(win_entry->win);
+    if (autolock && win_entry->bd->lock)
+      scr_buffer_scroll_lock(0);
     return;
   }
 
@@ -1162,8 +1199,8 @@ static void scr_update_window(winbuf *win_entry)
   } else
     hbuf_head = win_entry->bd->top;
 
-  // Get the last CHAT_WIN_HEIGHT lines.
-  lines = hbuf_get_lines(hbuf_head, CHAT_WIN_HEIGHT);
+  // Get the last CHAT_WIN_HEIGHT lines, and one more to detect scroll.
+  lines = hbuf_get_lines(hbuf_head, CHAT_WIN_HEIGHT+1);
 
   if (CHAT_WIN_HEIGHT > 1) {
     // Do we have a read mark?
@@ -1188,6 +1225,7 @@ static void scr_update_window(winbuf *win_entry)
 
   // Display the lines
   for (n = 0 ; n < CHAT_WIN_HEIGHT; n++) {
+    int timelen;
     int winy = n + mark_offset;
     wmove(win_entry->win, winy, 0);
     line = *(lines+n);
@@ -1210,8 +1248,20 @@ static void scr_update_window(winbuf *win_entry)
         wattrset(win_entry->win, get_color(color));
 
       // Generate the prefix area and display it
-      scr_line_prefix(line, pref, prefixwidth);
-      wprintw(win_entry->win, pref);
+
+      timelen = scr_line_prefix(line, pref, prefixwidth);
+      if (timelen && line->flags & HBB_PREFIX_DELAYED) {
+        char tmp;
+
+        tmp = pref[timelen];
+        pref[timelen] = '\0';
+        wattrset(win_entry->win, get_color(COLOR_TIMESTAMP));
+        wprintw(win_entry->win, pref);
+        pref[timelen] = tmp;
+        wattrset(win_entry->win, get_color(color));
+        wprintw(win_entry->win, pref+timelen);
+      } else
+        wprintw(win_entry->win, pref);
 
       // Make sure we are at the right position
       wmove(win_entry->win, winy, prefixwidth-1);
@@ -1306,6 +1356,19 @@ scr_update_window_skipline:
       break;
     }
   }
+  line = *(lines+CHAT_WIN_HEIGHT); //line is scrolled out and never written
+  if (line) {
+    if (autolock && !win_entry->bd->lock) {
+      if (!hbuf_jump_readmark(hbuf_head))
+        scr_buffer_readmark(TRUE);
+      scr_buffer_scroll_lock(1);
+    }
+    g_free(line->text);
+    g_free(line);
+  } else if (autolock && win_entry->bd->lock) {
+    scr_buffer_scroll_lock(0);
+  }
+
   g_free(lines);
 }
 
@@ -1410,6 +1473,7 @@ static void scr_write_in_window(const char *winId, const char *text,
   int special;
   guint num_history_blocks;
   bool setmsgflg = FALSE;
+  bool clearmsgflg = FALSE;
   char *nicktmp, *nicklocaltmp;
 
   // Look for the window entry.
@@ -1481,15 +1545,57 @@ static void scr_write_in_window(const char *winId, const char *text,
     scr_update_window(win_entry);
     top_panel(inputPanel);
     update_panels();
+  } else if (settings_opt_get_int("clear_unread_on_carbon") &&
+             prefix_flags & HBB_PREFIX_OUT &&
+             prefix_flags & HBB_PREFIX_CARBON) {
+    clearmsgflg = TRUE;
   } else if (!(prefix_flags & HBB_PREFIX_NOFLAG)) {
     setmsgflg = TRUE;
   }
-  if (setmsgflg && !special) {
-    if (special && !winId)
-      winId = SPECIAL_BUFFER_STATUS_ID;
-    roster_msg_setflag(winId, special, TRUE);
-    update_roster = TRUE;
+  if (!special) {
+    if (clearmsgflg) {
+      roster_msg_setflag(winId, FALSE, FALSE);
+      update_roster = TRUE;
+    } else if (setmsgflg) {
+      roster_msg_setflag(winId, FALSE, TRUE);
+      update_roster = TRUE;
+    }
   }
+}
+
+static char *attention_sign_guard(const gchar *key, const gchar *new_value)
+{
+  update_roster = TRUE;
+  if (g_strcmp0(settings_opt_get(key), new_value)) {
+    guint sign;
+    char *c;
+    if (!new_value || !*new_value)
+      return NULL;
+    sign = get_char(new_value);
+    c = next_char((char*)new_value);
+    if (get_char_width(new_value) != 1 || !iswprint(sign) || *c) {
+      scr_log_print(LPRINT_NORMAL, "attention_char value is invalid.");
+      return NULL;
+    }
+    // The new value looks good (1-char  wide and printable)
+    return g_strdup(new_value);
+  }
+  return g_strdup(new_value);
+}
+
+//  scr_init_settings()
+// Create guards for UI settings
+void scr_init_settings(void)
+{
+  settings_set_guard("attention_char", attention_sign_guard);
+}
+
+static unsigned int attention_sign(void)
+{
+  const char *as = settings_opt_get("attention_char");
+  if (!as)
+      return DEFAULT_ATTENTION_CHAR;
+  return get_char(as);
 }
 
 //  scr_update_main_status(forceupdate)
@@ -1502,7 +1608,7 @@ void scr_update_main_status(int forceupdate)
   const char *info = settings_opt_get("info");
   guint prio = 0;
   gpointer unread_ptr;
-  char unreadchar;
+  guint unreadchar;
 
   unread_ptr = unread_msg(NULL);
   if (unread_ptr) {
@@ -1515,7 +1621,7 @@ void scr_update_main_status(int forceupdate)
 
   // Status bar unread message flag
   if (prio >= ROSTER_UI_PRIO_MUC_HL_MESSAGE)
-    unreadchar = '!';
+    unreadchar = attention_sign();
   else if (prio > 0)
     unreadchar = '#';
   else
@@ -1524,12 +1630,12 @@ void scr_update_main_status(int forceupdate)
   werase(mainstatusWnd);
   if (info) {
     char *info_locale = from_utf8(info);
-    mvwprintw(mainstatusWnd, 0, 0, "%c[%c] %s %s", unreadchar,
+    mvwprintw(mainstatusWnd, 0, 0, "%lc[%c] %s %s", unreadchar,
               imstatus2char[xmpp_getstatus()],
               info_locale, (sm ? sm : ""));
     g_free(info_locale);
   } else
-    mvwprintw(mainstatusWnd, 0, 0, "%c[%c] %s", unreadchar,
+    mvwprintw(mainstatusWnd, 0, 0, "%lc[%c] %s", unreadchar,
               imstatus2char[xmpp_getstatus()], (sm ? sm : ""));
   if (forceupdate) {
     top_panel(inputPanel);
@@ -1608,7 +1714,8 @@ void scr_draw_main_window(unsigned int fullinit)
 
   if (fullinit) {
     if (!winbufhash)
-      winbufhash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+      winbufhash = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                         g_free, g_free);
     /* Create windows */
     rosterWnd = newwin(CHAT_WIN_HEIGHT, Roster_Width, chat_y_pos, roster_x_pos);
     chatWnd   = newwin(CHAT_WIN_HEIGHT, maxX - Roster_Width, chat_y_pos,
@@ -1751,11 +1858,11 @@ static void resize_win_buffer(gpointer key, gpointer value, gpointer data)
     hbuf_rebuild(&wbp->bd->hbuf, new_chatwidth);
 }
 
-//  scr_Resize()
+//  scr_resize()
 // Function called when the window is resized.
 // - Resize windows
 // - Rewrap lines in each buddy buffer
-void scr_Resize(void)
+void scr_resize(void)
 {
   struct dimensions dim;
 
@@ -1789,6 +1896,16 @@ void scr_Resize(void)
   if (chatmode)
     scr_show_buddy_window();
 }
+
+#ifdef USE_SIGWINCH
+void sigwinch_resize(void)
+{
+  struct winsize size;
+  if (ioctl(STDIN_FILENO, TIOCGWINSZ, &size) != -1)
+    resizeterm(size.ws_row, size.ws_col);
+  scr_resize();
+}
+#endif
 
 //  scr_update_chat_status(forceupdate)
 // Redraw the buddy status bar.
@@ -1962,11 +2079,11 @@ void scr_draw_roster(void)
   int i, n;
   int rOffset;
   int cursor_backup;
-  char status, pending;
+  guint status, pending;
   enum imstatus currentstatus = xmpp_getstatus();
   int x_pos;
-  char *space;
   int prefix_length;
+  char space[2] = " ";
 
   // We can reset update_roster
   update_roster = FALSE;
@@ -2023,12 +2140,10 @@ void scr_draw_roster(void)
   else
     x_pos = 0;
 
-  space = g_new0(char, 2);
   if (roster_no_leading_space) {
     space[0] = '\0';
     prefix_length = 6;
   } else {
-    space[0] = ' ';
     prefix_length = 7;
   }
 
@@ -2131,7 +2246,7 @@ void scr_draw_roster(void)
       // Attention sign?
       if ((ismuc && isurg >= ui_attn_sign_prio_level_muc) ||
           (!ismuc && isurg >= ui_attn_sign_prio_level))
-        pending = '!';
+        pending = attention_sign();
     }
 
     if (isgrp) {
@@ -2139,16 +2254,16 @@ void scr_draw_roster(void)
         int group_count = 0;
         foreach_group_member(BUDDATA(buddy), increment_if_buddy_not_filtered,
                              &group_count);
-        snprintf(rline, 4*Roster_Width, "%s%c+++ %s (%i)", space, pending, name,
-                 group_count);
+        snprintf(rline, 4*Roster_Width, "%s%lc+++ %s (%i)", space, pending,
+                 name, group_count);
         /* Do not display the item count if there isn't enough space */
         if (g_utf8_strlen(rline, 4*Roster_Width) >= Roster_Width)
-          snprintf(rline, 4*Roster_Width, "%s%c+++ %s", space, pending, name);
+          snprintf(rline, 4*Roster_Width, "%s%lc+++ %s", space, pending, name);
       }
       else
-        snprintf(rline, 4*Roster_Width, "%s%c--- %s", space, pending, name);
+        snprintf(rline, 4*Roster_Width, "%s%lc--- %s", space, pending, name);
     } else if (isspe) {
-      snprintf(rline, 4*Roster_Width, "%s%c%s", space, pending, name);
+      snprintf(rline, 4*Roster_Width, "%s%lc%s", space, pending, name);
     } else {
       char sepleft  = '[';
       char sepright = ']';
@@ -2161,8 +2276,8 @@ void scr_draw_roster(void)
           sepright = '}';
         }
       }
-      snprintf(rline, 4*Roster_Width,
-               "%s%c%c%c%c %s", space, pending, sepleft, status, sepright, name);
+      snprintf(rline, 4*Roster_Width, "%s%lc%c%c%c %s",
+               space, pending, sepleft, status, sepright, name);
     }
 
     rline_locale = from_utf8(rline);
@@ -2171,7 +2286,6 @@ void scr_draw_roster(void)
     i++;
   }
 
-  g_free(space);
   g_free(rline);
   g_free(name);
   top_panel(inputPanel);
@@ -2197,7 +2311,7 @@ void scr_roster_visibility(int status)
 
   if (roster_hidden != old_roster_status) {
     // Recalculate windows size and redraw
-    scr_Resize();
+    scr_resize();
     redrawwin(stdscr);
   }
 }
@@ -2208,7 +2322,10 @@ static void scr_write_message(const char *bjid, const char *text,
 {
   char *xtext;
 
-  if (!timestamp) timestamp = time(NULL);
+  if (!timestamp)
+    timestamp = time(NULL);
+  else
+    prefix_flags |= HBB_PREFIX_DELAYED;
 
   xtext = ut_expand_tabs(text); // Expand tabs and filter out some chars
 
@@ -2226,7 +2343,7 @@ void scr_write_incoming_message(const char *jidfrom, const char *text,
 {
   if (!(prefix &
         ~HBB_PREFIX_NOFLAG & ~HBB_PREFIX_HLIGHT & ~HBB_PREFIX_HLIGHT_OUT &
-        ~HBB_PREFIX_PGPCRYPT & ~HBB_PREFIX_OTRCRYPT))
+        ~HBB_PREFIX_PGPCRYPT & ~HBB_PREFIX_OTRCRYPT & ~HBB_PREFIX_CARBON))
     prefix |= HBB_PREFIX_IN;
 
   scr_write_message(jidfrom, text, timestamp, prefix, mucnicklen, NULL);
@@ -2292,7 +2409,7 @@ static inline void set_autoaway(bool setaway)
 // If the chat state has changed, call xmpp_send_chatstate()
 static void set_chatstate(int state)
 {
-#if defined XEP0022 || defined XEP0085
+#ifdef XEP0085
   if (chatstates_disabled)
     return;
   if (!chatmode)
@@ -2321,7 +2438,7 @@ static void set_chatstate(int state)
 #endif
 }
 
-#if defined XEP0022 || defined XEP0085
+#ifdef XEP0085
 static gboolean scr_chatstates_timeout(void)
 {
   time_t now;
@@ -2590,6 +2707,41 @@ void scr_roster_unread_message(int next)
     scr_LogPrint(LPRINT_LOGNORM, "Error: nbuddy == NULL"); // should not happen
 }
 
+//  scr_roster_next_open_buffer()
+// Jump to the next open buffer (experimental XXX)
+// This implementation ignores the hidden entries (folded groups).
+void scr_roster_next_open_buffer(void)
+{
+  GList *bud = current_buddy;
+
+  if (!current_buddy) return;
+
+  for (;;) {
+    guint budtype;
+    bud = g_list_next(bud);
+    // End of list: jump to the first entry
+    if (!bud)
+      bud = buddylist;
+    // Check if we're back to the initial position
+    if (bud == current_buddy)
+      break;
+    // Ignore the special buffer(s), groups
+    budtype = buddy_gettype(BUDDATA(bud));
+    if (budtype & (ROSTER_TYPE_GROUP | ROSTER_TYPE_SPECIAL))
+      continue;
+
+    // Check if a buffer/window exists
+    if (scr_search_window(buddy_getjid(BUDDATA(bud)), 0)) {
+      set_current_buddy(bud);
+      if (chatmode) {
+        last_activity_buddy = current_buddy;
+        scr_show_buddy_window();
+      }
+      break;
+    }
+  }
+}
+
 //  scr_roster_jump_alternate()
 // Try to jump to alternate (== previous) buddy
 void scr_roster_jump_alternate(void)
@@ -2722,6 +2874,7 @@ void scr_buffer_clear(void)
 // value: winbuf structure
 // data: int, set to 1 if the buffer should be closed.
 // NOTE: does not work for special buffers.
+// Returns TRUE IFF the win_entry can be closed and freed.
 static gboolean buffer_purge(gpointer key, gpointer value, gpointer data)
 {
   int *p_closebuf = data;
@@ -2729,7 +2882,9 @@ static gboolean buffer_purge(gpointer key, gpointer value, gpointer data)
   gboolean retval = FALSE;
 
   // Delete the current hbuf
-  hbuf_free(&win_entry->bd->hbuf);
+  // unless we close the buffer *and* this is a shared bd structure
+  if (!(*p_closebuf && win_entry->bd->refcount))
+    hbuf_free(&win_entry->bd->hbuf);
 
   if (*p_closebuf) {
     GSList *roster_elt;
@@ -2738,6 +2893,12 @@ static gboolean buffer_purge(gpointer key, gpointer value, gpointer data)
         ROSTER_TYPE_USER|ROSTER_TYPE_AGENT);
     if (roster_elt)
       buddy_setactiveresource(roster_elt->data, NULL);
+    if (win_entry->bd->refcount) {
+      win_entry->bd->refcount--;
+    } else {
+      g_free(win_entry->bd);
+      win_entry->bd = NULL;
+    }
   } else {
     win_entry->bd->cleared = FALSE;
     win_entry->bd->top = NULL;
@@ -2752,13 +2913,15 @@ void scr_buffer_purge(int closebuf, const char *jid)
 {
   winbuf *win_entry;
   guint isspe;
-  guint *p_closebuf;
   const char *cjid;
+  char *ljid = NULL;
   guint hold_chatmode = FALSE;
 
   if (jid) {
-    cjid = jid;
     isspe = FALSE;
+    ljid = g_strdup(jid);
+    mc_strtolower(ljid);
+    cjid = ljid;
     // If closebuf is TRUE, it's probably better not to leave chat mode
     // if the change isn't related to the current buffer.
     if (closebuf && current_buddy) {
@@ -2773,15 +2936,15 @@ void scr_buffer_purge(int closebuf, const char *jid)
     isspe = buddy_gettype(BUDDATA(current_buddy)) & ROSTER_TYPE_SPECIAL;
   }
   win_entry = scr_search_window(cjid, isspe);
-  if (!win_entry) return;
+  if (!win_entry) {
+    g_free(ljid);
+    return;
+  }
 
   if (!isspe) {
-    p_closebuf = g_new(guint, 1);
-    *p_closebuf = closebuf;
-    if(buffer_purge((gpointer)cjid, win_entry, p_closebuf))
+    if (buffer_purge((gpointer)cjid, win_entry, &closebuf))
       g_hash_table_remove(winbufhash, cjid);
     roster_msg_setflag(cjid, FALSE, FALSE);
-    g_free(p_closebuf);
     if (closebuf && !hold_chatmode) {
       scr_set_chatmode(FALSE);
       currentWindow = NULL;
@@ -2805,6 +2968,8 @@ void scr_buffer_purge(int closebuf, const char *jid)
 
   // Finished :)
   update_panels();
+
+  g_free(ljid);
 }
 
 //  scr_buffer_purge_all(closebuf)
@@ -2812,12 +2977,7 @@ void scr_buffer_purge(int closebuf, const char *jid)
 // If closebuf is 1, the buffers are closed.
 void scr_buffer_purge_all(int closebuf)
 {
-  guint *p_closebuf;
-  p_closebuf = g_new(guint, 1);
-
-  *p_closebuf = closebuf;
-  g_hash_table_foreach_remove(winbufhash, buffer_purge, p_closebuf);
-  g_free(p_closebuf);
+  g_hash_table_foreach_remove(winbufhash, buffer_purge, &closebuf);
 
   if (closebuf) {
     scr_set_chatmode(FALSE);
@@ -2883,6 +3043,7 @@ void scr_buffer_readmark(gchar action)
 {
   winbuf *win_entry;
   guint isspe;
+  int autolock;
 
   // Get win_entry
   if (!current_buddy) return;
@@ -2891,7 +3052,8 @@ void scr_buffer_readmark(gchar action)
   win_entry = scr_search_window(CURRENT_JID, isspe);
   if (!win_entry) return;
 
-  if (!win_entry->bd->lock) {
+  autolock = settings_opt_get_int("buffer_smart_scrolling");
+  if (!win_entry->bd->lock || autolock) {
     if (action >= 0)
       hbuf_set_readmark(win_entry->bd->hbuf, action);
     else
@@ -3441,7 +3603,7 @@ void readline_backward_kill_word(void)
 
   if (c == inputLine && *c == COMMAND_CHAR && old != c+1) {
       c = next_char(c);
-  } else if (c != inputLine || iswblank(get_char(c))) {
+  } else if (c != inputLine || (iswblank(get_char(c)) && !spaceallowed)) {
     if ((c < prev_char(ptr_inputline, inputLine)) && (!iswalnum(get_char(c))))
       c = next_char(c);
   }
@@ -3453,7 +3615,7 @@ void readline_backward_kill_word(void)
 }
 
 //  readline_backward_word()
-// Move  back  to the start of the current or previous word
+// Move back to the start of the current or previous word
 void readline_backward_word(void)
 {
   int i = 0;
@@ -3555,12 +3717,11 @@ void readline_forward_char(void)
 //  readline_accept_line(down_history)
 // Validate current command line.
 // If down_history is true, load the next history line.
-int readline_accept_line(int down_history)
+void readline_accept_line(int down_history)
 {
   scr_check_auto_away(TRUE);
   last_activity_buddy = current_buddy;
-  if (process_line(inputLine))
-    return 255;
+  process_line(inputLine);
   // Add line to history
   scr_cmdhisto_addline(inputLine);
   // Reset the line
@@ -3578,7 +3739,6 @@ int readline_accept_line(int down_history)
     // Reset history line pointer
     cmdhisto_cur = NULL;
   }
-  return 0;
 }
 
 //  readline_clear_history()
@@ -3595,13 +3755,13 @@ void readline_cancel_completion(void)
   check_offset(-1);
 }
 
-void readline_do_completion(void)
+void readline_do_completion(gboolean fwd)
 {
   int i, n;
 
   if (multimode != 2) {
     // Not in verbatim multi-line mode
-    scr_handle_tab();
+    scr_handle_tab(fwd);
   } else {
     // Verbatim multi-line mode: expand tab
     char tabstr[9];
@@ -3617,8 +3777,9 @@ void readline_do_completion(void)
 void readline_refresh_screen(void)
 {
   scr_check_auto_away(TRUE);
+  keypad(inputWnd, TRUE);
   parse_colors();
-  scr_Resize();
+  scr_resize();
   redrawwin(stdscr);
 }
 
@@ -3810,7 +3971,8 @@ static void scr_cancel_current_completion(void);
 //  scr_handle_tab()
 // Function called when tab is pressed.
 // Initiate or continue a completion...
-static void scr_handle_tab(void)
+// If fwd is false, a backward-completion is requested.
+static void scr_handle_tab(gboolean fwd)
 {
   int nrow;
   const char *row;
@@ -3895,7 +4057,7 @@ static void scr_handle_tab(void)
         g_slist_free(list);
       }
       // Now complete
-      cchar = complete();
+      cchar = complete(fwd);
       if (cchar)
         scr_insert_text(cchar);
       completion_started = TRUE;
@@ -3903,7 +4065,7 @@ static void scr_handle_tab(void)
   } else {      // Completion already initialized
     scr_cancel_current_completion();
     // Now complete again
-    cchar = complete();
+    cchar = complete(fwd);
     if (cchar)
       scr_insert_text(cchar);
   }
@@ -4209,7 +4371,7 @@ void scr_do_update(void)
   doupdate();
 }
 
-static int bindcommand(keycode kcode)
+static void bindcommand(keycode kcode)
 {
   gchar asciikey[16], asciicode[16];
   const gchar *boundcmd;
@@ -4233,10 +4395,9 @@ static int bindcommand(keycode kcode)
   if (boundcmd) {
     gchar *cmdline = from_utf8(boundcmd);
     scr_check_auto_away(TRUE);
-    if (process_command(cmdline, TRUE))
-      return 255; // Quit
+    process_command(cmdline, TRUE);
     g_free(cmdline);
-    return 0;
+    return;
   }
 
   scr_LogPrint(LPRINT_NORMAL, "Unknown key=%s", asciikey);
@@ -4245,7 +4406,6 @@ static int bindcommand(keycode kcode)
     scr_LogPrint(LPRINT_NORMAL,
                  "WARNING: Compiled without full UTF-8 support!");
 #endif
-  return -1;
 }
 
 //  scr_process_key(key)
@@ -4266,10 +4426,7 @@ void scr_process_key(keycode kcode)
         break;
     case MKEY_META:
     default:
-        if (bindcommand(kcode) == 255) {
-          mcabber_set_terminate_ui();
-          return;
-        }
+        bindcommand(kcode);
         key = ERR; // Do not process any further
   }
 
@@ -4284,27 +4441,20 @@ void scr_process_key(keycode kcode)
     case ERR:
         break;
     case 9:     // Tab
-        readline_do_completion();
+        readline_do_completion(TRUE);   // Forward-completion
+        break;
+    case 353:   // Shift-Tab
+        readline_do_completion(FALSE);  // Backward-completion
         break;
     case 13:    // Enter
     case 343:   // Enter on Maemo
-        if (readline_accept_line(FALSE) == 255) {
-          mcabber_set_terminate_ui();
-          return;
-        }
+        readline_accept_line(FALSE);
         break;
     case 3:     // Ctrl-C
         scr_handle_CtrlC();
         break;
     case KEY_RESIZE:
-#ifdef USE_SIGWINCH
-        {
-          struct winsize size;
-          if (ioctl(STDIN_FILENO, TIOCGWINSZ, &size) != -1)
-            resizeterm(size.ws_row, size.ws_col);
-        }
-#endif
-        scr_Resize();
+        scr_resize();
         break;
     default:
         display_char = TRUE;
@@ -4338,14 +4488,12 @@ display:
       check_offset(1);
     } else {
       // Look for a key binding.
-      if (!kcode.utf8 && (bindcommand(kcode) == 255)) {
-          mcabber_set_terminate_ui();
-          return;
-        }
+      if (!kcode.utf8)
+        bindcommand(kcode);
     }
   }
 
-  if (completion_started && key != 9 && key != KEY_RESIZE)
+  if (completion_started && key != 9 && key != 353 && key != KEY_RESIZE)
     scr_end_current_completion();
   refresh_inputline();
 
@@ -4363,35 +4511,65 @@ display:
 }
 
 #if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
+static void spell_checker_free(gpointer data)
+{
+  spell_checker* sc = data;
+#ifdef WITH_ENCHANT
+  enchant_broker_free_dict(sc->broker, sc->checker);
+  enchant_broker_free(sc->broker);
+#endif
+#ifdef WITH_ASPELL
+  delete_aspell_speller(sc->checker);
+  delete_aspell_config(sc->config);
+#endif
+  g_free(sc);
+}
+
+static spell_checker* new_spell_checker(const char* spell_lang)
+{
+  spell_checker* sc = g_new(spell_checker, 1);
+#ifdef WITH_ASPELL
+  const char *spell_encoding = settings_opt_get("spell_encoding");
+  AspellCanHaveError *possible_err;
+  sc->config = new_aspell_config();
+  if (spell_encoding)
+    aspell_config_replace(sc->config, "encoding", spell_encoding);
+  aspell_config_replace(sc->config, "lang", spell_lang);
+  possible_err = new_aspell_speller(sc->config);
+
+  if (aspell_error_number(possible_err) != 0) {
+    delete_aspell_config(sc->config);
+    g_free(sc);
+    sc = NULL;
+  } else {
+    sc->checker = to_aspell_speller(possible_err);
+  }
+#endif
+#ifdef WITH_ENCHANT
+  sc->broker = enchant_broker_init();
+  sc->checker = enchant_broker_request_dict(sc->broker, spell_lang);
+  if (!sc->checker) {
+    enchant_broker_free(sc->broker);
+    g_free(sc);
+    sc = NULL;
+  }
+#endif
+  return sc;
+}
+
 // initialization
 void spellcheck_init(void)
 {
   int spell_enable            = settings_opt_get_int("spell_enable");
   const char *spell_lang     = settings_opt_get("spell_lang");
-#ifdef WITH_ASPELL
-  const char *spell_encoding = settings_opt_get("spell_encoding");
-  AspellCanHaveError *possible_err;
-#endif
+  gchar** langs;
+  gchar** lang_iter;
+  spell_checker* sc;
 
   if (!spell_enable)
     return;
 
-#ifdef WITH_ENCHANT
-  if (spell_checker) {
-     enchant_broker_free_dict(spell_broker, spell_checker);
-     enchant_broker_free(spell_broker);
-     spell_checker = NULL;
-     spell_broker = NULL;
-  }
-#endif
-#ifdef WITH_ASPELL
-  if (spell_checker) {
-    delete_aspell_speller(spell_checker);
-    delete_aspell_config(spell_config);
-    spell_checker = NULL;
-    spell_config = NULL;
-  }
-#endif
+  spellcheck_deinit();
 
   if (!spell_lang) { // Cannot initialize: language not specified
     scr_LogPrint(LPRINT_LOGNORM, "Error: Cannot initialize spell checker, language not specified.");
@@ -4399,53 +4577,47 @@ void spellcheck_init(void)
     return;
   }
 
-#ifdef WITH_ENCHANT
-  spell_broker = enchant_broker_init();
-  spell_checker = enchant_broker_request_dict(spell_broker, spell_lang);
-#endif
-
-#ifdef WITH_ASPELL
-  spell_config = new_aspell_config();
-  if (spell_encoding)
-    aspell_config_replace(spell_config, "encoding", spell_encoding);
-  aspell_config_replace(spell_config, "lang", spell_lang);
-  possible_err = new_aspell_speller(spell_config);
-
-  if (aspell_error_number(possible_err) != 0) {
-    spell_checker = NULL;
-    delete_aspell_config(spell_config);
-    spell_config = NULL;
-  } else {
-    spell_checker = to_aspell_speller(possible_err);
+  langs = g_strsplit(spell_lang, " ", -1);
+  for (lang_iter = langs; *lang_iter; ++lang_iter) {
+    if (**lang_iter) { // Skip empty strings
+      sc = new_spell_checker(*lang_iter);
+      if (sc) {
+        spell_checkers = g_slist_append(spell_checkers, sc);
+      } else {
+        scr_LogPrint(LPRINT_LOGNORM,
+                     "Warning: Could not load spell checker language '%s'.",
+                     *lang_iter);
+      }
+    }
   }
-#endif
+  g_strfreev(langs);
 }
 
 // Deinitialization of spellchecker
 void spellcheck_deinit(void)
 {
-  if (spell_checker) {
-#ifdef WITH_ENCHANT
-    enchant_broker_free_dict(spell_broker, spell_checker);
-#endif
-#ifdef WITH_ASPELL
-    delete_aspell_speller(spell_checker);
-#endif
-    spell_checker = NULL;
-  }
+  g_slist_free_full(spell_checkers, spell_checker_free);
+  spell_checkers = NULL;
+}
 
+typedef struct {
+  const char* str;
+  int len;
+} spell_substring;
+
+static int spellcheckword(gconstpointer sc_ptr, gconstpointer substr_ptr)
+{
+  spell_checker* sc = (spell_checker*) sc_ptr;
+  spell_substring* substr = (spell_substring*) substr_ptr;
 #ifdef WITH_ENCHANT
-  if (spell_broker) {
-    enchant_broker_free(spell_broker);
-    spell_broker = NULL;
-  }
+  // enchant_dict_check will return 0 on good word
+  return enchant_dict_check(sc->checker, substr->str, substr->len);
 #endif
 #ifdef WITH_ASPELL
-  if (spell_config) {
-    delete_aspell_config(spell_config);
-    spell_config = NULL;
-  }
+  // aspell_speller_check will return 1 on good word, so we need to make it 0
+  return aspell_speller_check(sc->checker, substr->str, substr->len) - 1;
 #endif
+  return 0; // Keep compiler happy
 }
 
 #define spell_isalpha(c) (utf8_mode ? iswalpha(get_char(c)) : isalpha(*c))
@@ -4454,8 +4626,13 @@ void spellcheck_deinit(void)
 static void spellcheck(char *line, char *checked)
 {
   const char *start, *line_start;
+  spell_substring substr;
 
   if (inputLine[0] == 0 || inputLine[0] == COMMAND_CHAR)
+    return;
+
+  // Give up early if not languages are loaded
+  if (!spell_checkers)
     return;
 
   line_start = line;
@@ -4490,14 +4667,9 @@ static void spellcheck(char *line, char *checked)
     while (spell_isalpha(line))
       line = next_char(line);
 
-    if (spell_checker &&
-#ifdef WITH_ENCHANT
-        enchant_dict_check(spell_checker, start, line - start) != 0
-#endif
-#ifdef WITH_ASPELL
-        aspell_speller_check(spell_checker, start, line - start) == 0
-#endif
-    )
+    substr.str = start;
+    substr.len = line - start;
+    if (!g_slist_find_custom(spell_checkers, &substr, spellcheckword))
       memset(&checked[start - line_start], SPELLBADCHAR, line - start);
   }
 }

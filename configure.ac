@@ -2,11 +2,11 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([mcabber],[0.10.2],[mcabber@lilotux.net])
-AM_INIT_AUTOMAKE
+AC_INIT([mcabber],[1.0.3],[mcabber@lilotux.net])
+XC_AUTOMAKE
 AC_CONFIG_SRCDIR([mcabber])
-AM_CONFIG_HEADER(mcabber/config.h)
-AC_CONFIG_HEADER(include/config.h)
+AC_CONFIG_HEADERS([mcabber/config.h])
+AC_CONFIG_HEADERS([include/config.h])
 
 AC_PROG_LIBTOOL
 AC_PROG_RANLIB
@@ -73,13 +73,16 @@ AC_CHECK_DECLS([strptime],,,
 MC_TM_GMTOFF
 
 # Check if we must provide a SIGWINCH handler
+AC_MSG_CHECKING([if we use our own SIGWINCH handler])
 AC_ARG_ENABLE(sigwinch,
         AC_HELP_STRING([--enable-sigwinch], [compile with SIGWINCH handler]),
         [with_sigwinch=$enableval],
         [with_sigwinch=$with_ext_funcs])
-AC_MSG_RESULT($with_sigwinch)
 if test "$with_sigwinch" = yes; then
+    AC_MSG_RESULT($with_sigwinch)
     AC_DEFINE([USE_SIGWINCH], [], [Provide own SIGWINCH handler])
+else
+    AC_MSG_RESULT(no)
 fi
 
 # Checks for libraries.
@@ -96,6 +99,9 @@ AC_CHECK_FUNC(initscr,,
     done
     AC_CHECK_LIB($cf_ncurses, initscr,
         [LIBS="$LIBS -l$cf_ncurses"
+
+         AC_CHECK_LIB(tinfo, tgetent, [LIBS="$LIBS -ltinfo"])
+
          if test "$cf_ncurses" = ncursesw; then
             AC_CHECK_HEADERS([ncursesw/ncurses.h ncursesw/panel.h],,
                  [AC_CHECK_HEADERS([ncurses.h panel.h],,
@@ -153,6 +159,26 @@ AM_PATH_GLIB_2_0(2.14.0,
 
 # Check for loudmouth
 PKG_CHECK_MODULES(LOUDMOUTH, loudmouth-1.0 >= 1.4.2)
+PKG_CHECK_MODULES(LOUDMOUTH_SHA256, [loudmouth-1.0 >= 1.5.3],
+                  AC_DEFINE([LOUDMOUTH_USES_SHA256], 1,
+                           [loudmouth is now using a new digest]
+                           ),
+                  []
+                 )
+
+# Check for lm_ssl_set_cipher_list in loudmouth
+AC_CHECK_LIB(loudmouth-1, lm_ssl_set_cipher_list,
+              AC_DEFINE([HAVE_LM_SSL_CIPHER_LIST], 1,
+                        [Define that loudmouth has lm_ssl_cipher_list]
+                        )
+            )
+# Check for lm_ssl_set_cipher_list in loudmouth
+AC_CHECK_LIB(loudmouth-1, lm_ssl_set_ca,
+              AC_DEFINE([HAVE_LM_SSL_CA], 1,
+                        [Define that loudmouth has lm_ssl_ca]
+                        )
+            )
+
 
 # Check for libidn
 AC_ARG_WITH(libidn, AC_HELP_STRING([--with-libidn=[DIR]],
@@ -184,16 +210,22 @@ fi
 
 # Check for otr
 AC_ARG_ENABLE(otr,
-              AC_HELP_STRING([--enable-otr],
-                             [enable OTR (Off-the-Record) messaging support]),
-              enable_otr=$enableval, otr="")
+    AC_HELP_STRING([--enable-otr],
+                   [enable OTR (Off-the-Record) messaging support]),
+    enable_otr=$enableval,
+    otr="")
 if test "x$enable_otr" = "xyes"; then
-  # Look for libgcrypt and libotr
-  AM_PATH_LIBGCRYPT(1.2.2, [
-          AM_PATH_LIBOTR(3.1.0, ,
-                         AC_MSG_ERROR(libotr 3.1.0 or newer is required.))
-      ], AC_MSG_ERROR(libgcrypt 1.2.2 or newer is required.)
-  )
+    # Look for libotr
+    AM_PATH_LIBOTR(4.0.0, [
+        AC_DEFINE([HAVE_LIBOTR], 1, [Define if you use libotr])
+    ], [
+        AM_PATH_LIBOTR(3.1.0, [
+            AC_DEFINE([HAVE_LIBOTR], 1, [Define if you use libotr])
+            AC_DEFINE([HAVE_LIBOTR3], 1, [Define if you use libotr v3])
+        ], [
+            AC_MSG_ERROR(libotr 3.1.0 or newer is required.)
+        ])
+    ])
 fi
 
 # Check for Enchant stuff
@@ -232,15 +264,8 @@ if test x"${datadir}" != x""; then
 fi
 
 # Export $libexecdir to the source tree
-AC_DEFINE_DIR(PKGLIB_DIR, "${libdir}/${PACKAGE}", [Modules directory])
-
-AC_ARG_ENABLE(xep0022,
-              AC_HELP_STRING([--enable-xep0022],
-                             [enable obsolete Message Events (XEP-0022)]),
-              xep0022=$enableval)
-if test "${xep0022}" = "yes"; then
-    AC_DEFINE([XEP0022], 1, [Define if you want obsolete Message Events])
-fi
+pkglibdir=${libdir}/${PACKAGE}
+AC_DEFINE_DIR(PKGLIB_DIR, pkglibdir, [Modules directory])
 
 AC_ARG_ENABLE(debug,
     AC_HELP_STRING([--enable-debug], [add development compilation options]),
@@ -272,7 +297,7 @@ AM_CONDITIONAL([OTR], [test x$libotr_found = xyes])
 AM_CONDITIONAL([INSTALL_HEADERS], [test x$enable_modules != xno])
 
 # Prepare some config.h variables
-AC_DEFINE([MCABBER_BRANCH], "0.10.2", [Mcabber branch])
+AC_DEFINE([MCABBER_BRANCH], "1.0.3", [Mcabber branch])
 AC_DEFINE([MCABBER_VERSION], "AC_PACKAGE_VERSION", [Mcabber version string])
 
 # We need _GNU_SOURCE for strptime() and strcasestr()
@@ -290,3 +315,4 @@ AC_CONFIG_FILES([mcabber/Makefile
                  mcabber.pc
                  Makefile])
 AC_OUTPUT
+dnl vim: set expandtab cindent cinoptions=>2\:2(0 sw=2 ts=2:  For Vim users...

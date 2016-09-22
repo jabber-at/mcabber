@@ -1,7 +1,7 @@
 /*
  * main.c
  *
- * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2014 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,9 +14,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -30,6 +28,7 @@
 #include <glib.h>
 #include <config.h>
 #include <poll.h>
+#include <errno.h>
 
 #include "caps.h"
 #include "screen.h"
@@ -44,13 +43,13 @@
 #include "xmpp.h"
 #include "help.h"
 #include "events.h"
+#include "compl.h"
 
 #ifndef MODULES_ENABLE
 # include "fifo.h"
 #endif
 
 #ifdef MODULES_ENABLE
-# include "compl.h"
 # include "modules.h"
 #endif
 
@@ -62,7 +61,12 @@
 # define WAIT_ANY -1
 #endif
 
-static unsigned int terminate_ui;
+#ifdef USE_SIGWINCH
+void sigwinch_resize(void);
+static bool sigwinch;
+#endif
+
+static bool terminate_ui;
 GMainContext *main_context;
 
 static struct termios *backup_termios;
@@ -118,10 +122,11 @@ void sig_handler(int signum)
     mcabber_terminate("Killed by SIGTERM");
   } else if (signum == SIGINT) {
     mcabber_terminate("Killed by SIGINT");
+  } else if (signum == SIGHUP) {
+    mcabber_terminate("Killed by SIGHUP");
 #ifdef USE_SIGWINCH
   } else if (signum == SIGWINCH) {
-    if (scr_curses_status())
-      ungetch(KEY_RESIZE);
+    sigwinch = TRUE;
 #endif
   } else {
     scr_LogPrint(LPRINT_LOGNORM, "Caught signal: %d", signum);
@@ -162,6 +167,52 @@ static char *ask_password(const char *what)
     if (*p == '\n' || *p == '\r') *p = 0;
 
   return password;
+}
+
+//  password_eval(command, *status)
+// Get password from a system command.
+// The string must be freed after use.
+static char *password_eval(const char *command, int *status)
+{
+#define MAX_PWD 100
+  char *pwd;
+  FILE *outfp = popen(command, "r");
+  if (outfp == NULL) {
+    scr_log_print(LPRINT_NORMAL,
+                  "** ERROR: Failed to execute password_eval command.");
+    *status = -1;
+    return NULL;
+  }
+
+  pwd = g_new0(char, MAX_PWD);
+  if (fgets(pwd, MAX_PWD, outfp) == NULL) {
+    scr_log_print(LPRINT_NORMAL,
+                  "** ERROR: Failed to read from password_eval command.");
+    g_free(pwd);
+    *status = -1;
+    return NULL;
+  }
+
+  int res = pclose(outfp);
+  if (res != 0 && errno != ECHILD) {
+    scr_log_print(LPRINT_NORMAL,
+                  "** ERROR: Password evaluation command exited with error %d.",
+                  res);
+    if (res == -1) {
+      scr_log_print(LPRINT_NORMAL, "   errno=%d", errno);
+    }
+    g_free(pwd);
+    *status = res;
+    return NULL;
+  }
+
+  // Strip trailing whitespaces and newlines
+  size_t i = strlen(pwd);
+  while (i && isspace(pwd[i-1])) {
+    i--;
+  }
+  pwd[i] = '\0';
+  return pwd;
 }
 
 static void credits(void)
@@ -213,25 +264,39 @@ static void main_init_pgp(void)
   bool pgp_agent;
   int retries;
 
+  pk = settings_opt_get("pgp_private_key");
+
+  if (!pk)
+    scr_LogPrint(LPRINT_LOGNORM, "WARNING: unknown PGP private key");
+
+  if (gpg_init(pk, NULL)) {
+    scr_LogPrint(LPRINT_LOGNORM, "WARNING: Could not initialize PGP.");
+    return;
+  }
+
+  // We're done if the PGP engine version is > 1
+  // since the agent is mandatory and password mechanism is external.
+  if (!gpg_is_version1())
+    return;
+
+
   p = getenv("GPG_AGENT_INFO");
   pgp_agent = (p && strchr(p, ':'));
-
-  pk = settings_opt_get("pgp_private_key");
-  pp = settings_opt_get("pgp_passphrase");
 
   if (settings_opt_get("pgp_passphrase_retries"))
     retries = settings_opt_get_int("pgp_passphrase_retries");
   else
     retries = 2;
 
+  pp = settings_opt_get("pgp_passphrase");
+
   if (!pk) {
-    scr_LogPrint(LPRINT_LOGNORM, "WARNING: unknown PGP private key");
     pgp_invalid = TRUE;
   } else if (!(pp || pgp_agent)) {
     // Request PGP passphrase
     pp = typed_passwd = ask_password("your PGP passphrase");
   }
-  gpg_init(pk, pp);
+  gpg_set_passphrase(pp);
   // Erase password from the settings array
   if (pp) {
     memset((char*)pp, 0, strlen(pp));
@@ -332,6 +397,7 @@ int main(int argc, char **argv)
 
   signal(SIGTERM, sig_handler);
   signal(SIGINT,  sig_handler);
+  signal(SIGHUP,  sig_handler);
   signal(SIGCHLD, sig_handler);
 #ifdef USE_SIGWINCH
   signal(SIGWINCH, sig_handler);
@@ -369,6 +435,7 @@ int main(int argc, char **argv)
   roster_init();
   settings_init();
   scr_init_bindings();
+  scr_init_settings();
   caps_init();
 #ifdef MODULES_ENABLE
   modules_init();
@@ -393,30 +460,27 @@ int main(int argc, char **argv)
       scr_log_print(LPRINT_NORMAL, "Server: %s", p);
     if ((p = settings_opt_get("jid")) != NULL) {
       scr_log_print(LPRINT_NORMAL, "User JID: %s", p);
-    } else if (settings_opt_get("username")) {
-      /* TODO: remove after 0.10.2/3 */
-      scr_log_print(LPRINT_NORMAL, "** ERROR: The JID is missing, but "
-                    "the variable 'username' is defined in your "
-                    "configuration file.\n"
-                    "** Please update your configuration file and set "
-                    "the 'jid' variable.");
-    }
-
-    if (settings_opt_get("ssl_verify")) {  // Deprecated option
-      /* TODO: remove after 0.10.2/3 */
-      scr_log_print(LPRINT_NORMAL,
-                    "** ERROR: The option ssl_verify is deprecated.\n"
-                    "** Please update your configuration file and use "
-                    "the 'ssl_ignore_checks' variable.");
     }
   }
 
   /* If no password is stored, we ask for it before entering
      ncurses mode -- unless the username is unknown. */
   if (settings_opt_get("jid") && !settings_opt_get("password")) {
-    char *pwd = ask_password("your Jabber password");
-    settings_set(SETTINGS_TYPE_OPTION, "password", pwd);
-    g_free(pwd);
+    const char *pass_eval = settings_opt_get("password_eval");
+    if (pass_eval) {
+      int status = 0;
+      char *pwd = password_eval(pass_eval, &status);
+      if (status == 0 && pwd) {
+        settings_set(SETTINGS_TYPE_OPTION, "password", pwd);
+      }
+      g_free(pwd);
+    }
+    // If the password is still unset, ask the user...
+    if (!settings_opt_get("password")) {
+      char *pwd = ask_password("your Jabber password");
+      settings_set(SETTINGS_TYPE_OPTION, "password", pwd);
+      g_free(pwd);
+    }
   }
 
   /* Initialize PGP system
@@ -493,6 +557,12 @@ int main(int argc, char **argv)
     while(!terminate_ui) {
       if (g_main_context_iteration(main_context, TRUE) == FALSE)
         keyboard_activity();
+#ifdef USE_SIGWINCH
+      if (sigwinch) {
+        sigwinch_resize();
+        sigwinch = FALSE;
+      }
+#endif
       if (update_roster)
         scr_draw_roster();
       scr_do_update();

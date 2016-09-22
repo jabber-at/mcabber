@@ -1,8 +1,8 @@
 /*
  * compl.c      -- Completion system
  *
- * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
- * Copyright (C) 2009-2012 Myhailo Danylenko <isbear@ukrpost.net>
+ * Copyright (C) 2005-2014 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2009-2014 Myhailo Danylenko <isbear@ukrpost.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,9 +15,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 /*  Usage, basically:
@@ -41,10 +39,10 @@
 
 // Completion structure
 typedef struct {
-  GSList *list;         // list of matches
+  GList *list;          // list of matches
   guint len_prefix;     // length of text already typed by the user
   guint len_compl;      // length of the last completion
-  GSList *next;         // pointer to next completion to try
+  GList *next;          // pointer to next completion to try
 } compl;
 
 typedef GSList *(*compl_handler_t) (void); // XXX userdata? *dynlist?
@@ -134,6 +132,7 @@ void compl_init_system(void)
   register_builtin_cat(COMPL_OTR, NULL);
   register_builtin_cat(COMPL_OTRPOLICY, NULL);
   register_builtin_cat(COMPL_MODULE, NULL);
+  register_builtin_cat(COMPL_CARBONS, NULL);
 }
 
 #ifdef MODULES_ENABLE
@@ -232,12 +231,13 @@ guint new_completion(const char *prefix, GSList *compl_cat, const gchar *suffix)
         else
           compval = g_strdup(word+len);
         // for a bit of efficiency, will reverse order afterwards
-        c->list = g_slist_prepend(c->list, compval);
+        c->list = g_list_prepend(c->list, compval);
         ret_len ++;
       }
     }
   }
-  c->next = c->list = g_slist_reverse (c->list);
+  c->list = g_list_reverse(c->list);
+  c->next = NULL;
   InputCompl = c;
   return ret_len;
 }
@@ -245,14 +245,14 @@ guint new_completion(const char *prefix, GSList *compl_cat, const gchar *suffix)
 //  done_completion();
 void done_completion(void)
 {
-  GSList *clp;
+  GList *clp;
 
   if (!InputCompl)  return;
 
   // Free the current completion list
-  for (clp = InputCompl->list; clp; clp = g_slist_next(clp))
+  for (clp = InputCompl->list; clp; clp = g_list_next(clp))
     g_free(clp->data);
-  g_slist_free(InputCompl->list);
+  g_list_free(InputCompl->list);
   g_free(InputCompl);
   InputCompl = NULL;
 }
@@ -266,7 +266,7 @@ guint cancel_completion(void)
 }
 
 // Returns pointer to text to insert, NULL if no completion.
-const char *complete()
+const char *complete(gboolean fwd)
 {
   compl* c = InputCompl;
   char *r;
@@ -274,12 +274,25 @@ const char *complete()
   if (!InputCompl)  return NULL;
 
   if (!c->next) {
-    c->next = c->list;  // back to the beginning
+    if (fwd)
+      c->next = c->list;  // back to the beginning
+    else
+      c->next = g_list_last(c->list); // back to the ending
+  } else {
+    if (fwd)
+      c->next = g_list_next(c->next);
+    else
+      c->next = g_list_previous(c->next);
+  }
+
+  if (!c->next) {
+    c->next = NULL;
     c->len_compl = 0;
     return NULL;
   }
+
   r = (char*)c->next->data;
-  c->next = g_slist_next(c->next);
+
   if (!utf8_mode) {
     c->len_compl = strlen(r);
   } else {

@@ -1,7 +1,7 @@
 /*
  * utils.c      -- Various utility functions
  *
- * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2014 Mikael Berthe <mikael@lilotux.net>
  * Some of the ut_* functions are derived from Cabber debug/log code.
  * from_iso8601() comes from the Pidgin (libpurple) project.
  *
@@ -16,9 +16,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <config.h>
@@ -79,6 +77,7 @@ char *jidtodisp(const char *fjid)
   return alias;
 }
 
+// The caller must free the string after use.
 char *jid_get_username(const char *fjid)
 {
   char *ptr;
@@ -91,6 +90,21 @@ char *jid_get_username(const char *fjid)
   return username;
 }
 
+// The caller must free the string after use.
+char *get_servername(const char *username, const char *servername)
+{
+  char *ptr;
+  char *server;
+
+  if ((ptr = strchr(username, JID_DOMAIN_SEPARATOR)) != NULL) {
+    server = g_strdup(ptr+1);
+    return server;
+  }
+
+  return g_strdup(servername);
+}
+
+// The caller must free the string after use.
 char *compose_jid(const char *username, const char *servername,
                   const char *resource)
 {
@@ -139,28 +153,52 @@ char *expand_filename(const char *fname)
   return g_strdup(fname);
 }
 
-void fingerprint_to_hex(const unsigned char *fpr, char hex[49])
+#ifndef LOUDMOUTH_USES_SHA256
+//  fingerprint_to_hex(fprstr, hex, fpr_len)
+// Convert the binary fingerprint fprstr (which is fpr_len bytes long)
+// to a NULL-terminated hexadecimal string hex.
+// The destination array hex should have been preallocated by the caller,
+// and should be big enough (i.e. >= 3*fpr_len bytes).
+void fingerprint_to_hex(const char *fprstr, char *hex, size_t fpr_len)
 {
-  int i;
+  unsigned int i;
+  const unsigned char *fpr = (const unsigned char *)fprstr;
   char *p;
 
-  for (p = hex, i = 0; i < 15; i++, p+=3)
-    g_sprintf(p, "%02X:", fpr[i]);
-  g_sprintf(p, "%02X", fpr[i]);
-  hex[48] = '\0';
+  hex[0] = 0;
+  if (!fpr || fpr_len < 16) return;
+
+  for (p = hex, i = 0; i < fpr_len - 1; i++, p+=3)
+    g_snprintf(p, 4, "%02X:", fpr[i]);
+  g_snprintf(p, 3, "%02X", fpr[i]);
 }
 
-gboolean hex_to_fingerprint(const char *hex, char fpr[16])
+//  hex_to_fingerprint(hex, fpr, fpr_len)
+// Convert the hexadecimal fingerprint hex to a byte array fpr[].
+// The fpr array should have been preallocated  with a size >= fpr_len.
+gboolean hex_to_fingerprint(const char *hex, char *fpr, size_t fpr_len)
 {
-  int i;
-  char *p;
+  unsigned int i;
+  const char *p;
 
-  if (strlen(hex) != 47)
+  if (fpr_len < 16) return FALSE;
+
+  fpr[0] = 0;
+
+  if (strlen(hex) != fpr_len*3 - 1)
     return FALSE;
-  for (i = 0, p = (char*)hex; *p && *(p+1); i++, p += 3)
-    fpr[i] = (char) g_ascii_strtoull (p, NULL, 16);
+
+  for (i = 0, p = hex; i < fpr_len && *p && *(p+1); i++, p += 3) {
+    // Check we have two hex digits followed by a colon (or end of string)
+    if (!isxdigit(*p) || !isxdigit(*(p+1)))
+      return FALSE;
+    if (*(p+2) && (*(p+2) != ':'))
+      return FALSE;
+    fpr[i] = (char)g_ascii_strtoull(p, NULL, 16);
+  }
   return TRUE;
 }
+#endif
 
 static gboolean tracelog_create(void)
 {
@@ -171,7 +209,7 @@ static gboolean tracelog_create(void)
 
   fp = fopen(FName, "a");
   if (!fp) {
-    scr_LogPrint(LPRINT_NORMAL, "ERROR: Cannot open tracelog file: %s!",
+    scr_LogPrint(LPRINT_NORMAL, "ERROR: Cannot open tracelog file: %s",
                  strerror(errno));
     return FALSE;
   }
@@ -180,13 +218,17 @@ static gboolean tracelog_create(void)
   if (err || buf.st_uid != geteuid()) {
     fclose(fp);
     if (err)
-      scr_LogPrint(LPRINT_NORMAL, "ERROR: cannot stat the tracelog file: %s!",
+      scr_LogPrint(LPRINT_NORMAL, "ERROR: cannot stat the tracelog file: %s",
                    strerror(errno));
     else
       scr_LogPrint(LPRINT_NORMAL, "ERROR: tracelog file does not belong to you!");
     return FALSE;
   }
-  fchmod(fileno(fp), S_IRUSR|S_IWUSR);
+
+  if (fchmod(fileno(fp), S_IRUSR|S_IWUSR)) {
+    scr_LogPrint(LPRINT_NORMAL, "WARNING: Cannot set tracelog file permissions: %s",
+                 strerror(errno));
+  }
 
   v = mcabber_version();
   fprintf(fp, "New trace log started.  MCabber version %s\n"
@@ -196,6 +238,7 @@ static gboolean tracelog_create(void)
   return TRUE;
 }
 
+// The caller must free the string after use.
 static gchar *tracelog_level_guard(const gchar *key, const gchar *new_value)
 {
   int new_level = 0;
@@ -208,6 +251,7 @@ static gchar *tracelog_level_guard(const gchar *key, const gchar *new_value)
   return g_strdup(new_value);
 }
 
+// The caller must free the string after use.
 static gchar *tracelog_file_guard(const gchar *key, const gchar *new_value)
 {
   gchar *new_fname = NULL;
@@ -229,7 +273,7 @@ static gchar *tracelog_file_guard(const gchar *key, const gchar *new_value)
 }
 
 //  ut_init_debug()
-// Installs otpion guards before initial config file parsing.
+// Install option guards before initial config file parsing.
 void ut_init_debug(void)
 {
   DebugEnabled = 0;
@@ -250,6 +294,10 @@ void ut_write_log(unsigned int flag, const char *data)
                    strerror(errno));
       return;
     }
+
+    // Check file permissions again (it could be a new file)
+    fchmod(fileno(fp), S_IRUSR|S_IWUSR);
+
     if (fputs(data, fp) == EOF)
       scr_LogPrint(LPRINT_NORMAL, "ERROR: Cannot write to tracelog file.");
     fclose(fp);
@@ -264,6 +312,8 @@ int checkset_perm(const char *name, unsigned int setmode)
 {
   int fd;
   struct stat buf;
+
+  if (!name) return -1;
 
 #ifdef __CYGWIN__
   // Permission checking isn't efficient on Cygwin
@@ -403,7 +453,8 @@ time_t from_iso8601(const char *timestamp, int utc)
       int tzhrs, tzmins;
 
       if (*c == '.') /* dealing with precision we don't care about */
-        c += 4;
+        while (isdigit(*++c))
+          ;
 
       if ((*c == '+' || *c == '-') &&
           sscanf(c+1, "%02d:%02d", &tzhrs, &tzmins)) {
@@ -563,7 +614,7 @@ void strip_arg_special_chars(char *s)
 {
   int instring = FALSE;
   int escape = FALSE;
-  char *p;
+  char *p, *t;
 
   if (!s) return;
 
@@ -571,13 +622,17 @@ void strip_arg_special_chars(char *s)
     if (*p == '"') {
       if (!escape) {
         instring = !instring;
-        strcpy(p, p+1);
+        //memmove(p, p+1, strlen(p));
+        for (t=p; *t; t++)
+          *t = *(t+1);
         p--;
       } else
         escape = FALSE;
     } else if (*p == '\\') {
       if (!escape) {
-        strcpy(p, p+1);
+        //memmove(p, p+1, strlen(p));
+        for (t=p; *t; t++)
+          *t = *(t+1);
         p--;
       }
       escape = !escape;

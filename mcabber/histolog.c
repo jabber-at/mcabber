@@ -1,7 +1,7 @@
 /*
  * histolog.c   -- File history handling
  *
- * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2005-2015 Mikael Berthe <mikael@lilotux.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,9 +14,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <ctype.h>
@@ -68,6 +66,9 @@ static char *user_histo_file(const char *bjid)
   return filename;
 }
 
+//  hlog_get_log_jid(bare_jid)
+// Returns the real JID used for a symlinked history log file,
+// or NULL if there's no symbolic link.
 char *hlog_get_log_jid(const char *bjid)
 {
   struct stat bufstat;
@@ -84,8 +85,9 @@ char *hlog_get_log_jid(const char *bjid)
       if (readlink(path, log_jid, bufstat.st_size) < 0) return NULL;
       g_free(path);
       path = user_histo_file(log_jid);
-    } else
+    } else {
       break;
+    }
   }
 
   g_free(path);
@@ -227,8 +229,16 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
       break;
     ln++;
 
-    while (1) {
+    tail = data;
+
+    while (!feof(fp)) {
       for (tail = data; *tail; tail++) ;
+      if (tail == data) {
+        // That would happen if the log file has NUL characters...
+        scr_LogPrint(LPRINT_LOGNORM, "Corrupted history file!  Trying to recover.");
+        err = 1;
+        break;
+      }
       noeol = (*(tail-1) != '\n');
       if (!noeol)
         break;
@@ -352,47 +362,57 @@ void hlog_read_history(const char *bjid, GList **p_buddyhbuf, guint width)
 }
 
 //  hlog_enable()
-// Enable logging to files.  If root_dir is NULL, then $HOME/.mcabber is used.
+// Enable logging to files.  If root_dir is NULL, then the subdirectory "histo"
+// in mcabber configuration directory is used.
 // If loadfiles is TRUE, we will try to load buddies history logs from file.
 void hlog_enable(guint enable, const char *root_dir, guint loadfiles)
 {
   UseFileLogging = enable;
   FileLoadLogs = loadfiles;
 
-  if (enable || loadfiles) {
-    if (root_dir) {
-      char *xp_root_dir;
-      int l = strlen(root_dir);
-      if (l < 1) {
-        scr_LogPrint(LPRINT_LOGNORM, "Error: logging dir name too short");
-        UseFileLogging = FileLoadLogs = FALSE;
-        return;
-      }
-      xp_root_dir = expand_filename(root_dir);
-      // RootDir must be slash-terminated
-      if (root_dir[l-1] == '/') {
-        RootDir = xp_root_dir;
-      } else {
-        RootDir = g_strdup_printf("%s/", xp_root_dir);
-        g_free(xp_root_dir);
-      }
-    } else {
-      char *home = getenv("HOME");
-      const char *dir = "/.mcabber/histo/";
-      RootDir = g_strdup_printf("%s%s", home, dir);
-    }
-    // Check directory permissions (should not be readable by group/others)
-    if (checkset_perm(RootDir, TRUE) == -1) {
-      // The directory does not actually exists
-      g_free(RootDir);
-      RootDir = NULL;
-      scr_LogPrint(LPRINT_LOGNORM, "ERROR: Cannot access "
-                   "history log directory, logging DISABLED");
+  g_free(RootDir);
+  RootDir = NULL;
+
+  if (!enable && !loadfiles)
+    return;
+
+  if (root_dir) {
+    char *xp_root_dir;
+    int l = strlen(root_dir);
+    if (l < 1) {
+      scr_LogPrint(LPRINT_LOGNORM, "Error: logging dir name too short");
       UseFileLogging = FileLoadLogs = FALSE;
+      return;
     }
-  } else {  // Disable history logging
+    xp_root_dir = expand_filename(root_dir);
+    // RootDir must be slash-terminated
+    if (root_dir[l-1] == '/') {
+      RootDir = xp_root_dir;
+    } else {
+      RootDir = g_strdup_printf("%s/", xp_root_dir);
+      g_free(xp_root_dir);
+    }
+  } else {
+    const char *cfgdir = settings_get_mcabber_config_dir();
+    const char *hdir = "/histo/";
+    if (!cfgdir) {
+      scr_LogPrint(LPRINT_LOGNORM, "ERROR: Cannot find out "
+                   "history log directory; logging DISABLED");
+      UseFileLogging = FileLoadLogs = FALSE;
+      return;
+    }
+    RootDir = g_strdup_printf("%s%s", cfgdir, hdir);
+  }
+
+  // Create full directory path in case it is absent.
+  // Check directory permissions (should not be readable by group/others)
+  if (g_mkdir_with_parents(RootDir, S_IRUSR | S_IWUSR | S_IXUSR) ||
+      checkset_perm(RootDir, TRUE) == -1) {
     g_free(RootDir);
     RootDir = NULL;
+    scr_LogPrint(LPRINT_LOGNORM, "ERROR: Cannot access "
+                 "history log directory; logging DISABLED");
+    UseFileLogging = FileLoadLogs = FALSE;
   }
 }
 

@@ -80,14 +80,23 @@
 /* Define to 1 if you want Libidn. */
 #undef HAVE_LIBIDN
 
-/* Define to 1 if you have the `otr' library (-lotr). */
+/* Define if you use libotr */
 #undef HAVE_LIBOTR
+
+/* Define if you use libotr v3 */
+#undef HAVE_LIBOTR3
 
 /* Define to 1 if you have the `panel' library (-lpanel). */
 #undef HAVE_LIBPANEL
 
 /* Define to 1 if you have the `panelw' library (-lpanelw). */
 #undef HAVE_LIBPANELW
+
+/* Define that loudmouth has lm_ssl_ca */
+#undef HAVE_LM_SSL_CA
+
+/* Define that loudmouth has lm_ssl_cipher_list */
+#undef HAVE_LM_SSL_CIPHER_LIST
 
 /* Define to 1 if you have the <localcharset.h> header file. */
 #undef HAVE_LOCALCHARSET_H
@@ -249,6 +258,9 @@
 /* Define to 1 if the system has the type `_Bool'. */
 #undef HAVE__BOOL
 
+/* loudmouth is now using a new digest */
+#undef LOUDMOUTH_USES_SHA256
+
 /* Define to the sub-directory in which libtool stores uninstalled libraries.
    */
 #undef LT_OBJDIR
@@ -318,9 +330,6 @@
 
 /* Define if you want enchant support */
 #undef WITH_ENCHANT
-
-/* Define if you want obsolete Message Events */
-#undef XEP0022
 
 /* Enable large inode numbers on Mac OS X 10.5.  */
 #ifndef _DARWIN_USE_64_BIT_INODE

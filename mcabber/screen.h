@@ -51,6 +51,7 @@ enum colors {
   COLOR_INFO,
   COLOR_MSGIN,
   COLOR_READMARK,
+  COLOR_TIMESTAMP,
   COLOR_max
 };
 
@@ -64,7 +65,8 @@ typedef struct {
   int value;
   int utf8;
   enum {
-    MKEY_META = 1,
+    MKEY_NONE = 0,
+    MKEY_META,
     MKEY_EQUIV,
     MKEY_CTRL_PGUP,
     MKEY_CTRL_PGDOWN,
@@ -102,8 +104,10 @@ void scr_process_key(keycode kcode);
 void scr_init_bindings(void);
 void scr_init_locale_charset(void);
 void scr_init_curses(void);
+void scr_init_settings(void);
 void scr_terminate_curses(void);
 gboolean scr_curses_status(void);
+void scr_resize(void);
 void scr_draw_main_window(unsigned int fullinit);
 void scr_draw_roster(void);
 void scr_update_main_status(int forceupdate);
@@ -128,7 +132,7 @@ guint scr_getprefixwidth(void);
 guint scr_gettextwidth(void);
 guint scr_gettextheight(void);
 guint scr_getlogwinheight(void);
-void  scr_line_prefix(hbb_line *line, char *prefix, guint preflen);
+size_t scr_line_prefix(hbb_line *line, char *prefix, guint preflen);
 
 void scr_beep(void);
 void scr_check_auto_away(int activity);
@@ -145,6 +149,7 @@ void scr_roster_jump_jid(char *);
 void scr_roster_jump_alternate(void);
 void scr_roster_unread_message(int);
 void scr_roster_display(const char *);
+void scr_roster_next_open_buffer(void);
 
 void scr_buffer_top_bottom(int topbottom);
 void scr_buffer_clear(void);
@@ -175,10 +180,10 @@ void readline_updowncase_word(int);
 void readline_capitalize_word(void);
 void readline_backward_char(void);
 void readline_forward_char(void);
-int  readline_accept_line(int down_history);
+void readline_accept_line(int down_history);
 void readline_clear_history(void);
 void readline_cancel_completion(void);
-void readline_do_completion(void);
+void readline_do_completion(gboolean fwd);
 void readline_refresh_screen(void);
 void readline_disable_chat_mode(guint show_roster);
 void readline_hist_beginning_search_bwd(void);

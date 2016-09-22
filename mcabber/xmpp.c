@@ -1,8 +1,8 @@
 /*
  * xmpp.c       -- Jabber protocol handling
  *
- * Copyright (C) 2008-2010 Frank Zschockelt <mcabber@freakysoft.de>
- * Copyright (C) 2005-2010 Mikael Berthe <mikael@lilotux.net>
+ * Copyright (C) 2008-2014 Frank Zschockelt <mcabber@freakysoft.de>
+ * Copyright (C) 2005-2015 Mikael Berthe <mikael@lilotux.net>
  * Parts come from the centericq project:
  * Copyright (C) 2002-2005 by Konstantin Klyagin <konst@konst.org.ua>
  *
@@ -17,9 +17,7 @@
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -40,8 +38,13 @@
 #include "settings.h"
 #include "utils.h"
 #include "main.h"
+#include "carbons.h"
 
 #define RECONNECTION_TIMEOUT    60L
+
+#ifndef LOUDMOUTH_USES_SHA256
+#define FINGERPRINT_LENGTH      16  // old loudmouth still uses MD5 :(
+#endif
 
 LmConnection* lconnection = NULL;
 static guint AutoConnection;
@@ -296,10 +299,12 @@ void xmpp_request(const char *fjid, enum iqreq_type reqtype)
 }
 
 //  xmpp_send_msg(jid, text, type, subject,
-//                otrinject, *encrypted, type_overwrite)
+//                otrinject, *encrypted, type_overwrite, *xep184)
 // When encrypted is not NULL, the function set *encrypted to 1 if the
-// message has been PGP-encrypted.  If encryption enforcement is set and
-// encryption fails, *encrypted is set to -1.
+// message has been PGP (or OTR) -encrypted.  If encryption enforcement is set
+// and encryption fails, *encrypted is set to -1.
+// otrinject should be set to FALSE (unless the message already has an OTR
+// payload, i.e. if the function is called from an otr.c routine).
 void xmpp_send_msg(const char *fjid, const char *text, int type,
                    const char *subject, gboolean otrinject, gint *encrypted,
                    LmMessageSubType type_overwrite, gpointer *xep184)
@@ -308,18 +313,16 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
   LmMessageSubType subtype;
 #ifdef HAVE_LIBOTR
   int otr_msg = 0;
+  char *otr_msg_string = NULL;
 #endif
   char *barejid;
-#if defined HAVE_GPGME || defined XEP0022 || defined XEP0085
+#if defined HAVE_GPGME || defined XEP0085
   char *rname;
   GSList *sl_buddy;
 #endif
-#if defined XEP0022 || defined XEP0085
+#ifdef XEP0085
   LmMessageNode *event;
   struct xep0085 *xep85 = NULL;
-#if defined XEP0022
-  guint use_xep85 = 0;
-#endif
 #endif
   gchar *enc = NULL;
 
@@ -342,8 +345,7 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
   }
 
   barejid = jidtodisp(fjid);
-#if defined HAVE_GPGME || defined HAVE_LIBOTR || \
-    defined XEP0022 || defined XEP0085
+#if defined HAVE_GPGME || defined HAVE_LIBOTR || defined XEP0085
   rname = strchr(fjid, JID_RESOURCE_SEPARATOR);
   sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
 
@@ -355,13 +357,13 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
 #ifdef HAVE_LIBOTR
   if (otr_enabled() && !otrinject) {
     if (type == ROSTER_TYPE_USER) {
-      otr_msg = otr_send((char **)&text, barejid);
-      if (!text) {
-        g_free(barejid);
+      otr_msg_string = otr_send(text, barejid, &otr_msg);
+      if (!otr_msg_string) {
         if (encrypted)
           *encrypted = -1;
-        return;
+        goto xmpp_send_msg_return;
       }
+      text = otr_msg_string;
     }
     if (otr_msg && encrypted)
       *encrypted = ENCRYPTED_OTR;
@@ -385,20 +387,24 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
         key = settings_pgp_getkeyid(barejid);
         if (!key && res_pgpdata)
           key = res_pgpdata->sign_keyid;
-        if (key)
-          enc = gpg_encrypt(text, key);
+        if (key) {
+          int nkeys = 1;
+          const char *keys[] = { key, 0 };
+          if (carbons_enabled())
+            keys[nkeys++] = gpg_get_private_key_id();
+          enc = gpg_encrypt(text, keys, nkeys);
+        }
         if (!enc && force) {
           if (encrypted)
             *encrypted = -1;
-          g_free(barejid);
-          return;
+          goto xmpp_send_msg_return;
         }
       }
     }
   }
 #endif // HAVE_GPGME
 
-#endif // HAVE_GPGME || defined XEP0022 || defined XEP0085
+#endif // HAVE_GPGME || defined XEP0085
 
   x = lm_message_new_with_sub_type(fjid, LM_MESSAGE_TYPE_MESSAGE, subtype);
   lm_message_node_add_child(x->node, "body",
@@ -416,6 +422,13 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
     g_free(enc);
   }
 
+#ifdef HAVE_LIBOTR
+  // We probably don't want Carbons for encrypted messages, since the other
+  // resources won't be able to decrypt them.
+  if (otr_msg && carbons_enabled())
+    lm_message_node_add_child(x->node, "private", NS_CARBONS_2);
+#endif
+
   // XEP-0184: Message Receipts
   if (sl_buddy && xep184 &&
       caps_has_feature(buddy_resource_getcaps(sl_buddy->data, rname),
@@ -425,18 +438,15 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
                                   "xmlns", NS_RECEIPTS);
     *xep184 = g_strdup(lm_message_get_id(x));
   }
-  g_free(barejid);
 
-#if defined XEP0022 || defined XEP0085
+#ifdef XEP0085
   // If typing notifications are disabled, we can skip all this stuff...
   if (chatstates_disabled || type == ROSTER_TYPE_ROOM)
     goto xmpp_send_msg_no_chatstates;
 
   if (sl_buddy)
     xep85 = buddy_resource_xep85(sl_buddy->data, rname);
-#endif
 
-#ifdef XEP0085
   /* XEP-0085 5.1
    * "Until receiving a reply to the initial content message (or a standalone
    * notification) from the Contact, the User MUST NOT send subsequent chat
@@ -450,38 +460,7 @@ void xmpp_send_msg(const char *fjid, const char *text, int type,
     lm_message_node_set_attribute(event, "xmlns", NS_CHATSTATES);
     if (xep85->support == CHATSTATES_SUPPORT_UNKNOWN)
       xep85->support = CHATSTATES_SUPPORT_PROBED;
-#ifdef XEP0022
-    else
-      use_xep85 = 1;
-#endif
     xep85->last_state_sent = ROSTER_EVENT_ACTIVE;
-  }
-#endif
-#ifdef XEP0022
-  /* XEP-22
-   * If the Contact supports XEP-0085, we do not use XEP-0022.
-   * If not, we try to fall back to XEP-0022.
-   */
-  if (!use_xep85) {
-    struct xep0022 *xep22 = NULL;
-    event = lm_message_node_add_child(x->node, "x", NULL);
-    lm_message_node_set_attribute(event, "xmlns", NS_EVENT);
-    lm_message_node_add_child(event, "composing", NULL);
-
-    if (sl_buddy)
-      xep22 = buddy_resource_xep22(sl_buddy->data, rname);
-    if (xep22)
-      xep22->last_state_sent = ROSTER_EVENT_ACTIVE;
-
-    // An id is mandatory when using XEP-0022.
-    if (text || subject) {
-      const gchar *msgid = lm_message_get_id(x);
-      // Let's update last_msgid_sent
-      if (xep22) {
-        g_free(xep22->last_msgid_sent);
-        xep22->last_msgid_sent = g_strdup(msgid);
-      }
-    }
   }
 #endif
 
@@ -492,6 +471,12 @@ xmpp_send_msg_no_chatstates:
     update_last_use();
   lm_connection_send(lconnection, x, NULL);
   lm_message_unref(x);
+
+xmpp_send_msg_return:
+#ifdef HAVE_LIBOTR
+  g_free(otr_msg_string);
+#endif
+  g_free(barejid);
 }
 
 #ifdef XEP0085
@@ -553,93 +538,21 @@ static void xmpp_send_xep85_chatstate(const char *bjid, const char *resname,
 }
 #endif
 
-#ifdef XEP0022
-//  xmpp_send_xep22_event()
-// Send a XEP-22 message event (delivered, composing...).
-static void xmpp_send_xep22_event(const char *fjid, guint type)
-{
-  LmMessage *x;
-  LmMessageNode *event;
-  const char *msgid;
-  char *rname, *barejid;
-  GSList *sl_buddy;
-  struct xep0022 *xep22 = NULL;
-  guint xep22_state;
-
-  if (!xmpp_is_online())
-    return;
-
-  rname = strchr(fjid, JID_RESOURCE_SEPARATOR);
-  barejid = jidtodisp(fjid);
-  sl_buddy = roster_find(barejid, jidsearch, ROSTER_TYPE_USER);
-  g_free(barejid);
-
-  // If we can get a resource name, we use it.  Else we use NULL,
-  // which hopefully will give us the most likely resource.
-  if (rname)
-    rname++;
-  if (sl_buddy)
-    xep22 = buddy_resource_xep22(sl_buddy->data, rname);
-
-  if (!xep22)
-    return; // XXX Maybe we could try harder (other resources?)
-
-  msgid = xep22->last_msgid_rcvd;
-
-  // For composing events (composing, active, inactive, paused...),
-  // XEP22 only has 2 states; we'll use composing and active.
-  if (type == ROSTER_EVENT_COMPOSING)
-    xep22_state = ROSTER_EVENT_COMPOSING;
-  else if (type == ROSTER_EVENT_ACTIVE ||
-           type == ROSTER_EVENT_PAUSED)
-    xep22_state = ROSTER_EVENT_ACTIVE;
-  else
-    xep22_state = 0; // ROSTER_EVENT_NONE
-
-  if (xep22_state) {
-    // Do not re-send a same event
-    if (xep22_state == xep22->last_state_sent)
-      return;
-    xep22->last_state_sent = xep22_state;
-  }
-
-  x = lm_message_new_with_sub_type(fjid, LM_MESSAGE_TYPE_MESSAGE,
-                                   LM_MESSAGE_SUB_TYPE_CHAT);
-
-  event = lm_message_node_add_child(x->node, "x", NULL);
-  lm_message_node_set_attribute(event, "xmlns", NS_EVENT);
-  if (type == ROSTER_EVENT_DELIVERED)
-    lm_message_node_add_child(event, "delivered", NULL);
-  else if (type == ROSTER_EVENT_COMPOSING)
-    lm_message_node_add_child(event, "composing", NULL);
-  lm_message_node_add_child(event, "id", msgid);
-
-  lm_connection_send(lconnection, x, NULL);
-  lm_message_unref(x);
-}
-#endif
-
 //  xmpp_send_chatstate(buddy, state)
 // Send a chatstate or event (XEP-22/85) according to the buddy's capabilities.
 // The message is sent to one of the resources with the highest priority.
-#if defined XEP0022 || defined XEP0085
+#if defined XEP0085
 void xmpp_send_chatstate(gpointer buddy, guint chatstate)
 {
   const char *bjid;
   const char *activeres;
-#ifdef XEP0085
   GSList *resources, *p_res, *p_next;
   struct xep0085 *xep85 = NULL;
-#endif
-#ifdef XEP0022
-  struct xep0022 *xep22;
-#endif
 
   bjid = buddy_getjid(buddy);
   if (!bjid) return;
   activeres = buddy_getactiveresource(buddy);
 
-#ifdef XEP0085
   /* Send the chatstate to the last resource (which should have the highest
      priority).
      If chatstate is "active", send an "active" state to all resources
@@ -665,13 +578,6 @@ void xmpp_send_chatstate(gpointer buddy, guint chatstate)
   // we don't want to send a XEP22 event.
   if (xep85 && xep85->support == CHATSTATES_SUPPORT_OK)
     return;
-#endif
-#ifdef XEP0022
-  xep22 = buddy_resource_xep22(buddy, activeres);
-  if (xep22 && xep22->support == CHATSTATES_SUPPORT_OK) {
-    xmpp_send_xep22_event(bjid, chatstate);
-  }
-#endif
 }
 #endif
 
@@ -679,13 +585,12 @@ void xmpp_send_chatstate(gpointer buddy, guint chatstate)
 //  chatstates_reset_probed(fulljid)
 // If the XEP has been probed for this contact, set it back to unknown so
 // that we probe it again.  The parameter must be a full jid (w/ resource).
-#if defined XEP0022 || defined XEP0085
+#if defined XEP0085
 static void chatstates_reset_probed(const char *fulljid)
 {
   char *rname, *barejid;
   GSList *sl_buddy;
   struct xep0085 *xep85;
-  struct xep0022 *xep22;
 
   rname = strchr(fulljid, JID_RESOURCE_SEPARATOR);
   if (!rname++)
@@ -699,12 +604,9 @@ static void chatstates_reset_probed(const char *fulljid)
     return;
 
   xep85 = buddy_resource_xep85(sl_buddy->data, rname);
-  xep22 = buddy_resource_xep22(sl_buddy->data, rname);
 
   if (xep85 && xep85->support == CHATSTATES_SUPPORT_PROBED)
     xep85->support = CHATSTATES_SUPPORT_UNKNOWN;
-  if (xep22 && xep22->support == CHATSTATES_SUPPORT_PROBED)
-    xep22->support = CHATSTATES_SUPPORT_UNKNOWN;
 }
 #endif
 
@@ -809,6 +711,9 @@ static LmSSLResponse ssl_cb(LmSSL *ssl, LmSSLStatus status, gpointer ud)
     break;
   case LM_SSL_STATUS_UNTRUSTED_CERT:
     scr_LogPrint(LPRINT_LOGNORM, "Certificate is not trusted!");
+    // The user specified a fingerprint, let's wait for lm to check that
+    if (settings_opt_get("ssl_fingerprint"))
+      return LM_SSL_RESPONSE_CONTINUE;
     break;
   case LM_SSL_STATUS_CERT_EXPIRED:
     scr_LogPrint(LPRINT_LOGNORM, "Certificate has expired!");
@@ -821,19 +726,24 @@ static LmSSLResponse ssl_cb(LmSSL *ssl, LmSSLStatus status, gpointer ud)
                  "Certificate hostname does not match expected hostname!");
     break;
   case LM_SSL_STATUS_CERT_FINGERPRINT_MISMATCH: {
-    char fpr[49];
-    fingerprint_to_hex((const unsigned char*)lm_ssl_get_fingerprint(ssl),
-                       fpr);
-    scr_LogPrint(LPRINT_LOGNORM,
-              "Certificate fingerprint does not match expected fingerprint!");
-    scr_LogPrint(LPRINT_LOGNORM, "Remote fingerprint: %s", fpr);
+#ifndef LOUDMOUTH_USES_SHA256
+      char fpr[3*FINGERPRINT_LENGTH] = {0};
+      fingerprint_to_hex(lm_ssl_get_fingerprint(ssl), fpr, FINGERPRINT_LENGTH);
+#endif
+      scr_LogPrint(LPRINT_LOGNORM,
+                "Certificate fingerprint does not match expected fingerprint!");
+#ifndef LOUDMOUTH_USES_SHA256
+      scr_LogPrint(LPRINT_LOGNORM, "Remote fingerprint: %s", fpr);
+#else
+      scr_LogPrint(LPRINT_LOGNORM, "Remote fingerprint: %s", lm_ssl_get_fingerprint(ssl));
+#endif
 
-    scr_LogPrint(LPRINT_LOGNORM, "Expected fingerprint: %s",
-                 settings_opt_get("ssl_fingerprint"));
+      scr_LogPrint(LPRINT_LOGNORM, "Expect fingerprint: %s",
+                   settings_opt_get("ssl_fingerprint"));
 
-    return LM_SSL_RESPONSE_STOP;
+      return LM_SSL_RESPONSE_STOP;
+    }
     break;
-  }
   case LM_SSL_STATUS_GENERIC_ERROR:
     scr_LogPrint(LPRINT_LOGNORM, "Generic SSL error!");
     break;
@@ -849,9 +759,22 @@ static LmSSLResponse ssl_cb(LmSSL *ssl, LmSSLStatus status, gpointer ud)
 static void connection_auth_cb(LmConnection *connection, gboolean success,
                                gpointer user_data)
 {
-  if (success) {
+  LmSSL *lssl;
+  if ((lssl = lm_connection_get_ssl(connection)) != NULL) {
+#ifndef LOUDMOUTH_USES_SHA256
+    char fpr[3*FINGERPRINT_LENGTH] = {0};
+    fingerprint_to_hex(lm_ssl_get_fingerprint(lssl), fpr, FINGERPRINT_LENGTH);
+    scr_LogPrint(LPRINT_LOGNORM, "Connection established.\n"
+                 "Remote fingerprint: %s", fpr);
+#else
+    scr_LogPrint(LPRINT_LOGNORM, "Connection established.\n"
+                 "Remote fingerprint: %s", lm_ssl_get_fingerprint(lssl));
+#endif
+  }
 
+  if (success) {
     xmpp_iq_request(NULL, NS_ROSTER);
+    xmpp_iq_request(NULL, NS_DISCO_INFO);
     xmpp_request_storage("storage:bookmarks");
     xmpp_request_storage("storage:rosternotes");
 
@@ -951,6 +874,8 @@ static void connection_close_cb(LmConnection *connection,
   if (rosternotes)
     lm_message_node_unref(rosternotes);
   rosternotes = NULL;
+  // Reset carbons
+  carbons_reset();
   // Update display
   update_roster = TRUE;
   scr_update_buddy_window();
@@ -963,123 +888,53 @@ static void connection_close_cb(LmConnection *connection,
   xmpp_setstatus(offline, NULL, mystatusmsg, TRUE);
 }
 
-static void handle_state_events(const char *from, LmMessageNode *node)
+static void handle_state_events(const char *bjid,
+                                const char *resource,
+                                LmMessageNode *node)
 {
-#if defined XEP0022 || defined XEP0085
+#if defined XEP0085
   LmMessageNode *state_ns = NULL;
-  char *rname, *bjid;
   GSList *sl_buddy;
-  guint events;
-  struct xep0022 *xep22 = NULL;
   struct xep0085 *xep85 = NULL;
-  enum {
-    XEP_none,
-    XEP_85,
-    XEP_22
-  } which_xep = XEP_none;
 
-  rname = strchr(from, JID_RESOURCE_SEPARATOR);
-  if (rname)
-    ++rname;
-  else
-    rname = (char *)from + strlen(from);
-  bjid  = jidtodisp(from);
   sl_buddy = roster_find(bjid, jidsearch, ROSTER_TYPE_USER);
-  g_free(bjid);
 
-  /* XXX Actually that's wrong, since it filters out server "offline"
-     messages (for XEP-0022).  This XEP is (almost) deprecated so
-     we don't really care. */
   if (!sl_buddy) {
     return;
   }
 
-  /* Let's see chich XEP the contact uses.  If possible, we'll use
-     XEP-85, if not we'll look for XEP-22 support. */
-  events = buddy_resource_getevents(sl_buddy->data, rname);
-
-  xep85 = buddy_resource_xep85(sl_buddy->data, rname);
-  if (xep85) {
+  /* Let's see whether the contact supports XEP0085 */
+  xep85 = buddy_resource_xep85(sl_buddy->data, resource);
+  if (xep85)
     state_ns = lm_message_node_find_xmlns(node, NS_CHATSTATES);
-    if (state_ns)
-      which_xep = XEP_85;
-  }
 
-  if (which_xep != XEP_85) { /* Fall back to XEP-0022 */
-    xep22 = buddy_resource_xep22(sl_buddy->data, rname);
-    if (xep22) {
-      state_ns = lm_message_node_find_xmlns(node, NS_EVENT);
-      if (state_ns)
-        which_xep = XEP_22;
-    }
-  }
-
-  if (!which_xep) { /* Sender does not use chat states */
+  if (!state_ns) { /* Sender does not use chat states */
     return;
   }
 
-  if (which_xep == XEP_85) { /* XEP-0085 */
-    xep85->support = CHATSTATES_SUPPORT_OK;
+  xep85->support = CHATSTATES_SUPPORT_OK;
 
-    if (!strcmp(state_ns->name, "composing")) {
-      xep85->last_state_rcvd = ROSTER_EVENT_COMPOSING;
-    } else if (!strcmp(state_ns->name, "active")) {
-      xep85->last_state_rcvd = ROSTER_EVENT_ACTIVE;
-    } else if (!strcmp(state_ns->name, "paused")) {
-      xep85->last_state_rcvd = ROSTER_EVENT_PAUSED;
-    } else if (!strcmp(state_ns->name, "inactive")) {
-      xep85->last_state_rcvd = ROSTER_EVENT_INACTIVE;
-    } else if (!strcmp(state_ns->name, "gone")) {
-      xep85->last_state_rcvd = ROSTER_EVENT_GONE;
-    }
-    events = xep85->last_state_rcvd;
-  } else {              /* XEP-0022 */
-#ifdef XEP0022
-    const char *body = lm_message_node_get_child_value(node, "body");
-    const char *msgid;
-    xep22->support = CHATSTATES_SUPPORT_OK;
-    xep22->last_state_rcvd = ROSTER_EVENT_NONE;
-
-    msgid = lm_message_node_get_attribute(node, "id");
-
-    if (lm_message_node_get_child(state_ns, "composing")) {
-      // Clear composing if the message contains a body
-      if (body)
-        events &= ~ROSTER_EVENT_COMPOSING;
-      else
-        events |= ROSTER_EVENT_COMPOSING;
-      xep22->last_state_rcvd |= ROSTER_EVENT_COMPOSING;
-
-    } else {
-      events &= ~ROSTER_EVENT_COMPOSING;
-    }
-
-    // Cache the message id
-    g_free(xep22->last_msgid_rcvd);
-    if (msgid)
-      xep22->last_msgid_rcvd = g_strdup(msgid);
-    else
-      xep22->last_msgid_rcvd = NULL;
-
-    if (lm_message_node_get_child(state_ns, "delivered")) {
-      xep22->last_state_rcvd |= ROSTER_EVENT_DELIVERED;
-
-      // Do we have to send back an ACK?
-      if (body)
-        xmpp_send_xep22_event(from, ROSTER_EVENT_DELIVERED);
-    }
-#endif
+  if (!strcmp(state_ns->name, "composing")) {
+    xep85->last_state_rcvd = ROSTER_EVENT_COMPOSING;
+  } else if (!strcmp(state_ns->name, "active")) {
+    xep85->last_state_rcvd = ROSTER_EVENT_ACTIVE;
+  } else if (!strcmp(state_ns->name, "paused")) {
+    xep85->last_state_rcvd = ROSTER_EVENT_PAUSED;
+  } else if (!strcmp(state_ns->name, "inactive")) {
+    xep85->last_state_rcvd = ROSTER_EVENT_INACTIVE;
+  } else if (!strcmp(state_ns->name, "gone")) {
+    xep85->last_state_rcvd = ROSTER_EVENT_GONE;
   }
 
-  buddy_resource_setevents(sl_buddy->data, rname, events);
-
+  buddy_resource_setevents(sl_buddy->data, resource, xep85->last_state_rcvd);
   update_roster = TRUE;
 #endif
 }
 
 static void gotmessage(LmMessageSubType type, const char *from,
-                       const char *body, const char *enc, const char *subject,
-                       time_t timestamp, LmMessageNode *node_signed)
+                       const char *body, const char *enc,
+                       const char *subject, time_t timestamp,
+                       LmMessageNode *node_signed, gboolean carbon)
 {
   char *bjid;
   const char *rname;
@@ -1093,15 +948,16 @@ static void gotmessage(LmMessageSubType type, const char *from,
   if (rname) rname++;
 
 #ifdef HAVE_GPGME
-  if (enc && gpg_enabled()) {
-    decrypted_pgp = gpg_decrypt(enc);
-    if (decrypted_pgp) {
-      body = decrypted_pgp;
+  if (gpg_enabled()) {
+    if (enc) {
+      decrypted_pgp = gpg_decrypt(enc);
+      if (decrypted_pgp)
+        body = decrypted_pgp;
     }
+    // Check signature of the unencrypted/decrypted message
+    if (node_signed)
+      check_signature(bjid, rname, node_signed, body);
   }
-  // Check signature of an unencrypted message
-  if (node_signed && gpg_enabled())
-    check_signature(bjid, rname, node_signed, decrypted_pgp);
 #endif
 
   // Check for unexpected groupchat messages
@@ -1181,7 +1037,7 @@ static void gotmessage(LmMessageSubType type, const char *from,
         fullbody = g_strdup_printf("[%s]\n", subject);
       body = fullbody;
     }
-    hk_message_in(bjid, rname, timestamp, body, type, encrypted);
+    hk_message_in(bjid, rname, timestamp, body, type, encrypted, carbon);
     g_free(fullbody);
   }
 
@@ -1206,6 +1062,8 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
   const char *subject = NULL;
   time_t timestamp = 0L;
   LmMessageSubType mstype;
+  gboolean skip_process = FALSE;
+  LmMessageNode *ns_signed = NULL;
 
   mstype = lm_message_get_sub_type(m);
 
@@ -1219,6 +1077,9 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
   bjid = g_strdup(lm_message_get_from(m));
   res = strchr(bjid, JID_RESOURCE_SEPARATOR);
   if (res) *res++ = 0;
+
+  // Timestamp?
+  timestamp = lm_message_node_get_timestamp(m->node);
 
   p = lm_message_node_get_child_value(m->node, "subject");
   if (p != NULL) {
@@ -1247,7 +1108,7 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
         else
           mbuf = g_strdup_printf("%s has cleared the topic", res);
       }
-      scr_WriteIncomingMessage(bjid, mbuf, 0,
+      scr_WriteIncomingMessage(bjid, mbuf, timestamp,
                                HBB_PREFIX_INFO|HBB_PREFIX_NOFLAG, 0);
       if (settings_opt_get_int("log_muc_conf"))
         hlog_write_message(bjid, 0, -1, mbuf);
@@ -1257,24 +1118,119 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
     }
   }
 
-  // Timestamp?
-  timestamp = lm_message_node_get_timestamp(m->node);
-
   if (mstype == LM_MESSAGE_SUB_TYPE_ERROR) {
     x = lm_message_node_get_child(m->node, "error");
     display_server_error(x, from);
-#if defined XEP0022 || defined XEP0085
+#ifdef XEP0085
     // If the XEP85/22 support is probed, set it back to unknown so that
     // we probe it again.
     chatstates_reset_probed(from);
 #endif
   } else {
-    handle_state_events(from, m->node);
+    handle_state_events(bjid, res, m->node);
   }
 
-  if (from && (body || subject))
+  // Check for carbons!
+  x = lm_message_node_find_xmlns(m->node, NS_CARBONS_2);
+  gboolean carbons = FALSE;
+  if (x && (!g_strcmp0(x->name, "received") || !g_strcmp0(x->name, "sent"))) {
+    LmMessageNode *xenc;
+    const char *carbon_name = x->name;
+    carbons = TRUE;
+    // Go 1 level deeper to the forwarded message
+    x = lm_message_node_find_xmlns(x, NS_FORWARD);
+    if (x)
+      x = lm_message_node_get_child(x, "message");
+
+    if (!x) {
+      scr_LogPrint(LPRINT_LOGNORM,
+                   "Could not read carbon message!  Please fill a bug.");
+      goto handle_messages_return;
+    }
+
+    xenc = lm_message_node_find_xmlns(x, NS_ENCRYPTED);
+    if (xenc && (p = lm_message_node_get_value(xenc)) != NULL)
+      enc = p;
+
+    if (body && *body && !subject)
+      ns_signed = lm_message_node_find_xmlns(x, NS_SIGNED);
+    else
+      skip_process = TRUE;
+
+    // Parse a message that is send to one of our other resources
+    if (!g_strcmp0(carbon_name, "received")) {
+      from = lm_message_node_get_attribute(x, "from");
+      if (!from) {
+        scr_LogPrint(LPRINT_LOGNORM, "Malformed carbon copy!");
+        goto handle_messages_return;
+      }
+      g_free(bjid);
+      bjid = g_strdup(from);
+      res = strchr(bjid, JID_RESOURCE_SEPARATOR);
+      if (res) *res++ = 0;
+
+      // Try to handle forwarded chat state messages
+      handle_state_events(from, res, x);
+
+      scr_LogPrint(LPRINT_DEBUG, "Received incoming carbon from <%s>", from);
+
+    } else if (!g_strcmp0(carbon_name, "sent")) {
+#ifdef HAVE_GPGME
+      char *decrypted_pgp = NULL;
+#endif
+      guint encrypted = 0;
+      const char *to= lm_message_node_get_attribute(x, "to");
+      if (!to) {
+        scr_LogPrint(LPRINT_LOGNORM, "Malformed carbon copy!");
+        goto handle_messages_return;
+      }
+      g_free(bjid);
+      bjid = jidtodisp(to);
+
+#ifdef HAVE_GPGME
+      if (gpg_enabled()) {
+        if (enc) {
+          decrypted_pgp = gpg_decrypt(enc);
+          if (decrypted_pgp) {
+            body = decrypted_pgp;
+            encrypted = ENCRYPTED_PGP;
+          }
+        }
+        /*
+        // Check messsage signature
+        // This won't work here, since check_signature wasn't intended
+        // to be used to check our own messages.
+        if (ns_signed)
+          check_signature(ME, NULL, ns_signed, body);
+        */
+      }
+#endif
+
+      if (body && *body)
+        hk_message_out(bjid, NULL, timestamp, body, encrypted, TRUE, NULL);
+
+      scr_LogPrint(LPRINT_DEBUG, "Received outgoing carbon for <%s>", to);
+#ifdef HAVE_GPGME
+      g_free(decrypted_pgp);
+#endif
+      goto handle_messages_return;
+    }
+  } else { // Not a Carbon
+    ns_signed = lm_message_node_find_xmlns(m->node, NS_SIGNED);
+  }
+
+  // Do not process the message if some fields are missing
+  if (!from || (!body && !subject))
+    skip_process = TRUE;
+
+  if (!skip_process) {
     gotmessage(mstype, from, body, enc, subject, timestamp,
-               lm_message_node_find_xmlns(m->node, NS_SIGNED));
+               ns_signed, carbons);
+  }
+
+  // We're done if it was a Carbon forwarded message
+  if (carbons)
+    goto handle_messages_return;
 
   // Report received message if message delivery receipt was requested
   if (lm_message_node_get_child(m->node, "request") &&
@@ -1294,7 +1250,8 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
 
   { // xep184 receipt confirmation
     LmMessageNode *received = lm_message_node_get_child(m->node, "received");
-    if (received && !g_strcmp0(lm_message_node_get_attribute(received, "xmlns"), NS_RECEIPTS)) {
+    if (received && !g_strcmp0(lm_message_node_get_attribute(received, "xmlns"),
+                               NS_RECEIPTS)) {
       char       *jid = jidtodisp(from);
       const char *id  = lm_message_node_get_attribute(received, "id");
       // This is for backward compatibility; if the remote client didn't add
@@ -1303,6 +1260,16 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
         id = lm_message_get_id(m);
       scr_remove_receipt_flag(jid, id);
       g_free(jid);
+
+#ifdef MODULES_ENABLE
+      {
+        hk_arg_t args[] = {
+          { "jid", from },
+          { NULL, NULL },
+        };
+        hk_run_handlers("hook-mdr-received", args);
+      }
+#endif
     }
   }
 
@@ -1324,6 +1291,7 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
     }
   }
 
+handle_messages_return:
   g_free(bjid);
   return LM_HANDLER_RESULT_REMOVE_MESSAGE;
 }
@@ -1345,7 +1313,7 @@ static LmHandlerResult cb_caps(LmMessageHandler *h, LmConnection *c,
     LmMessageNode *info;
     LmMessageNode *query = lm_message_node_get_child(m->node, "query");
 
-    if (caps_has_hash(ver, bjid))
+    if (caps_has_hash(ver, bjid) || !query)
       goto caps_callback_return;
 
     caps_add(ver);
@@ -1490,8 +1458,17 @@ static LmHandlerResult handle_presence(LmMessageHandler *handler,
   }
 
   p = lm_message_node_get_child_value(m->node, "priority");
-  if (p && *p) bpprio = (gchar)atoi(p);
-  else         bpprio = 0;
+  if (p && *p) {
+    int rawprio = atoi(p);
+    if (rawprio > 127)
+      bpprio = 127;
+    else if (rawprio < -128)
+      bpprio = -128;
+    else
+      bpprio = rawprio;
+  } else {
+    bpprio = 0;
+  }
 
   ust = available;
 
@@ -1591,6 +1568,7 @@ static LmHandlerResult handle_iq(LmMessageHandler *handler,
 {
   int i;
   const char *xmlns = NULL;
+  char *nodestr;
   LmMessageNode *x;
   LmMessageSubType mstype = lm_message_get_sub_type(m);
 
@@ -1601,8 +1579,9 @@ static LmHandlerResult handle_iq(LmMessageHandler *handler,
   }
 
   if (mstype == LM_MESSAGE_SUB_TYPE_RESULT) {
-    scr_LogPrint(LPRINT_DEBUG, "Unhandled IQ result? %s",
-                 lm_message_node_to_string(m->node));
+    nodestr = lm_message_node_to_string(m->node);
+    scr_LogPrint(LPRINT_DEBUG, "Unhandled IQ result? %s", nodestr);
+    g_free(nodestr);
     return LM_HANDLER_RESULT_ALLOW_MORE_HANDLERS;
   }
 
@@ -1619,8 +1598,9 @@ static LmHandlerResult handle_iq(LmMessageHandler *handler,
       (mstype == LM_MESSAGE_SUB_TYPE_GET))
     send_iq_error(connection, m, XMPP_ERROR_NOT_IMPLEMENTED);
 
-  scr_LogPrint(LPRINT_DEBUG, "Unhandled IQ: %s",
-               lm_message_node_to_string(m->node));
+  nodestr = lm_message_node_to_string(m->node);
+  scr_LogPrint(LPRINT_DEBUG, "Unhandled IQ: %s", nodestr);
+  g_free(nodestr);
 
   scr_LogPrint(LPRINT_NORMAL, "Received unhandled IQ request from <%s>.",
                lm_message_get_from(m));
@@ -1791,25 +1771,27 @@ gint xmpp_connect(void)
 {
   const char *userjid, *password, *resource, *servername, *ssl_fpr;
   char *dynresource = NULL;
-  char fpr[16];
+#ifndef LOUDMOUTH_USES_SHA256
+  char fpr[FINGERPRINT_LENGTH] = {0};
+#endif
   const char *proxy_host;
   const char *resource_prefix = PACKAGE_NAME;
   char *fjid;
   int ssl, tls;
   LmSSL *lssl;
   unsigned int port;
-  unsigned int ping;
+  unsigned int ping = 40;
   LmMessageHandler *handler;
   GError *error = NULL;
 
   xmpp_disconnect();
 
-  servername = settings_opt_get("server");
-  userjid    = settings_opt_get("jid");
-  password   = settings_opt_get("password");
-  resource   = settings_opt_get("resource");
-  proxy_host = settings_opt_get("proxy_host");
-  ssl_fpr    = settings_opt_get("ssl_fingerprint");
+  servername  = settings_opt_get("server");
+  userjid     = settings_opt_get("jid");
+  password    = settings_opt_get("password");
+  resource    = settings_opt_get("resource");
+  proxy_host  = settings_opt_get("proxy_host");
+  ssl_fpr     = settings_opt_get("ssl_fingerprint");
 
   if (!userjid) {
     scr_LogPrint(LPRINT_LOGNORM, "Your JID has not been specified!");
@@ -1824,7 +1806,6 @@ gint xmpp_connect(void)
 
   g_log_set_handler("LM", LM_LOG_LEVEL_ALL, lm_debug_handler, NULL);
 
-  ping = 40;
   if (settings_opt_get("pinginterval"))
     ping = (unsigned int) settings_opt_get_int("pinginterval");
   lm_connection_set_keep_alive_rate(lconnection, ping);
@@ -1937,14 +1918,29 @@ gint xmpp_connect(void)
     port = (ssl ? LM_CONNECTION_DEFAULT_PORT_SSL : LM_CONNECTION_DEFAULT_PORT);
   lm_connection_set_port(lconnection, port);
 
-  if (ssl_fpr && (!hex_to_fingerprint(ssl_fpr, fpr))) {
+#ifndef LOUDMOUTH_USES_SHA256
+  if (ssl_fpr && (!hex_to_fingerprint(ssl_fpr, fpr, FINGERPRINT_LENGTH))) {
     scr_LogPrint(LPRINT_LOGNORM, "** Please set the fingerprint in the format "
                  "97:5C:00:3F:1D:77:45:25:E2:C5:70:EC:83:C8:87:EE");
     return -1;
   }
 
   lssl = lm_ssl_new((ssl_fpr ? fpr : NULL), ssl_cb, NULL, NULL);
+#else
+  lssl = lm_ssl_new(ssl_fpr, ssl_cb, NULL, NULL);
+#endif
   if (lssl) {
+#ifdef HAVE_LM_SSL_CIPHER_LIST
+    const char *ssl_ciphers = settings_opt_get("ssl_ciphers");
+    lm_ssl_set_cipher_list(lssl, ssl_ciphers);
+#endif
+#ifdef HAVE_LM_SSL_CA
+    const char *ssl_ca = settings_opt_get("ssl_ca");
+    char *ssl_ca_xp;
+    ssl_ca_xp = expand_filename(ssl_ca);
+    lm_ssl_set_ca(lssl, ssl_ca_xp);
+    g_free(ssl_ca_xp);
+#endif
     lm_ssl_use_starttls(lssl, !ssl, tls);
     lm_connection_set_ssl(lconnection, lssl);
     lm_ssl_unref(lssl);
@@ -1968,6 +1964,8 @@ void xmpp_insert_entity_capabilities(LmMessageNode *x, enum imstatus status)
 {
   LmMessageNode *y;
   const char *ver = entity_version(status);
+  if (!ver)
+    return;
 
   y = lm_message_node_add_child(x, "c", NULL);
   lm_message_node_set_attribute(y, "xmlns", NS_CAPS);
@@ -2185,6 +2183,27 @@ const char *xmpp_get_bookmark_nick(const char *bjid)
   return NULL;
 }
 
+//  xmpp_get_bookmark_password(roomjid)
+// Return the room password if it is present in a bookmark.
+const char *xmpp_get_bookmark_password(const char *bjid)
+{
+  LmMessageNode *x;
+
+  if (!bookmarks || !bjid)
+    return NULL;
+
+  // Walk through the storage bookmark tags
+  for (x = bookmarks->children ; x; x = x->next) {
+    // If the node is a conference item, check the jid.
+    if (x->name && !strcmp(x->name, "conference")) {
+      const char *fjid = lm_message_node_get_attribute(x, "jid");
+      if (fjid && !strcasecmp(bjid, fjid))
+        return lm_message_node_get_child_value(x, "password");
+    }
+  }
+  return NULL;
+}
+
 int xmpp_get_bookmark_autojoin(const char *bjid)
 {
   LmMessageNode *x;
@@ -2226,7 +2245,7 @@ GSList *xmpp_get_all_storage_bookmarks(void)
     // If the node is a conference item, let's add the note to our list.
     if (x->name && !strcmp(x->name, "conference")) {
       struct bookmark *bm_elt;
-      const char *autojoin, *name, *nick;
+      const char *autojoin, *name, *nick, *passwd;
       const char *fjid = lm_message_node_get_attribute(x, "jid");
       if (!fjid)
         continue;
@@ -2235,12 +2254,15 @@ GSList *xmpp_get_all_storage_bookmarks(void)
       autojoin = lm_message_node_get_attribute(x, "autojoin");
       nick = lm_message_node_get_child_value(x, "nick");
       name = lm_message_node_get_attribute(x, "name");
+      passwd = lm_message_node_get_child_value(x, "password");
       if (autojoin && (!strcmp(autojoin, "1") || !strcmp(autojoin, "true")))
         bm_elt->autojoin = 1;
       if (nick)
         bm_elt->nick = g_strdup(nick);
       if (name)
         bm_elt->name = g_strdup(name);
+      if (passwd)
+        bm_elt->password = g_strdup(passwd);
       sl_bookmarks = g_slist_append(sl_bookmarks, bm_elt);
     }
   }
