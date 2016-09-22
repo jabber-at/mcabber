@@ -1,6 +1,10 @@
 mcabber (1.0.3-0.1) unstable; urgency=low
 
   * New upstream release.
+  * Move to debhelper 9.
+  * Update dependencies:
+    * Move from libotr2 to libotr5.
+    * Require the most recent loudmouth1.
 
  -- Mathias Ertl <mati@fsinf.at>  Thu, 22 Sep 2016 22:37:13 +0200
 
