@@ -1,3 +1,9 @@
+mcabber (1.0.4-0.1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Mathias Ertl <mati@fsinf.at>  Wed, 23 Nov 2016 12:58:16 +0100
+
 mcabber (1.0.3-0.1) unstable; urgency=low
 
   * New upstream release.
