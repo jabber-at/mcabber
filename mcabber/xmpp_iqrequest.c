@@ -670,8 +670,8 @@ static void storage_bookmarks_parse_conference(LmMessageNode *node)
   }
   g_free(bjid);
 
-  buddylist_build();
-  update_roster = TRUE;
+  buddylist_defer_build();
+  scr_update_roster();
 }
 
 static LmHandlerResult cb_storage_bookmarks(LmMessageHandler *h,
