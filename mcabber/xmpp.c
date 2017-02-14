@@ -142,9 +142,8 @@ void xmpp_addbuddy(const char *bjid, const char *name, const char *group)
 
   roster_add_user(cleanjid, name, group, ROSTER_TYPE_USER, sub_pending, -1);
   g_free(cleanjid);
-  buddylist_build();
-
-  update_roster = TRUE;
+  buddylist_defer_build();
+  scr_update_roster();
 }
 
 void xmpp_updatebuddy(const char *bjid, const char *name, const char *group)
@@ -229,9 +228,9 @@ void xmpp_delbuddy(const char *bjid)
 
   roster_del_user(cleanjid);
   g_free(cleanjid);
-  buddylist_build();
+  buddylist_defer_build();
 
-  update_roster = TRUE;
+  scr_update_roster();
 }
 
 void xmpp_request(const char *fjid, enum iqreq_type reqtype)
@@ -877,7 +876,7 @@ static void connection_close_cb(LmConnection *connection,
   // Reset carbons
   carbons_reset();
   // Update display
-  update_roster = TRUE;
+  scr_update_roster();
   scr_update_buddy_window();
 
   if (!reason)
@@ -927,7 +926,7 @@ static void handle_state_events(const char *bjid,
   }
 
   buddy_resource_setevents(sl_buddy->data, resource, xep85->last_state_rcvd);
-  update_roster = TRUE;
+  scr_update_roster();
 #endif
 }
 
@@ -986,8 +985,8 @@ static void gotmessage(LmMessageSubType type, const char *from,
       buddy_settype(room_elt->data, ROSTER_TYPE_ROOM);
     }
 
-    buddylist_build();
-    scr_draw_roster();
+    buddylist_defer_build();
+    scr_update_roster();
     goto gotmessage_return;
   }
 
@@ -1137,6 +1136,13 @@ static LmHandlerResult handle_messages(LmMessageHandler *handler,
     LmMessageNode *xenc;
     const char *carbon_name = x->name;
     carbons = TRUE;
+
+    // Check envelope JID for carbon messages
+    if (!jid_equal(lm_connection_get_jid(lconnection), bjid)) {
+      scr_LogPrint(LPRINT_LOGNORM, "Received invalid carbon copy from %s.", bjid);
+      goto handle_messages_return;
+    }
+
     // Go 1 level deeper to the forwarded message
     x = lm_message_node_find_xmlns(x, NS_FORWARD);
     if (x)
@@ -1694,7 +1700,7 @@ static LmHandlerResult handle_s10n(LmMessageHandler *handler,
     /* The subscription request has been denied or a previously-granted
        subscription has been cancelled */
     roster_unsubscribed(from);
-    update_roster = TRUE;
+    scr_update_roster();
     buf = g_strdup_printf("<%s> has cancelled your subscription to "
                           "their presence updates", from);
     scr_WriteIncomingMessage(r, buf, 0, HBB_PREFIX_INFO, 0);
@@ -1706,7 +1712,7 @@ static LmHandlerResult handle_s10n(LmMessageHandler *handler,
   }
 
   if (newbuddy)
-    update_roster = TRUE;
+    scr_update_roster();
   g_free(r);
   return LM_HANDLER_RESULT_REMOVE_MESSAGE;
 }
@@ -2067,7 +2073,7 @@ void xmpp_setstatus(enum imstatus st, const char *recipient, const char *msg,
     // We'll have to update the roster if we switch to/from offline because
     // we don't know the presences of buddies when offline...
     if (mystatus == offline || st == offline)
-      update_roster = TRUE;
+      scr_update_roster();
 
     if (isonline || mystatus || st)
 #ifdef WITH_DEPRECATED_STATUS_INVISIBLE
@@ -2119,7 +2125,7 @@ void xmpp_setprevstatus(void)
 
 //  send_storage(store)
 // Send the node "store" to update the server.
-// Note: the sender should check we're online.
+// Note: the caller should check we're online.
 void send_storage(LmMessageNode *store)
 {
   LmMessage *iq;
@@ -2333,17 +2339,18 @@ void xmpp_set_storage_bookmark(const char *roomid, const char *name,
     if (group && *group)
       lm_message_node_add_child(x, "group", group);
     changed = TRUE;
-    scr_LogPrint(LPRINT_LOGNORM, "Updating bookmarks...");
   }
 
   if (!changed)
     return;
 
-  if (xmpp_is_online())
+  if (xmpp_is_online()) {
     send_storage(bookmarks);
-  else
+    scr_LogPrint(LPRINT_LOGNORM, "Bookmarks updated.");
+  } else {
     scr_LogPrint(LPRINT_LOGNORM,
                  "Warning: you're not connected to the server.");
+  }
 }
 
 static struct annotation *parse_storage_rosternote(LmMessageNode *notenode)

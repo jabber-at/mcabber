@@ -296,7 +296,7 @@ void xmpp_room_destroy(const char *room, const char *venue, const char *reason)
 }
 
 //  muc_get_item_info(...)
-// Get room member's information from xmlndata.
+// Get room member's information from xmldata.
 // The variables must be initialized before calling this function,
 // because they are not touched if the relevant information is missing.
 // Note that *actor should be freed by the caller.
@@ -494,7 +494,7 @@ void handle_muc_presence(const char *from, LmMessageNode *xmldata,
     scr_WriteIncomingMessage(roomjid, msg, 0, HBB_PREFIX_INFO, 0);
     // Send back an unavailable packet
     xmpp_setstatus(offline, roomjid, "", TRUE);
-    scr_draw_roster();
+    scr_update_roster();
     return;
   }
 
@@ -627,7 +627,7 @@ void handle_muc_presence(const char *from, LmMessageNode *xmldata,
       buddy_del_all_resources(room_elt->data);
       buddy_settopic(room_elt->data, NULL);
       scr_update_chat_status(FALSE);
-      update_roster = TRUE;
+      scr_update_roster();
     }
 
     // The message depends on _who_ left, and _how_
@@ -697,7 +697,7 @@ void handle_muc_presence(const char *from, LmMessageNode *xmldata,
       flagjoins = buddy_getflagjoins(room_elt->data);
       if (flagjoins == flagjoins_default &&
           settings_opt_get_int("muc_flag_joins") == 2)
-	flagjoins = flagjoins_all;
+        flagjoins = flagjoins_all;
       if (!our_presence && flagjoins != flagjoins_all)
         msgflags |= HBB_PREFIX_NOFLAG;
       //silent message if someone else joins, and we care about noone
@@ -748,7 +748,7 @@ void handle_muc_presence(const char *from, LmMessageNode *xmldata,
     cmd_room_whois(room_elt->data, rname, FALSE);
   }
 
-  scr_draw_roster();
+  scr_update_roster();
 }
 
 void roompresence(gpointer room, void *presencedata)

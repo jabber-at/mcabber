@@ -156,7 +156,7 @@ static bool   lock_chatstate;
 static time_t chatstate_timestamp;
 static guint  chatstate_timeout_id = 0;
 
-int update_roster;
+int _update_roster;
 int utf8_mode;
 gboolean chatstates_disabled;
 gboolean Autoaway;
@@ -382,6 +382,7 @@ void scr_roster_clear_color(void)
   }
   g_slist_free(rostercolrules);
   rostercolrules = NULL;
+  scr_update_roster();
 }
 
 // Adds, modifies or removes roster coloring rule
@@ -407,6 +408,7 @@ bool scr_roster_color(const char *status, const char *wildcard,
     if (found) {
       free_rostercolrule(found->data);
       rostercolrules = g_slist_delete_link(rostercolrules, found);
+      scr_update_roster();
       return TRUE;
     } else {
       scr_LogPrint(LPRINT_NORMAL, "No such color rule, nothing removed");
@@ -430,6 +432,7 @@ bool scr_roster_color(const char *status, const char *wildcard,
       rc->color = cl;
       rostercolrules = g_slist_prepend(rostercolrules, rc);
     }
+    scr_update_roster();
     return TRUE;
   }
 }
@@ -1405,7 +1408,7 @@ static void scr_show_window(const char *winId, int special)
     roster_msg_setflag(winId, special, FALSE);
   if (!special)
     roster_setflags(winId, ROSTER_FLAG_LOCK, TRUE);
-  update_roster = TRUE;
+  scr_update_roster();
 
   // Refresh the window
   scr_update_window(win_entry);
@@ -1555,17 +1558,17 @@ static void scr_write_in_window(const char *winId, const char *text,
   if (!special) {
     if (clearmsgflg) {
       roster_msg_setflag(winId, FALSE, FALSE);
-      update_roster = TRUE;
+      scr_update_roster();
     } else if (setmsgflg) {
       roster_msg_setflag(winId, FALSE, TRUE);
-      update_roster = TRUE;
+      scr_update_roster();
     }
   }
 }
 
 static char *attention_sign_guard(const gchar *key, const gchar *new_value)
 {
-  update_roster = TRUE;
+  scr_update_roster();
   if (g_strcmp0(settings_opt_get(key), new_value)) {
     guint sign;
     char *c;
@@ -1795,7 +1798,7 @@ void scr_draw_main_window(unsigned int fullinit)
 
     // Build the buddylist at least once, to make sure the special buffer
     // is added
-    buddylist_build();
+    buddylist_defer_build();
 
     // Init prev_chatwidth; this variable will be used to prevent us
     // from rewrapping buffers when the width doesn't change.
@@ -1819,7 +1822,7 @@ void scr_draw_main_window(unsigned int fullinit)
   }
 
   // We'll need to redraw the roster
-  update_roster = TRUE;
+  scr_update_roster();
   return;
 }
 
@@ -2086,7 +2089,11 @@ void scr_draw_roster(void)
   char space[2] = " ";
 
   // We can reset update_roster
-  update_roster = FALSE;
+  if (_update_roster == FALSE)
+    return;
+  _update_roster = FALSE;
+
+  buddylist_build();
 
   getmaxyx(rosterWnd, maxy, maxx);
   maxx--;  // Last char is for vertical border
@@ -2158,7 +2165,6 @@ void scr_draw_roster(void)
     unsigned short ismsg, isgrp, ismuc, ishid, isspe;
     guint isurg;
     gchar *rline_locale;
-    GSList *resources, *p_res;
 
     bflags = buddy_getflags(BUDDATA(buddy));
     btype = buddy_gettype(BUDDATA(buddy));
@@ -2178,17 +2184,22 @@ void scr_draw_roster(void)
     status = '?';
     pending = ' ';
 
-    resources = buddy_getresources(BUDDATA(buddy));
-    for (p_res = resources ; p_res ; p_res = g_slist_next(p_res)) {
-      guint events = buddy_resource_getevents(BUDDATA(buddy),
-                                              p_res ? p_res->data : "");
-      if ((events & ROSTER_EVENT_PAUSED) && pending != '+')
-        pending = '.';
-      if (events & ROSTER_EVENT_COMPOSING)
-        pending = '+';
-      g_free(p_res->data);
+    if (!ismuc) {
+      // There is currently no chat state support for MUC
+      GSList *resources = buddy_getresources(BUDDATA(buddy));
+      GSList *p_res;
+
+      for (p_res = resources ; p_res ; p_res = g_slist_next(p_res)) {
+        guint events = buddy_resource_getevents(BUDDATA(buddy),
+                                                p_res ? p_res->data : "");
+        if ((events & ROSTER_EVENT_PAUSED) && pending != '+')
+          pending = '.';
+        if (events & ROSTER_EVENT_COMPOSING)
+          pending = '+';
+        g_free(p_res->data);
+      }
+      g_slist_free(resources);
     }
-    g_slist_free(resources);
 
     // Display message notice if there is a message flag, but not
     // for unfolded groups.
@@ -2292,6 +2303,12 @@ void scr_draw_roster(void)
   update_panels();
   curs_set(cursor_backup);
 }
+
+void scr_update_roster(void)
+{
+  _update_roster = TRUE;
+}
+
 
 //  scr_roster_visibility(status)
 // Set the roster visibility:
@@ -2532,10 +2549,11 @@ static void set_current_buddy(GList *newbuddy)
     // Remove the readmark if it is at the end of the buffer
     scr_buffer_readmark(-1);
   }
-  // We should rebuild the buddylist but not everytime
+  // We should rebuild the buddylist when the last selected buddy isn't
+  // displayed anymore
   if (!(buddylist_get_filter() & 1<<prev_st))
-    buddylist_build();
-  update_roster = TRUE;
+    buddylist_defer_build();
+  scr_update_roster();
 }
 
 //  scr_roster_top()
@@ -2658,7 +2676,7 @@ void scr_roster_jump_jid(char *barejid)
                                  sub_none, -1);
   // Set a lock to see it in the buddylist
   buddy_setflags(BUDDATA(roster_elt), ROSTER_FLAG_LOCK, TRUE);
-  buddylist_build();
+  buddylist_defer_build();
   // Jump to the buddy
   set_current_buddy(buddy_search_jid(barejid));
   if (chatmode) {
@@ -2695,7 +2713,7 @@ void scr_roster_unread_message(int next)
     ngroup = buddy_getgroup(unread_ptr);
     if (buddy_getflags(ngroup) & ROSTER_FLAG_HIDE) {
       buddy_setflags(ngroup, ROSTER_FLAG_HIDE, FALSE);
-      buddylist_build();
+      buddylist_defer_build();
     }
   }
 
@@ -2772,8 +2790,8 @@ void scr_roster_display(const char *filter)
       if (strchr(filter, imstatus2char[budstate]) || show_all)
         status |= 1<<budstate;
     buddylist_set_filter(status);
-    buddylist_build();
-    update_roster = TRUE;
+    buddylist_defer_build();
+    scr_update_roster();
     return;
   }
 
@@ -2961,7 +2979,7 @@ void scr_buffer_purge(int closebuf, const char *jid)
     win_entry->bd->top = NULL;
   }
 
-  update_roster = TRUE;
+  scr_update_roster();
 
   // Refresh the window
   scr_update_buddy_window();
@@ -3314,7 +3332,7 @@ void scr_setmsgflag_if_needed(const char *bjid, int special)
   }
   if (!chatmode || !current_id || strcmp(bjid, current_id) || iscurrentlocked) {
     roster_msg_setflag(bjid, special, TRUE);
-    update_roster = TRUE;
+    scr_update_roster();
   }
 }
 
@@ -3351,7 +3369,7 @@ void scr_setattentionflag_if_needed(const char *bjid, int special,
 
   if (!chatmode || !current_id || strcmp(bjid, current_id) || iscurrentlocked) {
     roster_setuiprio(bjid, special, value, action);
-    update_roster = TRUE;
+    scr_update_roster();
   }
 }
 
