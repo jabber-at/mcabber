@@ -95,6 +95,9 @@ static gboolean scr_chatstates_timeout();
 static void spellcheck(char *, char *);
 #endif
 
+static void open_chat_window(void);
+static void clear_inputline(void);
+
 static GHashTable *winbufhash;
 
 typedef struct {
@@ -780,6 +783,16 @@ gboolean scr_curses_status(void)
   return Curses;
 }
 
+static gchar *scr_vi_mode_guard(const gchar *key, const gchar *new_value)
+{
+  int new_mode = 0;
+  if (new_value)
+    new_mode = atoi(new_value);
+  if (new_mode == 0 || new_mode == 1)
+    vi_mode = new_mode;
+  return g_strdup(new_value);
+}
+
 static gchar *scr_color_guard(const gchar *key, const gchar *new_value)
 {
   if (g_strcmp0(settings_opt_get(key), new_value))
@@ -811,6 +824,11 @@ void scr_init_curses(void)
     scr_LogPrint(LPRINT_LOGNORM, "ERROR: no ESCDELAY support.");
 #endif
   }
+
+  // Set up vi_mode guard
+  settings_set_guard("vi_mode", scr_vi_mode_guard);
+  if (settings_opt_get_int("vi_mode") == 1)
+    vi_mode = true;
 
   parse_colors();
 
@@ -1425,6 +1443,7 @@ void scr_show_buddy_window(void)
 {
   const gchar *bjid;
 
+  buddylist_build();
   if (!current_buddy) {
     bjid = NULL;
   } else {
@@ -2717,6 +2736,7 @@ void scr_roster_unread_message(int next)
     }
   }
 
+  buddylist_build();
   nbuddy = g_list_find(buddylist, unread_ptr);
   if (nbuddy) {
     set_current_buddy(nbuddy);
@@ -3804,8 +3824,11 @@ void readline_refresh_screen(void)
 void readline_disable_chat_mode(guint show_roster)
 {
   scr_check_auto_away(TRUE);
-  if (chatmode)
+  if (chatmode) {
     scr_buffer_readmark(TRUE);
+    if (vi_mode)
+      clear_inputline();
+  }
   currentWindow = NULL;
   chatmode = FALSE;
   if (current_buddy)
@@ -4175,7 +4198,7 @@ static inline void print_checked_line(void)
 static inline void refresh_inputline(void)
 {
 #if defined(WITH_ENCHANT) || defined(WITH_ASPELL)
-  if (settings_opt_get_int("spell_enable")) {
+  if (settings_opt_get_int("spell_enable") && (chatmode || !vi_mode)) {
     memset(maskLine, 0, INPUTLINE_LENGTH+1);
     spellcheck(inputLine, maskLine);
   }
@@ -4426,12 +4449,60 @@ static void bindcommand(keycode kcode)
 #endif
 }
 
+static void scr_process_vi_arrow_key(int key)
+{
+  const char *l;
+  char mask[INPUTLINE_LENGTH+1];
+  size_t cmd_len = strlen(mask);
+  size_t str_len = strlen(inputLine) - 1;
+
+  strncpy(mask, mkcmdstr("roster search "), INPUTLINE_LENGTH);
+
+  if  (inputLine[0] == COMMAND_CHAR) {
+    if (!chatmode) { // Command mode
+      if (key == KEY_UP)
+        l = scr_cmdhisto_prev(inputLine, ptr_inputline - inputLine);
+      else
+        l = scr_cmdhisto_next(inputLine, ptr_inputline - inputLine);
+      if (l)
+        strcpy(inputLine, l);
+
+      return;
+    }
+
+    // Chat mode
+
+    if (cmd_len + str_len > INPUTLINE_LENGTH)
+      return;
+
+    memcpy(mask + cmd_len, inputLine + 1, str_len + 1);
+    if (key == KEY_UP)
+      l = scr_cmdhisto_prev(mask, ptr_inputline - inputLine + cmd_len - 1);
+    else
+      l = scr_cmdhisto_next(mask, ptr_inputline - inputLine + cmd_len - 1);
+    if (l)
+      strcpy(inputLine + 1, l + cmd_len);
+
+    return;
+  }
+
+  if  (inputLine[0] == VI_SEARCH_COMMAND_CHAR)
+    return;
+
+  if (key == KEY_UP)
+    process_command(mkcmdstr("roster up"), TRUE);
+  else if (key == KEY_DOWN)
+    process_command(mkcmdstr("roster down"), TRUE);
+}
+
 //  scr_process_key(key)
 // Handle the pressed key, in the command line (bottom).
 void scr_process_key(keycode kcode)
 {
   int key = kcode.value;
   int display_char = FALSE;
+  int vi_search = FALSE;
+  static int ex_or_search_mode = FALSE;
 
   lock_chatstate = FALSE;
 
@@ -4448,6 +4519,265 @@ void scr_process_key(keycode kcode)
         key = ERR; // Do not process any further
   }
 
+  if (vi_mode && !chatmode) {
+    int got_cmd_prefix = FALSE;
+    int unrecognized = FALSE;
+    static char search_cmd[INPUTLINE_LENGTH+1] = "";
+
+    if (key == KEY_UP || key == KEY_DOWN) {
+      scr_process_vi_arrow_key(key);
+      key = ERR;    // Do not process any further
+    } else if (ex_or_search_mode) {
+      switch (key) {
+        case 27:    // Escape
+            clear_inputline();
+            ex_or_search_mode = FALSE;
+            break;
+        case 9:     // Tab
+        case 353:   // Shift-Tab
+            if (inputLine[0] == VI_SEARCH_COMMAND_CHAR)
+              vi_search = TRUE;
+            break;
+        case 13:    // Enter
+        case 343:   // Enter on Maemo
+            if (inputLine[0] == COMMAND_CHAR) {
+              {
+                char *p = strchr(inputLine, 0);
+
+                while (*--p == ' ' && p > inputLine)
+                  *p = 0;
+              }
+              if (!strcmp(inputLine, mkcmdstr("x")) ||
+                  !strcmp(inputLine, mkcmdstr("q")) ||
+                  !strcmp(inputLine, mkcmdstr("wq")))
+                strcpy(inputLine, mkcmdstr("quit"));
+              if (isdigit((int)(unsigned char)inputLine[1]) &&
+                  strlen(inputLine) <= 9) {
+                process_command(mkcmdstr("roster top"), TRUE);
+                memcpy(inputLine + 13, inputLine + 1, 10);
+                memcpy(inputLine + 1, "roster down ", 12);
+              }
+              inputLine[0] = COMMAND_CHAR;
+              process_command(inputLine, TRUE);
+              scr_cmdhisto_addline(inputLine);
+            } else if (inputLine[0] == VI_SEARCH_COMMAND_CHAR) {
+              size_t cmd_len;
+              size_t str_len = strlen(inputLine) - 1;
+
+              strncpy(search_cmd, mkcmdstr("roster search "), INPUTLINE_LENGTH);
+              cmd_len = strlen(search_cmd);
+
+              if (cmd_len + str_len > INPUTLINE_LENGTH)
+                return;
+
+              memcpy(search_cmd + cmd_len, inputLine + 1, str_len + 1);
+
+              process_command(search_cmd, TRUE);
+              scr_cmdhisto_addline(search_cmd);
+            } else if (inputLine[0] == 0) {
+              if (buddy_gettype(BUDDATA(current_buddy)) ==
+                  ROSTER_TYPE_GROUP)
+                process_command(mkcmdstr("group toggle"), TRUE);
+              else
+                open_chat_window();
+            }
+            ex_or_search_mode = FALSE;
+      }
+    } else if (key >= '0' && key <= '9') {
+      got_cmd_prefix = TRUE;
+    } else if (key == COMMAND_CHAR || key == VI_SEARCH_COMMAND_CHAR) {
+      ex_or_search_mode = TRUE;
+      cmdhisto_cur = NULL;
+    } else {
+      switch (key) {
+        case ' ':
+            process_command(mkcmdstr("group toggle"), TRUE);
+            break;
+        case '!':
+            {
+              const char *bjid = buddy_getjid(BUDDATA(current_buddy));
+
+              if (bjid) {
+                guint type = buddy_gettype(BUDDATA(current_buddy));
+                guint prio = buddy_getuiprio(BUDDATA(current_buddy));
+
+                if (type & ROSTER_TYPE_ROOM &&
+                    prio < ROSTER_UI_PRIO_MUC_HL_MESSAGE) {
+                  roster_setuiprio(bjid, FALSE,
+                                   ROSTER_UI_PRIO_MUC_HL_MESSAGE, prio_set);
+                  roster_msg_setflag(bjid, FALSE, TRUE);
+                } else if (type & ROSTER_TYPE_USER &&
+                           prio < ROSTER_UI_PRIO_ATTENTION_MESSAGE) {
+                  roster_setuiprio(bjid, FALSE,
+                                   ROSTER_UI_PRIO_ATTENTION_MESSAGE, prio_set);
+                  roster_msg_setflag(bjid, FALSE, TRUE);
+                } else {
+                  roster_msg_setflag(bjid, FALSE, FALSE);
+                }
+                scr_update_roster();
+              }
+            }
+            break;
+        case '#':
+            {
+              const char *bjid = buddy_getjid(BUDDATA(current_buddy));
+
+              if (bjid) {
+                unsigned short bflags = buddy_getflags(BUDDATA(current_buddy));
+
+                if (bflags & ROSTER_FLAG_MSG)
+                  roster_msg_setflag(bjid, FALSE, FALSE);
+                else
+                  roster_msg_setflag(bjid, FALSE, TRUE);
+
+                scr_update_roster();
+              }
+            }
+            break;
+        case '\'':
+            if (inputLine[0] == '\'')
+              process_command(mkcmdstr("roster alternate"), TRUE);
+            else
+              got_cmd_prefix = TRUE;
+            break;
+        case 'A':
+            process_command(mkcmdstr("roster unread_first"), TRUE);
+            break;
+        case 'a':
+            process_command(mkcmdstr("roster unread_next"), TRUE);
+            break;
+        case 'F':
+            process_command(mkcmdstr("roster group_prev"), TRUE);
+            break;
+        case 'f':
+            process_command(mkcmdstr("roster group_next"), TRUE);
+            break;
+        case 'G':
+            process_command(mkcmdstr("roster bottom"), TRUE);
+            break;
+        case 'g':
+            if (inputLine[0] == 'g')
+              process_command(mkcmdstr("roster top"), TRUE);
+            else {
+              clear_inputline();
+              got_cmd_prefix = TRUE;
+            }
+            break;
+        case 'i':
+            open_chat_window();
+            break;
+        case 'j':
+            if (isdigit((int)(unsigned char)inputLine[0]) &&
+                strlen(inputLine) <= 9) {
+              char down_cmd[32];
+              strncpy(down_cmd, mkcmdstr("roster down "), 32);
+              strncat(down_cmd, inputLine, 16);
+              process_command(down_cmd, TRUE);
+            } else
+              process_command(mkcmdstr("roster down"), TRUE);
+            break;
+        case 'k':
+            if (isdigit((int)(unsigned char)inputLine[0]) &&
+                strlen(inputLine) <= 9) {
+              char up_cmd[32];
+              strncpy(up_cmd, mkcmdstr("roster up "), 32);
+              strncat(up_cmd, inputLine, 16);
+              process_command(up_cmd, TRUE);
+            } else
+              process_command(mkcmdstr("roster up "), TRUE);
+            break;
+        case 'M':
+            if (inputLine[0] == 'z') {
+              GSList *groups = compl_list(ROSTER_TYPE_GROUP);
+              GSList *g;
+
+              for (g = groups; g; g = g_slist_next(g)) {
+                char fold_cmd[256];
+                size_t cmd_len, grp_len;
+
+                strncpy(fold_cmd, mkcmdstr("group fold "), 32);
+                cmd_len = strlen(fold_cmd);
+                grp_len = strlen(g->data);
+
+                if (cmd_len + grp_len + 1 > sizeof(fold_cmd))
+                  continue;
+                memcpy(fold_cmd + cmd_len, g->data, grp_len + 1);
+                process_command(fold_cmd, TRUE);
+                g_free(g->data);
+              }
+              g_slist_free(groups);
+            } else
+              unrecognized = TRUE;
+            break;
+        case 'n':
+            process_command(search_cmd, TRUE);
+            break;
+        case 'O':
+            process_command(mkcmdstr("roster unread_first"), TRUE);
+            open_chat_window();
+            break;
+        case 'o':
+            process_command(mkcmdstr("roster unread_next"), TRUE);
+            open_chat_window();
+            break;
+        case 'R':
+            if (inputLine[0] == 'z') {
+              GSList *groups = compl_list(ROSTER_TYPE_GROUP);
+              GSList *g;
+
+              for (g = groups; g; g = g_slist_next(g)) {
+                char fold_cmd[256];
+                size_t cmd_len, grp_len;
+
+                strncpy(fold_cmd, mkcmdstr("group unfold "), 32);
+                cmd_len = strlen(fold_cmd);
+                grp_len = strlen(g->data);
+
+                if (cmd_len + grp_len + 1 > sizeof(fold_cmd))
+                  continue;
+                memcpy(fold_cmd + cmd_len, g->data, grp_len + 1);
+                process_command(fold_cmd, TRUE);
+                g_free(g->data);
+              }
+              g_slist_free(groups);
+            } else
+              unrecognized = TRUE;
+            break;
+        case 'Z':
+            if (inputLine[0] == 'Z')
+              process_command(mkcmdstr("quit"), TRUE);
+            else {
+              clear_inputline();
+              got_cmd_prefix = TRUE;
+            }
+            break;
+        case 'z':
+            clear_inputline();
+            got_cmd_prefix = TRUE;
+            break;
+        case 13:    // Enter
+        case 343:   // Enter on Maemo
+            if (inputLine[0] == 0) {
+              if (buddy_gettype(BUDDATA(current_buddy)) == ROSTER_TYPE_GROUP)
+                process_command(mkcmdstr("group toggle"), TRUE);
+              else
+                open_chat_window();
+            }
+            break;
+        default:
+            unrecognized = TRUE;
+            break;
+      }
+      cmdhisto_cur = NULL;
+    }
+    if (!ex_or_search_mode && !got_cmd_prefix) {
+      clear_inputline();
+      if (!unrecognized)
+        key = ERR;  // Do not process any further
+    }
+    lock_chatstate = TRUE;
+  }
+
   if (kcode.utf8) {
     if (key != ERR && !kcode.mcode)
       display_char = TRUE;
@@ -4459,10 +4789,12 @@ void scr_process_key(keycode kcode)
     case ERR:
         break;
     case 9:     // Tab
-        readline_do_completion(TRUE);   // Forward-completion
+        if (!vi_search)
+          readline_do_completion(TRUE);   // Forward-completion
         break;
     case 353:   // Shift-Tab
-        readline_do_completion(FALSE);  // Backward-completion
+        if (!vi_search)
+          readline_do_completion(FALSE);  // Backward-completion
         break;
     case 13:    // Enter
     case 343:   // Enter on Maemo
@@ -4514,6 +4846,10 @@ display:
   if (completion_started && key != 9 && key != 353 && key != KEY_RESIZE)
     scr_end_current_completion();
   refresh_inputline();
+
+  if (ex_or_search_mode &&
+      inputLine[0] != COMMAND_CHAR && inputLine[0] != VI_SEARCH_COMMAND_CHAR)
+    ex_or_search_mode = FALSE;
 
   if (!lock_chatstate) {
     // Set chat state to composing (1) if the user is currently composing,
@@ -4614,7 +4950,8 @@ void spellcheck_init(void)
 // Deinitialization of spellchecker
 void spellcheck_deinit(void)
 {
-  g_slist_free_full(spell_checkers, spell_checker_free);
+  g_slist_foreach (spell_checkers, (GFunc) spell_checker_free, NULL);
+  g_slist_free (spell_checkers);
   spell_checkers = NULL;
 }
 
@@ -4692,5 +5029,20 @@ static void spellcheck(char *line, char *checked)
   }
 }
 #endif
+
+static void open_chat_window(void)
+{
+  last_activity_buddy = current_buddy;
+  scr_check_auto_away(TRUE);
+  scr_set_chatmode(TRUE);
+  scr_show_buddy_window();
+}
+
+static void clear_inputline(void)
+{
+  ptr_inputline = inputLine;
+  *ptr_inputline = 0;
+  inputline_offset = 0;
+}
 
 /* vim: set et cindent cinoptions=>2\:2(0 ts=2 sw=2:  For Vim users... */
